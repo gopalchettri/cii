@@ -194,7 +194,10 @@ def ai_usage(api: Api, run: str, since: str) -> None:
         if not (by_api.get(wanted) or {}).get("total_ai_calls"):
             FAILED.append(f"ai usage: no AI call counted for {wanted} in run {run}: {sorted(by_api)}")
     start = by_api.get("create_scenario") or {}
-    if start and not all(start["buckets"][part]["total_ai_calls"] for part in ("threats", "scenario")):
+    parts = start.get("buckets", {})
+    quiet = [part for part in ("threats", "scenario") if start and not parts[part]["total_ai_calls"]]
+    # threat finding answers a question an earlier run asked word for word with that answer (D70): no call
+    if quiet and quiet != (["threats"] if start.get("reused_answers") else []):
         FAILED.append(f"ai usage: a part of the run's start counted no call: {start['buckets']}")
     summary = listed.get("summary") or {}
     if summary.get("total_ai_calls") != sum(item["total_ai_calls"] for item in listed.get("items", [])):

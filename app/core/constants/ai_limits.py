@@ -43,6 +43,9 @@ class AiLimits:
     ADAPTIVE_LIMIT_TTL_SECONDS: Final = TUNING.ai_busy_limit_seconds
     LEASE_CHECK_SECONDS: Final = 1.0  # a job waiting to ask the AI checks its lease this often
     CALL_RECORD_DAYS: Final = 14  # tsg_ai_calls retention
+    # how long a run takes an earlier run's answer to the very same threat-finding question
+    # (CII_THREAT_FINDING_REUSE_HOURS: 24; 0 asks every time)
+    REUSE_ACROSS_RUNS_HOURS: Final = TUNING.threat_finding_reuse_hours
     # Prompt characters per token: 4.3-6.1 measured on Kimi-K2.6; 3 leaves room for glm and non-English text.
     PROMPT_CHARS_PER_TOKEN: Final = 3
     # the most tokens (prompt estimate + answer room) one AI call may hold; a bigger batch is sent as halves

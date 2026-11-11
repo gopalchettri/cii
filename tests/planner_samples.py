@@ -87,8 +87,8 @@ CONTEXT = FrozenContext(
 
 
 def verdict_for(candidate: dict[str, Any], systems: list[str] | None, **fields: Any) -> dict[str, Any]:
-    """The gate's verdict on one candidate: relevant on `systems` under every category it lists, each HIGH
-    (None: it does not apply); `fields` override any part."""
+    """The gate's verdict on one candidate: relevant on `systems` under every category it lists, each HIGH,
+    its first listed attacker acting (None: it does not apply); `fields` override any part."""
     threat = {"slot": candidate["slot"], "threat": candidate["threat"]}
     if systems is None:
         return threat | {"relevant": False, "reason": "Nothing here allows it.", "needs": []} | fields
@@ -97,7 +97,8 @@ def verdict_for(candidate: dict[str, Any], systems: list[str] | None, **fields: 
         for kind in candidate["categories"]
     ]
     applies = {"relevant": True, "categories": kinds, "systems": systems, "entry_points": systems}
-    return threat | applies | {"confidence": 80, "needs": []} | fields
+    pick = {"attacker": candidate["attackers"][0], "attacker_reason": "It could reach SYS1."}
+    return threat | applies | {"confidence": 80, "likelihood": "MEDIUM", "needs": []} | pick | fields
 
 
 def judged(
@@ -186,6 +187,7 @@ def planned(key: str, name: str, systems: tuple[int, ...] = (321,), **fields: An
         "categories": (S.TAMPERING,),
         "impact": 2,
         "confidence": 70.0,
+        "likelihood": 2,
         "reason": "It applies.",
     }
     return PlannedThreat(key, catalogue_id, name=name, systems=systems, **(defaults | fields))

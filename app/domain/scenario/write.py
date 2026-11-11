@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -18,7 +18,6 @@ from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
-    ACTOR_KIND_WORDS,
     AI_OUTAGE_MESSAGES,
     FINAL_FINDINGS,
     FINDING_SEVERITIES,
@@ -35,7 +34,6 @@ from app.core.constants import (
     ErrorMessage,
     EvidenceBlock,
     EvidenceFact,
-    EvidenceLimits,
     EvidenceMode,
     EvidenceSearchFailure,
     FindingCode,
@@ -56,6 +54,7 @@ from app.core.constants import (
     StoryFindingMessage,
     StrideCategory,
     TextSafety,
+    ThreatFinding,
     WriterStyle,
     Writing,
 )
@@ -223,34 +222,100 @@ def writer_system_prompt() -> str:
     return with_word_limits(WRITER_SYSTEM_PROMPT + _WRITER["set"])
 
 
-def writer_slot(label: str, brief: WriterBrief, note: str = "") -> str:
-    """One slot of the writer's user prompt: its BRIEF, its evidence or the line saying none is given, and
-    any `note` (a rewrite's problems or a repair's actions)."""
-    evidence = evidence_block(brief) if _is_story(brief) else NO_EVIDENCE
-    return f"SLOT {label}\nBRIEF:\n{_brief_text(brief)}\n{evidence}{note}"
+def writer_prompt(slots: Sequence[tuple[str, WriterBrief, str]]) -> str:
+    """The writer's user prompt for one call: the facts its slots share, once, then each slot (label, brief,
+    note): its own BRIEF, its evidence or the line saying none is given, and its note (a rewrite's problems
+    or a repair's actions)."""
+    shared = _shared_facts([brief.asset for _, brief, _ in slots], [brief for _, brief, _ in slots])
+    blocks = (
+        f"SLOT {label}\nBRIEF:\n{as_json(_slot_record(brief, brief.asset, shared))}\n"
+        f"{evidence_block(brief) if _is_story(brief) else NO_EVIDENCE}{note}"
+        for label, brief, note in slots
+    )
+    return "\n\n".join([shared.text(), *blocks])
 
 
-def plan_check_slot(label: str, brief: WriterBrief, draft: ScenarioDraft) -> str:
-    """One slot of the reviewer's user prompt: its PLAN (the writer's BRIEF plus the critical service), its
-    evidence or the line saying none is given, and its scenario."""
-    plan = _brief_record(brief) | {"critical_service": brief.critical_service}
-    evidence = evidence_block(brief) if _is_story(brief) else _NO_EVIDENCE_REVIEW
-    return f"SLOT {label}\nPLAN:\n{as_json(plan)}\n{evidence}\nSCENARIO:\n{as_json(draft_answer(draft))}"
+def plan_check_prompt(slots: Sequence[tuple[str, WriterBrief, ScenarioDraft]]) -> str:
+    """The reviewer's user prompt for one call: the facts its slots share (the asset's with its critical
+    service), once, then each slot (label, brief, draft): its own PLAN, its evidence or the line saying none
+    is given, and its scenario."""
+    assets = [brief.asset | {"critical_service": brief.critical_service} for _, brief, _ in slots]
+    shared = _shared_facts(assets, [brief for _, brief, _ in slots])
+    blocks = (
+        f"SLOT {label}\nPLAN:\n{as_json(_slot_record(brief, asset, shared))}\n"
+        f"{evidence_block(brief) if _is_story(brief) else _NO_EVIDENCE_REVIEW}\n"
+        f"SCENARIO:\n{as_json(draft_answer(draft))}"
+        for (label, brief, draft), asset in zip(slots, assets, strict=True)
+    )
+    return "\n\n".join([shared.text(), *blocks])
 
 
-def _brief_record(brief: WriterBrief) -> dict[str, Any]:
-    """The brief as the writer reads it: what the scenario may take from."""
+@dataclasses.dataclass(frozen=True)
+class _SharedFacts:
+    """The facts every slot of one call holds alike, sent once before its slots."""
+
+    asset: dict[str, Any]
+    systems: dict[str, dict[str, Any]]  # each slot system's shared facts, by its name
+
+    def text(self) -> str:
+        """The block before the slots: ASSET, then SYSTEMS."""
+        return f"ASSET:\n{as_json(self.asset)}\nSYSTEMS:\n{as_json(list(self.systems.values()))}"
+
+
+def _shared_facts(assets: list[dict[str, Any]], briefs: list[WriterBrief]) -> _SharedFacts:
+    """The asset facts all `assets` hold alike, and each system's facts every brief naming it holds alike."""
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for brief in briefs:
+        for system in brief.systems:
+            by_name.setdefault(system["name"], []).append(system)
+    return _SharedFacts(
+        _common_facts(assets), {name: _common_facts(found) for name, found in by_name.items()}
+    )
+
+
+def _common_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """The facts (key and value) every record holds alike, in the first record's order."""
+    first, *rest = records
+    alike = (
+        key for key, value in first.items() if all(key in other and other[key] == value for other in rest)
+    )
+    return {key: first[key] for key in alike}
+
+
+def _own_facts(record: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
+    """The facts of `record` the shared block does not hold alike."""
+    return {key: value for key, value in record.items() if key not in shared or shared[key] != value}
+
+
+def _slot_record(brief: WriterBrief, asset: dict[str, Any], shared: _SharedFacts) -> dict[str, Any]:
+    """A slot's own BRIEF: its path's fields, and any asset or system fact the shared block lacks."""
+    own_asset = _own_facts(asset, shared.asset)
+    own_systems = [
+        {"name": system["name"]} | own
+        for system in brief.systems
+        if (own := _own_facts(system, shared.systems[system["name"]]))
+    ]
+    return (
+        ({"asset": own_asset} if own_asset else {})
+        | _path_record(brief)
+        | ({"systems": own_systems} if own_systems else {})
+    )
+
+
+def _path_record(brief: WriterBrief) -> dict[str, Any]:
+    """A brief's own fields: its category, attacker (and why), likelihood and threat, its entry point options
+    and every supporting system by name, "yes" when the path goes through it."""
     return {
-        "asset": brief.asset,
         "category": brief.category,
         "attacker": brief.attacker,
+        **({"why_this_attacker": brief.why_this_attacker} if brief.why_this_attacker else {}),
+        "likelihood": brief.likelihood,
         "threat": {
             "threat_type": brief.threat_type,
             "threat": brief.threat,
             **({"threat_actions": list(brief.threat_actions)} if brief.threat_actions else {}),
             "why_it_applies": brief.why_it_applies,
         },
-        "systems": list(brief.systems),
         "entry_point_options": list(brief_entry_point_options(brief)),
         "supporting_systems": [
             {"name": system.name, "applicable": "yes" if system.applicable else "no"}
@@ -260,8 +325,8 @@ def _brief_record(brief: WriterBrief) -> dict[str, Any]:
 
 
 def _brief_text(brief: WriterBrief) -> str:
-    """The brief as JSON."""
-    return as_json(_brief_record(brief))
+    """The whole brief as JSON, its asset and systems facts included: what the scenario may take from."""
+    return as_json({"asset": brief.asset, "systems": list(brief.systems)} | _path_record(brief))
 
 
 def with_word_limits(template: str) -> str:
@@ -281,7 +346,7 @@ def evidence_block(brief: WriterBrief) -> str:
     applicability, the entry to cite marked; never a number, ref, link or source."""
     cited = (_precedent(brief.evidence) or (None, ""))[0]
     entries = [
-        {**_subject(item), **_users_and_facts(_safe_facts(_stated_facts(item)))}
+        {**_subject(item), "facts": _shown_facts(item)}
         | ({"applicability": str(item["applicability"])} if item.get("applicability") else {})
         | ({"cited": True} if item is cited else {})
         for item in brief.evidence
@@ -292,24 +357,9 @@ def evidence_block(brief: WriterBrief) -> str:
     return f"EVIDENCE (untrusted data):\n{EvidenceBlock.BEGIN}\n{body}\n{EvidenceBlock.END}"
 
 
-def _users_and_facts(facts: list[str]) -> dict[str, list[str]]:
-    """Who used the technique as a reader names them, apart from its other facts: the writer never sees the
-    stored "X, a threat group, has used this technique." wording."""
-    used_by = _reader_names(facts)
-    rest = [fact for fact in facts if not fact.endswith(_USER_FACT_END)]  # an id-only campaign's too
-    return ({"used_by": used_by} if used_by else {}) | {"facts": rest}
-
-
-def _reader_names(facts: list[str]) -> list[str]:
-    """Who used the technique, from its user facts, as a reader names them ("the APT41 group")."""
-    names = []
-    for match in filter(None, map(_USER.fullmatch, facts)):
-        kind = _USER_KINDS.get(match["what"] or "")
-        name = match["name"] or ""  # none for a campaign, named below
-        self_named = name.casefold().split()[-1:] in ([kind], *_NAMED_KINDS)  # "the Lazarus Group"
-        named = match["name"] if not kind else f"the {name}" if self_named else f"the {name} {kind}"
-        names.append(f"the {match['campaign']}" if match["campaign"] else named)
-    return names
+def _shown_facts(entry: dict[str, Any]) -> list[str]:
+    """What an AI is shown of an entry's facts: never who used it (the card's evidence keeps those)."""
+    return [fact for fact in _safe_facts(_stated_facts(entry)) if not fact.endswith(_USER_FACT_END)]
 
 
 def _stated_facts(entry: dict[str, Any]) -> list[str]:
@@ -344,10 +394,6 @@ def _without_ids(text: str) -> str:
 _USER = re.compile(REAL_WORLD_USER)
 #: How every user fact ends (EvidenceFact.USED_BY and CAMPAIGN_USED), a named one or not.
 _USER_FACT_END = "used this technique."
-#: A user's kind as the writer names it, from the stored kind words ("a threat group": "the X group").
-_USER_KINDS = {ACTOR_KIND_WORDS["group"]: "group", ACTOR_KIND_WORDS["software"]: "malware"}
-#: Last words of a name that already say what it is ("Sandworm Team"): no kind word is added after them.
-_NAMED_KINDS = (["group"], ["team"], ["gang"], ["crew"], ["malware"], ["campaign"])
 
 
 def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str] | None:
@@ -361,8 +407,8 @@ def _precedent(evidence: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], str]
 
 
 def _claim(entry: dict[str, Any]) -> str | None:
-    """The entry's claim from its cleaned facts: who used a technique, else its first fact; a nearest entry's
-    says it is only related. None when none."""
+    """The entry's claim from its cleaned facts: a technique the attack could use (only one whose facts name
+    who used it), else its first fact; a nearest entry's says it is only related. None when none."""
     facts = _safe_facts(_stated_facts(entry))
     related = bool(entry.get("nearest"))
     if entry.get("kind") != IntelKind.TECHNIQUE:
@@ -370,14 +416,10 @@ def _claim(entry: dict[str, Any]) -> str | None:
             return None
         fact = facts[0].removesuffix(".")
         return Precedent.RELATED_RECORD.format(fact=fact) if related else fact
-    users = (match for match in map(_USER.fullmatch, facts) if match)
-    names = [m["name"] or f"the {m['campaign']}" for m in users][: EvidenceLimits.REAL_WORLD_USERS]
     title = _safe_facts([str(entry.get("title") or "")])
-    if not (names and title):
+    if not (title and any(map(_USER.fullmatch, facts))):
         return None
-    verb = "has" if len(names) == 1 else "have"
-    template = Precedent.USED_RELATED if related else Precedent.USED_BY
-    return template.format(names=" and ".join(names), verb=verb, technique=title[0])
+    return (Precedent.RELATED_TO if related else Precedent.COULD_USE).format(technique=title[0])
 
 
 def _spoken(limits: tuple[int, int]) -> str:
@@ -413,6 +455,8 @@ _NAME_DESCRIBES = re.compile(
 #: A threat name's "or", and the joiners that make it name several acts ("Command and Control", "with").
 _OR_JOINER = re.compile(r"\bor\b", re.IGNORECASE)
 _AND_JOINER = re.compile(r"\b(?:and|with)\b|&", re.IGNORECASE)
+#: The gate's likelihood as the brief says it.
+_LIKELIHOOD_WORDS = {rank: word for word, rank in ThreatFinding.LIKELIHOOD_RANK.items()}
 #: The asset facts under the names the brief shows; every other fact keeps its own name.
 _ASSET_FACT_NAMES = {
     "cii_asset_description": "description",
@@ -429,9 +473,8 @@ def build_brief(
     live: LiveLibrary,
     style: WriterStyle = WriterStyle.ORIGINAL,
 ) -> WriterBrief:
-    """The brief for `path`: its asset's and systems' facts within `budget` characters together, the acting
-    attacker and why the threat applies. Raises PathNotWritable for a path missing a fact or whose threat or
-    attacker was retired."""
+    """The brief for `path`: its asset's and systems' facts within `budget` characters, the acting attacker
+    and why, the likelihood and why the threat applies. PathNotWritable: a missing fact or retired threat."""
     threat = _path_threat(threats, path)
     _check_still_live(threat, path["path_id"], live)
     facts = [_named_facts(context.asset["name"], _asset_facts(context, style))] + [
@@ -444,6 +487,8 @@ def build_brief(
         critical_service=_critical_service(context),
         category=StrideCategory(path["category"]),
         attacker=threat["actors"][0]["name"],
+        why_this_attacker=redact(_reason_on_path(threat["attacker_check_reason"] or "", path, context)),
+        likelihood=_LIKELIHOOD_WORDS[threat["likelihood"]],
         threat_type=threat_name_without_code(threat["type"]["name"]),
         threat=threat_name_without_code(threat["name"]),
         why_it_applies=redact(_reason_on_path(_kind_reason(threat, path), path, context)),
@@ -657,6 +702,8 @@ def _named_facts(name: str, facts: dict[str, Any]) -> dict[str, Any]:
 #: The planner's aliases and slots (SYS1, THR7) and a set's slots (SC2): never in a brief, so one in a
 #: scenario was made up or leaked from another slot.
 _INTERNAL_LABEL = re.compile(r"\b(?:SYS|THR|SC)\d+\b")
+#: Letters outside the Latin script ("恢复"): an answer that left English, unless the brief gave them.
+_NOT_LATIN = re.compile(r"[^\W\d_A-Za-zª-ɏḀ-ỿ]+")
 _LEADING_ARTICLE = re.compile(r"^the\s+", re.IGNORECASE)
 #: A public advisory number: CVE, CISA ICS advisory (ICSA, ICSMA), GitHub (GHSA), Microsoft bulletin, CERT/CC.
 _ADVISORY_ID = re.compile(
@@ -723,7 +770,7 @@ class _Slot:
 
     label: str
     brief: WriterBrief
-    place: int  # the set's epoch plus its place in the set: picks its evidence sentence's link and users form
+    place: int  # the set's epoch plus its place in the set: picks its evidence sentence's link
     draft: ScenarioDraft | None = None  # its usable draft; a repair's while it is written
     problems: tuple[str, ...] = ()  # why the second round writes it again
     review: PlanCheckAnswer | None = None  # its usable review
@@ -745,8 +792,10 @@ def write_set(
     slots = [_Slot(label, brief, epoch + place) for place, (label, brief) in enumerate(briefs)]
     if not slots:
         return
-    blocks = [(slot.label, writer_slot(slot.label, slot.brief)) for slot in slots]
-    answers = _ask_set(chat, AiTask.WRITE_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+    asked = [(slot.label, slot.brief, "") for slot in slots]
+    answers = _ask_set(
+        chat, AiTask.WRITE_SCENARIO, (writer_system_prompt(), writer_prompt), asked, "scenarios"
+    )
     for slot in slots:
         item = answers.get(slot.label)
         slot.draft, problems = _read_slot_draft(slot, item)
@@ -767,8 +816,9 @@ def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, Wr
     rewritten). On an outage each slot keeps its usable draft (_firsts_kept); one with none raises."""
     rewrite = [slot for slot in slots if slot.draft is None or slot.problems or slot.first]
     try:
-        blocks = [(slot.label, writer_slot(slot.label, slot.brief, _note(slot))) for slot in rewrite]
-        answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, writer_system_prompt(), blocks, "scenarios")
+        asked = [(slot.label, slot.brief, _note(slot)) for slot in rewrite]
+        prompts = (writer_system_prompt(), writer_prompt)
+        answers = _ask_set(chat, AiTask.REPAIR_SCENARIO, prompts, asked, "scenarios")
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:  # every slot's rewrite is unusable
         log.warning(LogEvent.WRITER_PATH_FAILED, message=str(exc), error_type=type(exc).__name__)
         answers = {}
@@ -786,22 +836,29 @@ def _second_round(chat: ChatModel, slots: list[_Slot]) -> Iterator[tuple[str, Wr
         yield slot.label, _second_round_end(slot)
 
 
+#: A slot as one call asks it: its label, its brief, and its note (writer) or its draft (reviewer).
+_AskedSlot = tuple[str, WriterBrief, Any]
+#: A call's system prompt, and its user prompt for the slots it asks.
+_SetPrompts = tuple[str, Callable[[Sequence[_AskedSlot]], str]]
+
+
 def _ask_set(
-    chat: ChatModel, task: AiTask, system: str, blocks: list[tuple[str, str]], key: str
+    chat: ChatModel, task: AiTask, prompts: _SetPrompts, slots: list[_AskedSlot], key: str
 ) -> dict[str, dict[str, Any]]:
-    """Each slot's item of the answer to `blocks` ((label, text)), asked in one call or in the halves the size
-    check makes; an answer holding no list under `key` after its one re-ask raises. A slot's own faults are
-    never re-asked here: they are its own, so one bad slot never costs the set a second ask."""
+    """Each slot's item of the answer to `slots`, asked in one call or in the halves the size check makes;
+    an answer holding no list under `key` after its one re-ask raises. A slot's own faults are never
+    re-asked here: they are its own, so one bad slot never costs the set a second ask."""
     items: dict[str, dict[str, Any]] = {}
-    for part in within_call_limit(blocks, functools.partial(_set_prompt, system), task) if blocks else ():
-        read = functools.partial(_read_set, key=key, asked={label for label, _ in part})
-        items |= ask_ai_and_check(chat, task, _set_prompt(system, part), read, reuse_earlier_answer=True)
+    for part in within_call_limit(slots, functools.partial(_set_prompt, prompts), task) if slots else ():
+        read = functools.partial(_read_set, key=key, asked={label for label, _, _ in part})
+        items |= ask_ai_and_check(chat, task, _set_prompt(prompts, part), read, reuse_earlier_answer=True)
     return items
 
 
-def _set_prompt(system: str, blocks: Sequence[tuple[str, str]]) -> ChatPrompt:
-    """The system prompt and every slot's block, in the set's order."""
-    return system, "\n\n".join(text for _, text in blocks)
+def _set_prompt(prompts: _SetPrompts, slots: Sequence[_AskedSlot]) -> ChatPrompt:
+    """The system prompt and the user prompt of `slots`, in the set's order."""
+    system, user_prompt = prompts
+    return system, user_prompt(slots)
 
 
 def _read_set(
@@ -826,13 +883,16 @@ def _with_ampersands(value: Any) -> Any:
 
 
 def _read_slot_draft(slot: _Slot, item: dict[str, Any] | None) -> tuple[ScenarioDraft | None, list[str]]:
-    """A slot's draft from its item, or its problems: no item, another threat copied back, or an unreadable
-    answer (_read_draft); a story's closing sentence is code's, from its step (none with no evidence)."""
+    """A slot's draft from its item, or its problems: no item, another threat copied back, words not in
+    English or an unreadable answer (_read_draft); a story's closing sentence is code's, from its step (none
+    with no evidence)."""
     brief = slot.brief
     if item is None:
         return None, [_SLOT_MISSING]
     if name_match_key(str(item.get("threat") or "")) != name_match_key(brief.threat):
         return None, [_THREAT_NOT_COPIED]  # another slot's answer, or none: written again
+    if words := _unsupplied(_NOT_LATIN, json.dumps(item, ensure_ascii=False), _brief_text(brief).casefold()):
+        return None, [AnswerProblem.NOT_ENGLISH.format(words=words)]  # a model slipping into Chinese
     draft, problems = _read_draft(item, brief_entry_point_options(brief), brief.supporting_systems)
     if draft is not None:
         cited = _cited_entry(brief) if _is_story(brief) else None
@@ -872,9 +932,10 @@ def _review(chat: ChatModel, slots: list[_Slot]) -> None:
     (an earlier usable review then stays); no call while the reviewer is off."""
     if not slots or not _review_on():
         return
-    blocks = [(slot.label, plan_check_slot(slot.label, slot.brief, _draft_of(slot))) for slot in slots]
+    asked = [(slot.label, slot.brief, _draft_of(slot)) for slot in slots]
     try:  # temperature 0: a retry's same ask gets the same answer, so it is read back
-        reviews = _ask_set(chat, AiTask.PLAN_CHECK, PLAN_CHECK_SET_PROMPT, blocks, "reviews")
+        prompts = (PLAN_CHECK_SET_PROMPT, plan_check_prompt)
+        reviews = _ask_set(chat, AiTask.PLAN_CHECK, prompts, asked, "reviews")
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         log.warning(LogEvent.WRITER_PLAN_CHECK_NOT_MADE, message=str(exc))
         reviews = {}
@@ -1184,9 +1245,9 @@ def _fixes(repair: WrittenScenario, first: WrittenScenario) -> bool:
 
 
 def evidence_sentence(step: str, cited: dict[str, Any] | None, place: int) -> tuple[str, str]:
-    """(the closing sentence: the writer's `step`, a link, the cited entry's title and who used it, or its
-    first fact; why the step cannot open it, '' when it can). The sentence is '' when the step fails or
-    nothing is tied: code's precedent (_claim) is cited then."""
+    """(the closing sentence: the writer's `step`, a link and the cited entry's title, with a vulnerability's
+    or advisory's first fact; why the step cannot open it, '' when it can). The sentence is '' when the step
+    fails or nothing is tied: code's precedent (_claim) is cited then."""
     title = (_safe_facts([str((cited or {}).get("title") or "")]) or [""])[0]
     # nothing to tie a step to, or a title that would break the marker: code's precedent stands alone
     if cited is None or not title or "[" in title or _SENTENCE_END.search(title):
@@ -1203,22 +1264,19 @@ def evidence_sentence(step: str, cited: dict[str, Any] | None, place: int) -> tu
 
 
 def _tied(step: str, cited: dict[str, Any], title: str, facts: list[str], place: int) -> str:
-    """`step` tied to the cited entry by a link (a related one for nearest evidence) and, for a technique, a
-    users form: `place` picks both, so the 6 slots of a set never share a link and use each form twice."""
+    """`step` tied to the cited entry by a link (a related one for nearest evidence): `place` picks it, so the
+    6 slots of a set never share a link."""
     links = Precedent.RELATED_LINKS if cited.get("nearest") else Precedent.LINKS
     link = links[place % len(links)]
     if cited.get("kind") != IntelKind.TECHNIQUE:
         fact = facts[0].removesuffix(".")
         return Precedent.ABOUT_SENTENCE.format(step=step, link=link, title=title, fact=fact)
-    names = _reader_names(facts)[: EvidenceLimits.REAL_WORLD_USERS]
-    form = Precedent.USERS[place % len(Precedent.USERS)]
-    users = form.format(names=" and ".join(names), verb="has" if len(names) == 1 else "have")
-    return Precedent.SENTENCE.format(step=step, link=link, title=title, users=users)
+    return Precedent.SENTENCE.format(step=step, link=link, title=title)
 
 
 def _step_fault(step: str, title: str, facts: list[str]) -> str:
     """Why the writer's step cannot open code's sentence ('' when it can): none, a marker, redaction, link,
-    code, label or quote, more than one sentence, or an opening on the cited title or on who used it."""
+    code, label or quote, more than one sentence, a name of who used it, or an opening on the cited title."""
     if not step:
         return Precedent.NOT_WRITTEN
     marked = any(mark in step for mark in '["“”')  # "[": a marker or a redaction
@@ -1227,11 +1285,12 @@ def _step_fault(step: str, title: str, facts: list[str]) -> str:
     if _SENTENCE_END.search(step):
         return Precedent.MANY_SENTENCES
     users = [match["name"] or match["campaign"] for match in filter(None, map(_USER.fullmatch, facts))]
+    if any(find_name_mentions(user, step) for user in users if user):
+        return Precedent.NAMES_A_USER
     opening = _LEADING_ARTICLE.sub("", step).casefold()
     # a gerund title ("Phishing") names the act itself: the story's step may open with it
-    names = (*users, *([] if title.split()[:1] and title.split()[0].casefold().endswith("ing") else [title]))
-    on_evidence = any(opening.startswith(name.casefold()) for name in names if name)
-    return Precedent.OPENS_ON_EVIDENCE if on_evidence else ""
+    gerund = bool(title.split()[:1]) and title.split()[0].casefold().endswith("ing")
+    return Precedent.OPENS_ON_EVIDENCE if not gerund and opening.startswith(title.casefold()) else ""
 
 
 def _cited_entry(brief: WriterBrief) -> dict[str, Any] | None:

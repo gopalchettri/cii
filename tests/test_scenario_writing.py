@@ -60,14 +60,14 @@ from app.domain.scenario.write import (
     finding_severity,
     is_blocked,
     is_final,
+    plan_check_prompt,
     plan_check_record,
-    plan_check_slot,
     scenario_id,
     slot_label,
     title_candidates,
     with_word_limits,
     write_set,
-    writer_slot,
+    writer_prompt,
     writer_system_prompt,
     written_record,
 )
@@ -83,7 +83,7 @@ from app.models.scenario.write import (
     WrittenScenario,
 )
 from app.worker.scenario.path_writing import PathWriter
-from tests.fakes import FakeChatModel, brief_of, slot_blocks, truncated
+from tests.fakes import FakeChatModel, brief_of, shared_facts, slot_blocks, truncated
 from tests.planner_samples import CONTEXT, planned, system_row
 
 #: Everything the sample threats name is still active in the library.
@@ -283,13 +283,18 @@ def test_long_facts_are_cut_to_the_budget_and_the_brief_stays_json() -> None:
 
 
 def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_json() -> None:
-    """The owner's text files, the configured word limits in their slots, each slot's own line saying no
-    evidence is given while intelligence is off; the reviewer's PLAN is the brief plus the critical
-    service."""
+    """The owner's text files, the configured word limits in their slots, the asset's and systems' facts
+    once before the slot, each slot's own line saying no evidence is given while intelligence is off; the
+    reviewer's ASSET also holds the critical service."""
     brief = _brief_of(_plan_threat())
-    system, slot = writer_system_prompt(), writer_slot("SC1", brief)
+    system, user = writer_system_prompt(), writer_prompt([("SC1", brief, "")])
     assert system.startswith(with_word_limits(WRITER_SYSTEM_PROMPT)) and "No EVIDENCE is given" not in system
-    assert "<scenario words>" not in system and slot.startswith("SLOT SC1\nBRIEF:\n")
+    ((label, slot),) = slot_blocks(user)
+    assert "<scenario words>" not in system and (label, slot[: len("SLOT SC1\nBRIEF:\n")]) == (
+        "SC1",
+        "SLOT SC1\nBRIEF:\n",
+    )
+    assert shared_facts(user) == (brief.asset, list(brief.systems))
     no_evidence = (
         'No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evid'
     )
@@ -298,11 +303,14 @@ def test_the_writer_and_the_reviewer_read_the_owners_prompts_and_the_brief_as_js
         {"name": "SCADA server", "applicable": "yes"},
         {"name": "Historian", "applicable": "no"},
     ]
-    review = plan_check_slot("SC1", brief, _CLEAN)
-    plan_text, scenario_text = review.removeprefix("SLOT SC1\nPLAN:\n").split("\nSCENARIO:\n")
+    review = plan_check_prompt([("SC1", brief, _CLEAN)])
+    asset = shared_facts(review)[0]
+    plan_text, scenario_text = (
+        slot_blocks(review)[0][1].removeprefix("SLOT SC1\nPLAN:\n").split("\nSCENARIO:\n")
+    )
     plan, rest = json.JSONDecoder().raw_decode(plan_text)
     assert json.loads(scenario_text) == draft_answer(_CLEAN)
-    assert plan["critical_service"] == "Electricity transmission"
+    assert asset["critical_service"] == "Electricity transmission" and "asset" not in plan
     assert plan_text[rest:].strip().startswith("No EVIDENCE is given for this slot: any [n] marker")
     assert (
         PLAN_CHECK_SET_PROMPT.startswith(PLAN_CHECK_SYSTEM_PROMPT)
@@ -323,13 +331,15 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
         assert "anything later done with it is an added step" in prompt
         assert '"theft" and "phishing" are not use' in prompt
     assert "LIBRARY-GAP BOUNDARY" not in gap and "TSG_SCENARIO_TARGET" not in gap
+    assert '"attacker":' not in gap  # the gate picks the attacker from the matched type's list
     writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
     assert "never add a step that is not part of the threat" in writer
     assert "its primary impact is what the acquisition itself causes" in writer
     assert "never from a later use its name does not state (rule 1)" in writer
     split = "two names for the same act are one action"  # each prompt's own split, used without the list
     assert split in writer and split in reviewer
-    assert "naming the threat is not carrying it out" in writer and "is carried out, not only named" in writer
+    assert "naming the threat is not carrying it out" in writer
+    assert "must be carried out in the story as the attacker's action, not only named" in writer
     assert "in your own words and concrete to this asset" in writer and "never copy the list's" in writer
     plain = writer.split("13. CLEAR, BALANCED LANGUAGE")[1].split("GENERATOR FINAL CHECK")[0]  # both readers
     assert "writes for security staff and for operators, managers and auditors who are not security" in writer
@@ -338,7 +348,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert '"exfiltrate (copy out) the records"' in plain and 'not "Someone could make the tank' in plain
     assert '"break into" or "take over", not "compromise"' not in plain  # no blanket swap of precise terms
     assert "each part its own short sentence" in writer and "one or two short sentences" in writer
-    assert "Write in clear, balanced language (rule 13)" in writer and "- Clear, balanced language:" in writer
+    assert "Write in clear, balanced language (rule 13)" in writer
     assert "the category's loss (rule 11)" in plain and "locks" not in plain  # clear words keep the category
     assert "in any words (judge the meaning, not the list's wording" in reviewer
     assert "or only named, not carried out as the attacker's action" in reviewer  # a rule 1 note
@@ -364,18 +374,20 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "in this story's own words rather than the cited title's" in writer
     assert "6 to 20 words, with no title, no group, malware or campaign name and no quotes" in writer
     assert "the application writes the closing evidence sentence from evidence_step" in writer
+    assert "the application adds who used" not in writer  # 31 Oct: no closing sentence names who used it
     assert '"evidence_statement"' not in writer and "words no other slot uses" not in writer
     assert "evidence_supported" not in reviewer  # no code reads it: code's sentence states only its source
     assert "except `evidence_statement`, which the platform writes from EVIDENCE" in reviewer
     # D66: the writer gives reasons only for "yes" systems; code writes a "no" system's
-    assert "Never name it in scenario_statement and give it no system_reasons key" in writer
+    assert "Never name it in scenario_statement and give it no system_reasons key." in writer
     assert 'system_reasons: one key for every BRIEF.supporting_systems name marked "yes"' in writer
-    assert 'Give no reason for a "no" system: the application writes it.' in writer
+    assert 'copied exactly; no key for a "no" system.' in writer
+    assert "the application writes it" not in writer  # said once, in the schema and rule 4
     assert (
         "Applicability missing" not in writer and "explain its exclusion only in system_reasons" not in writer
     )
     assert "End scenario_statement on this consequence." in writer
-    assert 'No "no" system named in scenario_statement' in writer
+    assert 'A "no" system must not be described as attacked or directly affected. Never name it' in writer
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
     assert "Do not reshape the specified threat" not in writer  # owner 2026-10-28: it may fit the evidence
     assert 'List an essential missing detail in assumptions as: "assumes <specific condition>".' in writer
@@ -385,11 +397,48 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert "why_applies" not in writer and "why_applies" not in reviewer and '"9"' not in reviewer
 
 
+def test_the_brief_gives_the_chosen_attackers_reason_on_this_path_only_and_the_likelihood_word() -> None:
+    """Owner, 31 Oct: the writer fits the story to why its attacker was chosen, never naming a system off the
+    path or personal data; no reason, no key; the likelihood as a word."""
+    reason = "Holds the SCADA server and Historian admin logins; mail ops@grid.example."
+    brief = _brief_of(_plan_threat(attacker_check_reason=reason, likelihood=3))
+    assert brief.likelihood == "HIGH" and "SCADA server" in brief.why_this_attacker
+    assert "Historian" not in brief.why_this_attacker and "ops@grid.example" not in brief.why_this_attacker
+    asked = writer_prompt([("SC1", brief, "")])
+    assert brief.why_this_attacker in asked and '"likelihood": "HIGH"' in asked
+    unexplained = _brief_of(_plan_threat(attacker_check_reason=None, likelihood=1))
+    assert (unexplained.why_this_attacker, unexplained.likelihood) == ("", "LOW")
+    assert "why_this_attacker" not in writer_prompt([("SC1", unexplained, "")]).split("BRIEF:", 1)[1]
+
+
+def test_the_writer_fits_the_attacker_to_its_reason_and_says_the_likelihood_in_the_cause() -> None:
+    writer, reviewer = writer_system_prompt(), PLAN_CHECK_SYSTEM_PROMPT
+    assert "When BRIEF gives why_this_attacker, the access, skill and motive the story gives" in writer
+    assert "access it names that BRIEF does not record is an assumption (rule 2)" in writer
+    assert 'HIGH "is likely", MEDIUM "is possible", LOW "is unlikely but possible"' in writer
+    assert "Never write the level, a score or a reason for it." in writer
+    assert "contradicts PLAN.why_this_attacker" in reviewer
+    assert "ending with PLAN.likelihood in plain words" in reviewer
+
+
 def test_the_writer_and_reviewer_prompts_stay_within_their_size_limits() -> None:
     """The customer's 25,000 tokens a minute: D65 (code writes the evidence sentence) cut the writer from
     21,844 characters to 19,836 and the reviewer from 8,745 to 7,691 (the test settings' word ranges), and a
-    story slot no longer carries its own evidence line; each cap is the new size plus about 110 characters."""
-    assert len(writer_system_prompt()) <= 19_950 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 7_800
+    story slot no longer carries its own evidence line. 30 Oct: dropping what code does or checks itself
+    and every rule said twice (the final-check list among them) cut the writer from 19,948 to 15,465; English
+    only and the could/may reminder in rules 6 and 13 (replay: stories in the present tense, as certain,
+    went from 3 of 75 to 52 of 75 without them) bring it to 15,578. 31 Oct: the attacker's reason and the
+    likelihood clause bring the writer to 16,112 and the reviewer to 7,915. Each cap is the new size plus
+    about 110 characters."""
+    assert len(writer_system_prompt()) <= 16_220 and len(PLAN_CHECK_SYSTEM_PROMPT) <= 8_030
+
+
+def test_the_story_and_the_active_voice_example_keep_could_or_may() -> None:
+    """Replay, 30 Oct: with the slimmed prompt's only active-voice example in the present tense ("the attacker
+    copies the records") and rule 6's could/may clause cut, 52 of 75 stories were told as certain (old 3)."""
+    writer = writer_system_prompt()
+    assert '(rule 13) with hypothetical language such as "could" or "may".' in writer
+    assert '("the attacker could copy the records")' in writer and "attacker copies the records" not in writer
 
 
 def test_the_set_note_gives_every_slot_the_configured_word_ranges() -> None:
@@ -411,6 +460,7 @@ def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
     writer, reviewer = WRITER_SYSTEM_PROMPT, PLAN_CHECK_SYSTEM_PROMPT
     whole = 'The asset and its "yes" systems form one whole: they may work together where the event needs'
     assert whole in writer and 'or through another "yes" system' in writer
+    assert "Name only supplied systems, exactly as given." in writer  # once, no longer also in rule 13
     assert "goes in assumptions (rule 2)" in writer
     assert 'A "no" system must not be described as attacked or directly affected.' in writer  # unreached
     for removed in (
@@ -938,12 +988,14 @@ def test_a_draft_with_a_story_sentence_per_action_or_no_list_is_asked_once() -> 
 
 
 def test_the_writer_gives_each_action_s_story_sentence_number() -> None:
-    """The writer's eighth field and its final check: a sentence number, never a copied quote."""
+    """The writer's eighth field: a sentence number, never a copied quote; an act on the asset as a whole
+    still gets a story sentence of its own (said once, in the schema, since the final check no longer
+    repeats it)."""
     writer = WRITER_SYSTEM_PROMPT
     assert '{"<each item of BRIEF.threat.threat_actions, copied>": <sentence number>}' in writer
-    assert "Include exactly these eight top-level fields" in writer and "Exactly the eight required" in writer
+    assert "Include exactly these eight top-level fields" in writer
     assert "its value is the number (the first is 1) of the sentence of scenario_statement" in writer
-    assert "gives, for each listed action, the number of its own sentence of scenario_statement" in writer
+    assert "of the sentence of scenario_statement that shows the attacker doing that action" in writer
     assert "still gets its own sentence in scenario_statement, never only in risk_statement" in writer
     assert "word for word" not in writer
 

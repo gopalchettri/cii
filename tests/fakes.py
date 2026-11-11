@@ -25,6 +25,13 @@ def brief_of(user_prompt: str) -> dict[str, Any]:
     return dict(brief)
 
 
+def shared_facts(user_prompt: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A set prompt's ASSET and SYSTEMS: the facts sent once, before its slots."""
+    asset, _, rest = user_prompt.removeprefix("ASSET:\n").partition("\nSYSTEMS:\n")
+    systems, _ = json.JSONDecoder().raw_decode(rest)
+    return json.loads(asset), list(systems)
+
+
 def brief_system_names(user_prompt: str) -> list[str]:
     """The supporting systems a writer prompt's BRIEF lists."""
     return [system["name"] for system in brief_of(user_prompt).get("supporting_systems") or []]

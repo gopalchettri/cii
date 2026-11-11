@@ -67,6 +67,29 @@ def _reask_build_correction_message(problems: list[str]) -> str:
     return AiLimits.REASK_MESSAGE.format(problems="\n".join(lines))
 
 
+def _earlier_answer(
+    chat: "ChatModel", task: AiTask, messages: list[dict[str, str]], check: AnswerChecker
+) -> tuple[dict[str, Any], str] | None:
+    """The job's own earlier answer to these messages, else for threat finding any recent run's answered by
+    one of the chat's own models with its thinking as set now (find_earlier_answer): no AI call."""
+    models = [(model, model in chat._thinking_on) for model, _ in chat._models]
+    return find_earlier_answer(chat._call_records, task, messages, check, models)
+
+
+def _record_call(  # noqa: PLR0913 - one chat call, whole
+    chat: "ChatModel",
+    task: AiTask,
+    model: str,
+    messages: list[dict[str, str]],
+    response: Any,
+    seconds: float,
+    outcome: AiOutcome,
+) -> None:
+    """record_chat_call, noting whether the answering model's thinking was on."""
+    thinking = model in chat._thinking_on
+    record_chat_call(chat._call_records, task, model, messages, response, seconds, outcome, thinking)
+
+
 class ChatModel:
     """JSON answers from the configured model; the fallback model answers only when the first is busy/down
     (or cooling down). Each model is called with ITS OWN profile (litellm's built-in fallbacks would reuse the
@@ -153,14 +176,14 @@ class ChatModel:
         if prompt_chars > limit:
             too_long = ErrorMessage.AI_PROMPT_TOO_LONG.format(task=task, chars=prompt_chars, limit=limit)
             raise TruncatedAiAnswer(too_long)
-        if reuse_check and (earlier := find_earlier_answer(self._call_records, task, messages, reuse_check)):
+        if reuse_check and (earlier := _earlier_answer(self, task, messages, reuse_check)):
             return *earlier, capped
         model, response, seconds, capped = self._ask_for_whole_answer(task, messages, capped)
         reply = response.choices[0].message.content or ""
         answer = parse_json_object(reply)
         # One outcome per call in the metrics, never "ok" AND "unreadable".
         outcome = AiOutcome.UNREADABLE if answer is None else AiOutcome.OK
-        record_chat_call(self._call_records, task, model, messages, response, seconds, outcome)
+        _record_call(self, task, model, messages, response, seconds, outcome)
         return answer, reply, capped
 
     def _ask_for_whole_answer(
@@ -174,7 +197,7 @@ class ChatModel:
             raise UnreadableAiAnswer(ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error="no choices"))
         if getattr(response.choices[0], "finish_reason", None) != "length":
             return model, response, seconds, capped
-        record_chat_call(self._call_records, task, model, messages, response, seconds, AiOutcome.TRUNCATED)
+        _record_call(self, task, model, messages, response, seconds, AiOutcome.TRUNCATED)
         profile, thinking = dict(self._models)[model], model in self._thinking_on
         if capped and max_answer_tokens(profile, task, thinking) < profile.max_output_tokens:
             return self._ask_for_whole_answer(task, messages, capped=False)

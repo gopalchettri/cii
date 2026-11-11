@@ -43,6 +43,18 @@
      ]
     ]
    },
+   "prompt_hash_1_created_at_-1": {
+    "key": [
+     [
+      "prompt_hash",
+      1
+     ],
+     [
+      "created_at",
+      -1
+     ]
+    ]
+   },
    "record_id_1_epoch_1_job_task_1_prompt_hash_1": {
     "key": [
      [

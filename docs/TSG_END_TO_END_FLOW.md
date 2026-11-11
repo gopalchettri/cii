@@ -46,7 +46,7 @@ The first six scenarios took under four minutes: planning 94 seconds, writing ab
 about 1 more minute.
 
 Since 31-Oct-2026 (D59) the AI judges all of a threat's kinds in one answer, one gate call for up to 40 threats;
-each threat is one scenario, told as its main kind, with its other kinds shown as "also"; and a set is written in
+each threat is one scenario, told as its main kind, with at most two other kinds shown as "also" (D69); and a set is written in
 one AI call and reviewed in one more. A click (plan + first set of 6) is 3 AI calls when every answer is good,
 and a set never takes more than 4 (sections 5.5, 5.13 and 8.0).
 
@@ -1019,7 +1019,7 @@ flowchart TB
     I --> J
     J --> K["Choose each threat's attacker"]
     K --> L["One path per threat<br/>its main kind, the others also"]
-    L --> N["Rank: impact, then confidence"]
+    L --> N["Rank: risk (impact x likelihood), impact, then confidence"]
     N --> O["Deal the ranked paths in turns<br/>over the systems: entry_system"]
     O --> P["Select up to TOTAL_SCENARIO_COUNT"]
     P --> Q["Freeze the plan and its trace"]
@@ -1151,11 +1151,12 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - JSON mode;
    - `max_tokens` the gate's answer room, `CII_ANSWER_TOKENS_RELEVANCE_GATE` (`CHAT_MAX_OUTPUT_TOKENS`; UAT 10,240, a whole batch's answer; the model's 12,288 while its thinking is on);
    - `reasoning_effort` "none" for `openai/Kimi-K2.6`.
-6. **Reply contract** (`[scenario.gate]`, `RelevanceVerdict`): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
-   - `categories`: the kinds, among the threat's own, that one of its own actions directly causes the loss of (that kind's STRIDE line), the kind it most directly causes first. That first kind is the threat's main kind and its card's category (5.13); the others are shown as "also". Each has its own `impact` (HIGH, MEDIUM or LOW) and `reason`: naming systems by name, with any assumption written as "assumes …", it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes that kind's loss, never the attack steps. A kind's reason becomes the writer's `why_it_applies` (section 8.1). A rejected threat's `reason` says why not.
+6. **Reply contract** (`[scenario.gate]`, `RelevanceVerdict`): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "likelihood", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
+   - `categories`: the kinds, among the threat's own, that one of its own actions directly causes the loss of (that kind's STRIDE line), the kind it most directly causes first. That first kind is the threat's main kind and its card's category (5.13); the others are shown as "also", at most two (5.10, D69). Each has its own `impact` (HIGH, MEDIUM or LOW) and `reason`: naming systems by name, with any assumption written as "assumes …", it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes that kind's loss, never the attack steps. A kind's reason becomes the writer's `why_it_applies` (section 8.1). A rejected threat's `reason` says why not.
    - `systems`: every system the threat involves, judged with the asset and all its systems together; [] means the asset itself. `entry_points`: the systems among them an attacker could really get in through. Both, and `confidence` (0-100), are the threat's, shared by its kinds.
    - `needs`: any component the threat requires that no recorded fact mentions.
-   - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason.
+   - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason. A name not on the list, or none, is none fits (5.11, D71).
+   - `likelihood` (D73): HIGH, MEDIUM or LOW, how likely at least one of the slot's listed attackers would attempt the threat against this asset (what it needs, the motive the sector attracts, the exposure recorded; the more listed attackers who plausibly could, the higher). One per threat, never a reason, never deciding relevance; a relevant verdict without one is a slot problem, asked again like a bad impact. A merge keeps the higher; the plan threat stores it as 1-3.
    - `actions`: the concrete acts the threat's name states, each a short phrase naming systems by name. They are stored on the plan threat as `actions` (an alias left in is replaced by the system's name, in the kinds' reasons too) and given to the writer and the reviewer without the names (8.1, D63), so no `threat_actions` call is made.
 
 **In the example** (the older gate). With this release the same 75 candidates would be 2 calls of 38 and 37, and lib:281 one slot, answered once with its kinds. There were 36 gate calls (5, 7, 6, 7, 5 and 6 batches per kind, in STRIDE order). All answered first time, with no re-ask. Their answers were logged from 08:15:01 to 08:16:19. lib:281 was slot R45 in the 5th Tampering batch. These are a few lines of that real user prompt (`planner-4`, whose return line had no `entry_points` yet):
@@ -1216,7 +1217,8 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
 7. **Retry or skip** (`_retry_or_skip`):
    - A whole answer unusable (`UnreadableAiAnswer`) on a normal attempt raises `Unavailable`, so the whole job is retried later.
    - A half still cut off (step 4) or an unusable follow-up (step 3) is skipped on any attempt, and an unusable answer on the last attempt skips its batch. The skip is logged as `planner.threats_not_judged`.
-   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_call_texts` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. The follow-up and half prompts are fixed by their slots, so they are reused too. A new epoch or stage asks afresh. A failed lookup only costs the call it would have saved.
+   - **A later delivery of the job** (a Celery retry, or a reaper re-send with a new task id) takes every gate and gap-fill answer (in a writing job also the threat-action split and the reviewer's answers; in a remediation job the plan) the job already got and accepted from `tsg_ai_call_texts` (same record, epoch, stage and prompt hash, outcome ok; `run_leased_job` binds the record, epoch and stage), with no AI call (`reuse_earlier_answer`, log `ai.answer_reused`); only the batches still open are asked again. The follow-up and half prompts are fixed by their slots, so they are reused too. A new epoch or stage asks afresh (but see the next point). A failed lookup only costs the call it would have saved.
+   - **Another run of the same asset** (D70): a gate or gap-fill ask takes any run's newest ok answer to the very same conversation (same prompt hash: the same asset facts, chosen systems, library candidates and prompt text), answered by one of the module's chat models with its thinking as set now (each call text keeps `thinking`) within `CII_THREAT_FINDING_REUSE_HOURS` (24; 0 = off), from `tsg_ai_call_texts` (index on `prompt_hash`, `created_at`), inside a plan job only (a script or replay asks afresh), with no AI call: a second Start on an unchanged asset makes no threat-finding call and plans the same threats. A changed fact, system choice, library or prompt changes the hash, so it is asked afresh. Writing, review, remediation and the service mapper are never taken from another run. The reused answer is a usage row `reused` with no tokens (16). Two Starts at the same moment both ask (nothing to reuse yet).
    - If the candidates were not empty but no batch was answered, it raises `Unavailable` ("The AI could not answer. Start a new session later.").
 8. **Sorting**, for each of the threat's own kinds (`gate_asked` still counts each threat once per kind it sits in):
    - no verdict (batch skipped) → `not_judged`;
@@ -1253,7 +1255,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 > **In plain words:** If one kind of attack ends up with no accepted library threat at all, the AI may propose one new threat for it. The proposal is kept only if it is truly new (not a rewording of a library threat), if it matches a known threat type that names attackers, and if the same review panel then accepts it. Such a threat is marked as AI-written, and a curator can later add it to the library. In this run no kind was empty, so nothing was proposed.
 
 **How**
-1. **When it runs** (`_CategoryJudge.fill_gap`): only when the kind has nothing accepted *after* the code check, *and* every threat of its bucket was judged. A kind with an empty bucket counts as fully judged, with `checked` = 0. Since 31-Oct-2026 every empty kind is asked in one gap-fill call, and the proposals are checked in one gate call (step 5): at most 2 calls a plan, usually 0.
+1. **When it runs** (`_ThreatJudge.fill_gaps`): only when the kind has nothing accepted *after* the code check, *and* every threat of its bucket was judged. A kind with an empty bucket counts as fully judged, with `checked` = 0. Since 31-Oct-2026 every empty kind is asked in one gap-fill call, and the proposals are checked in one gate call (step 5): at most 2 calls a plan, usually 0.
 2. **Prompt.** `gap_fill_prompt` sends the system message from 5.5 and `LANDSCAPE:…`, `STRIDE category: …` and `app/prompts.toml` `[scenario.gap_fill]`. The prompt includes:
    - how many library threats were judged (`{checked}`);
    - the names of the kind's library threats that were not kept, which must never be proposed again;
@@ -1264,7 +1266,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 
    The prompt speaks only to the AI: when gap fill may run is decided by code (step 1), not by the prompt.
 
-   It is task `gap_fill`, temperature 0.0. Reply: `{"applies": true, "threat_type", "threat", "attacker", "systems", "reason"}` or `{"applies": false, "reason"}` (`GapFillResponse`, checked by `_read_proposal`; type + threat at most 3,500 characters).
+   It is task `gap_fill`, temperature 0.0. Reply: `{"applies": true, "threat_type", "threat", "systems", "reason"}` (no attacker since D71: the gate picks one from the matched type's list) or `{"applies": false, "reason"}` (`GapFillResponse`, checked by `_read_proposal`; type + threat at most 3,500 characters).
 3. **Library repeat** (`_is_library_threat`): `snapshot.find_threats([(threat, kind)], top_k=10, allowed_types=…)` searches the kind's threats that fit the run's asset types (hybrid search, 5.9). `_best_match` then reranks the hits' names against the proposal. A best score ≥ `THREAT_SIMILARITY_THRESHOLD` (default 75) loses the proposal as `library_repeat`.
 4. **Type match:**
    - `snapshot.find_threat_types([threat_type], top_k=10, category=kind)` searches; `_best_match` must score ≥ 75. Otherwise the proposal is lost as `type_unmatched`.
@@ -1339,10 +1341,11 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    An AI threat with the same normalised name and type id as a library threat is folded into it.
 3. `merge_reworded_threats` runs only when AI threats exist. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). Each AI threat is compared with the library threats, then with the AI threats kept before it, of the same type id. At cosine ≥ `AI_DUPLICATE_COSINE` (0.98) it is folded. Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
 4. **Re-fit after the merge** (`_keep_on_matching_systems`): each library threat's kinds are checked again with `_fitting`, because an AI twin's kinds may have joined. A kind with no way in its type fits is dropped (`asset_type_mismatch`, stage `merge`, counted as `unfit_after_merge`). `_with_places` recomputes the threat's kinds, systems, impact, confidence and pick from the kinds kept.
+5. **At most three kinds** (`_main_and_two_others`, D69): a threat with more keeps its main kind and the two others the gate named earliest (a kind it did not order, from a folded AI twin, last), in their own order. Only `categories` changes (so `reasons` lists only those); systems, impact, confidence and the places stay. It runs after gap fill, so it never empties a kind there. Why: the AI sometimes names every kind a threat lists for nearly a whole call (31 of 108 recorded answers), and cards showed those as "also".
 
 **In the example.**
 - The 114 accepted pairs became **41 threats**; `merged` 0 and `unfit_after_merge` 0.
-- lib:281's four accepted kinds became one plan threat: `"category": "Tampering"`, `"categories": ["Tampering", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]`, `"systems": [1449, 1450]`, `"impact": 3`, `"confidence": 75.0`.
+- lib:281's four accepted kinds became one plan threat (since D69 it keeps three: Tampering and the two others the gate named first): `"category": "Tampering"`, `"categories": ["Tampering", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]`, `"systems": [1449, 1450]`, `"impact": 3`, `"confidence": 75.0`.
 - It keeps a separate reason for each kind in `reasons`.
 
 ### 5.11 Choosing the attacker
@@ -1350,13 +1353,11 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
 > **In plain words:** Each threat in the plan gets exactly one attacker, chosen only from the attackers the library links to that threat's type. The review panel's own pick, with its reason, is used when it gave one: one pick per threat. (In older plans, when several kinds of attack named different attackers, the pick from the first kind in the standard order won.) A "nobody fits" under one kind never cancels an attacker another kind named. A threat for which no listed attacker is plausible is not planned.
 
 **How**
-1. `assign_attackers(snapshot, threats, landscape.sector)` gathers each threat's linked actors: its library record's, or for an AI threat, its matched type's (`linked_actors_by_type`).
-2. For every threat the gate's pick leaves open it builds the query `"{type name}: {threat name}. {reason} {sector}"` and runs one `snapshot.find_actors(queries, top_k=all actors, allowed_ids=linked)`. That is a hybrid search (5.9) over the linked actors only, with one embedding call for all those threats. A pick that decides whatever the ranking ("none fits", or exactly one linked actor of that name) is not ranked (`_pick_decides`); with none left open, no call is made.
-3. `choose_actor(threat, order)` takes the order of ranked linked actors, then any linked actor not ranked:
-   - The pick names no one ("none fits") → no attacker, `attacker_check: none_fits`.
-   - The pick names a linked actor → that actor, `attacker_check: chosen`, with the gate's `attacker_reason`.
-   - No usable pick → the top of the order, `attacker_check: not_checked`.
-   - A threat left with no attacker is dropped (stage `attacker`, `none_fits` or `no_linked_actor`; counted as `no_attacker`).
+1. `assign_attackers(snapshot, threats)` gathers each threat's linked actors: its library record's, or for an AI threat, its matched type's (`linked_actors_by_type`). No search and no embedding call (D71).
+2. `choose_actor(threat, linked)`:
+   - The pick names a linked actor → that actor, `attacker_check: chosen`, with the gate's `attacker_reason` (possibly empty).
+   - Anything else (null, a name not on the list, none given) → no attacker, `attacker_check: none_fits`. Before D71 an unusable pick took the linked actor whose bare name best matched the threat's words (`not_checked`, older plans only).
+   - A threat left with no attacker is dropped (stage `attacker`, `none_fits`; counted as `no_attacker`).
 4. **When kinds disagree** (before 31-Oct-2026; since then the gate names one attacker per threat, shared by its kinds, so they never disagree). The threat's pick comes out of the merge (5.10). `merge_two_threats` keeps `_named_pick_first(kept, other)`, which works like this:
    - a pick that names an attacker beats a "none fits" pick, which beats no pick;
    - **on a tie the kept (earlier) one wins**.
@@ -1396,13 +1397,14 @@ None of lib:281's four paths was held.
 
 ### 5.13 Paths, ranking and selection
 
-> **In plain words:** Each threat becomes one planned scenario, told as its main kind of attack (the one the AI named first); the other kinds it was accepted for are shown on its card as "also" ("Category: Denial of Service (also Tampering)"). Before 31-Oct-2026 a threat got one scenario per kind, and every threat first got its strongest one, so the first scenarios a reviewer read covered different threats. The list is then put in order. Within that, the most severe and most certain come first. The order is also spread across the supporting systems, so each system gets its share early: each system takes its turn, but leaves a path for a later system that has nothing else. By default every open scenario is selected; a total cap can be set.
+> **In plain words:** Each threat becomes one planned scenario, told as its main kind of attack (the one the AI named first); the other kinds it was accepted for, at most two, are shown on its card as "also" ("Category: Denial of Service (also Tampering)"). Before 31-Oct-2026 a threat got one scenario per kind, and every threat first got its strongest one, so the first scenarios a reviewer read covered different threats. The list is then put in order. Within that, the most severe and most certain come first. The order is also spread across the supporting systems, so each system gets its share early: each system takes its turn, but leaves a path for a later system that has nothing else. By default every open scenario is selected; a total cap can be set.
 
 **How**
-1. **One path per threat** (`threat_paths`, since 31-Oct-2026): the path is told as the threat's main kind, `categories[0]` (the gate's first kind, 5.10), so the path's `category` equals the threat's. `place_for(threat, kind)` gives its systems, impact and confidence, and `path_on(step, systems, kind)` builds a one-step `AttackPath`. The path's `categories` lead with that kind, so its scenario's `contributing_categories` (`categories[1:]`) are the threat's other kinds, which the API and the console already show. Entity 69: 41 paths become 16, with the same 15 threats selected. (Before: one path per kind in the threat's categories, as in the example below.)
+1. **One path per threat** (`threat_paths`, since 31-Oct-2026): the path is told as the threat's main kind, `categories[0]` (the gate's first kind, 5.10), so the path's `category` equals the threat's. `place_for(threat, kind)` gives its systems, impact and confidence, and `path_on(step, systems, kind)` builds a one-step `AttackPath`. The path's `categories` lead with that kind, so its scenario's `contributing_categories` (`categories[1:]`) are the threat's other kinds, at most two (5.10), which the API and the console already show. Entity 69: 41 paths become 16, with the same 15 threats selected. (Before: one path per kind in the threat's categories, as in the example below.)
 2. **Scope:** `"{kind}@asset"` when there are no systems, `"{kind}@system:<id>"` for one, and `"{kind}@systems:<id>,<id>"` for several, sorted.
 3. **`path_id`** (`attack_path_id`) is `sha256("|".join(step keys) + "@" + scope)`, first 16 hex characters. The same input always gives the same id.
 4. **Rank key** (`_path_strength`), in this order:
+   - −risk: impact x likelihood, 1-9 (D73; HIGH 3, MEDIUM 2, LOW 1), so HIGH x MEDIUM (6) and MEDIUM x HIGH (6) come before HIGH x LOW (3);
    - −impact;
    - −confidence;
    - the kind's STRIDE position;
@@ -1525,6 +1527,7 @@ The real `plan_trace.counts`, read top to bottom as a funnel:
 | Answer with problems | asked again once with the problems; still wrong on a normal attempt → `Unavailable` (job retried); on the last attempt → that batch or proposal is skipped and planning goes on (`_retry_or_skip`) |
 | Answer cut off, or prompt too long | a reply cut off at the task's `max_tokens` is asked once more at the model's full limit (section 15); still cut off, or a prompt too long → `TruncatedAiAnswer`: skipped on any attempt, never retried |
 | Delivery retried or re-sent | the gate and gap-fill answers the job already accepted are reused from `tsg_ai_call_texts` (5.6) |
+| Another Start on the same asset | the same gate and gap-fill questions take an earlier run's answer within `CII_THREAT_FINDING_REUSE_HOURS` (24), no AI call (5.6, D70) |
 | No batch of any kind answered | `Unavailable` with *"The AI could not answer. Start a new session later."*, retried like an outage; after the 5th attempt the session fails with that message |
 | SQL Server down | the last loaded library keeps serving; only a process's first load fails (`Unavailable`, retried) |
 | MongoDB down at the claim | nothing is owned yet: the same message is retried after 15 s (`_claim_or_ignore`) |
@@ -2037,25 +2040,24 @@ T1691.001.
 first kept entry whose claim exists, holds no "[" and is one sentence.
 - A **technique** needs facts naming who used it (`_USER`): `"X, <what>, has used this technique."` or
   `"The Y used this technique."`, where a campaign known only by an id ("C0027 …") does not count. At most 2
-  names, and the title must survive `_safe_facts`. Claim (`Precedent.USED_BY`):
-  `This attack could use the "{title}" technique, which {names} {verb} used` (verb "has" for one name, "have" for
-  two), or `This attack is related to the "{title}" technique, …` when nearest (`USED_RELATED`).
+  names, and the title must survive `_safe_facts`. Claim (`Precedent.COULD_USE`, D72, naming no one):
+  `This attack could use the "{title}" technique`, or `This attack is related to the "{title}" technique` when
+  nearest (`RELATED_TO`).
 - **Other kinds** (KEV vulnerability, advisory): the first stated fact (goals and "reduced by" facts skipped), its
   "." removed; "A related record: {fact}" when nearest (`RELATED_RECORD`).
 - **Nothing citable**: `WriterStyle.ORIGINAL`, no evidence in the brief, `evidence_mode` `inferred`, the search
   still stored.
 
 *Example:* T1691.001 is citable because its facts name a user (Industroyer). Code's own claim for it reads:
-*This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric Power
-Attack campaign have used*. (The campaign-id rule in the same run: rank 4's facts include "The C0027 campaign used this
-technique.", so code's claim for rank 4 names only "the Anthropic AI-orchestrated Campaign".)
+*This attack could use the "Command Message" technique* (before D72 it went on "which Industroyer and the 2015
+Ukraine Electric Power Attack campaign have used"). (The campaign-id rule in the same run: rank 4's facts include
+"The C0027 campaign used this technique.", which alone would not make it citable.)
 
 **c. The untrusted evidence block.** `writer_prompt` → `evidence_block` adds, after the BRIEF:
 `EVIDENCE (untrusted data):`, then `<<<UNTRUSTED_EVIDENCE_BEGIN>>>`, a JSON body, then
 `<<<UNTRUSTED_EVIDENCE_END>>>`. The body holds `evidence_mode` and one item per kept entry: `technique` (or `about`
-for another kind) with its title, `used_by` (who used a technique as a reader names them: "the APT41 group", "the
-NKAbuse malware", "the Triton campaign"; D54), `facts` (never a "… used this technique." fact), `applicability`
-when set, and `"cited": true` on the cited entry.
+for another kind) with its title, `facts` (never a "… used this technique." fact: since D72 no AI is shown who
+used a technique), `applicability` when set, and `"cited": true` on the cited entry.
 - `_stated_facts` hides "It can be reduced by: …" and "It is used for these attacker goals: …" on every entry
   (both stay stored on the card).
 - `_safe_facts` redacts each fact, removes ids and links, strips anything that looks like the block's delimiters,
@@ -2203,12 +2205,19 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
 
 **How** (`write.py`, `path_writing.py`, `write_job.py`)
 1. **Round 1: one write call for the set.** The batch's paths are slots `SC1`..`SCn`, in `job.batch` order, so a
-   retried delivery that saved nothing sends the same prompt and reuses the earlier answer (5.6). Each slot carries its own BRIEF
-   (§8.1, with the threat's actions from the plan) and its own evidence block, or the no-evidence line (§8.2).
+   retried delivery that saved nothing sends the same prompt and reuses the earlier answer (5.6). The facts every
+   slot of the call shares go once, first: `ASSET:` (the asset's record) and `SYSTEMS:` (each system's record, by
+   name). Each slot then carries its own BRIEF (§8.1: its threat with the plan's actions, its entry options, its
+   systems "yes" or "no" by name, and any asset or system fact the call's other slots do not share) and its own
+   evidence block, or the no-evidence line (§8.2). This sends a 5-slot set's facts once, not five times: about
+   20% fewer input tokens a write call (30 Oct replay, 6,314 to 5,051; D68).
    The answer is `{"scenarios": [...]}`, one item per slot with the eight fields of §8.2, each copying back its
    threat's name.
 2. **Each slot is checked with today's code:** `_read_draft` (§8.3) with code's evidence sentence (§8.6), the
-   action-sentence check, then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2. `SC` is
+   action-sentence check, then `check_exact_rules` (§8.4). A slot whose copied-back threat name is not its own goes to round 2,
+   and so does one whose answer holds letters outside the Latin script that its brief does not give (`_NOT_LATIN`,
+   `AnswerProblem.NOT_ENGLISH`, "恢复 requires rebuilding ..."): its rewrite is told the words, and a rewrite still
+   not in English is a failure card, never served (D68). `SC` is
    one of the internal labels (`_INTERNAL_LABEL`), so a slot label in a draft is an `unknown_id` blocker.
 3. **One review call** (reviewer on only, D64) covers the slots with no exact blocker, each with its own PLAN, evidence and SCENARIO
    (§8.5), read slot by slot with today's reviewer readers. **A slot that is final is saved at once.**
@@ -2231,7 +2240,7 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    temperature 0 a retry would be cut off again.
 6. Regenerate, next set and spares use the same flow; a batch of 1 is just a batch. A call over
    `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000) is sent as two halves. The answer room is `CII_ANSWER_TOKENS_WRITE_SCENARIO`,
-   `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 6,144 and 3,072), for a whole set.
+   `..._REPAIR_SCENARIO` and `..._PLAN_CHECK` (UAT 6,144, 5,632 and 3,072), for a whole set.
 7. **Calls a set:** 2 when every answer is good, at most 4 however many slots fail. With the plan's 1 gate call,
    a click (plan + first set of 6) is 3 AI calls when every answer is good. With the reviewer off (the default,
    D64): 1 call a set, at most 2, and a click is 2.
@@ -2292,6 +2301,8 @@ Traffic Signal Control System (1450). It was in the second batch of the first se
    | `asset` | step 4: name first, then the asset's facts, cut to fit |
    | `category` | the path's kind of attack (`path.category`) |
    | `attacker` | the threat's acting attacker, `threat.actors[0].name` |
+   | `why_this_attacker` | the gate's `attacker_check_reason`, cut to the path's systems and redacted like `why_it_applies`; only when there is one (D73) |
+   | `likelihood` | the threat's likelihood as HIGH, MEDIUM or LOW (D73); the risk statement's cause ends with it in plain words |
    | `threat.threat_type` | the threat type's name, without a library code (`threat_name_without_code`) |
    | `threat.threat` | the threat's name, without a library code |
    | `threat.why_it_applies` | step 7 |
@@ -2389,7 +2400,7 @@ Where each key came from:
 **How**
 1. One call, task `write_scenario`, for the whole set (§8.0) through `ask_ai_and_check`
    (`app/domain/shared/ask_ai.py`): the system prompt below once, plus `[scenario.writer]`'s short note for a
-   set, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
+   set, then `ASSET` and `SYSTEMS` once, and per slot its `SC` label, BRIEF and evidence block (step 3). Each slot's item is read by
    `_read_draft` with that slot's entry point options and its supporting systems (section 8.3).
 2. **System prompt.** `app/prompts.toml` `[scenario.writer]` `text`, passed through
    `with_word_limits`, which fills two slots with "min to max" (`_spoken`):
@@ -2405,7 +2416,8 @@ Where each key came from:
    A setting that is not "min-max" with 1 ≤ min ≤ max stops start-up (`_word_range`, `app/core/config.py`). In
    the original style, the slot carries `[scenario.writer]` `no_evidence`: *No EVIDENCE is given: cite nothing, tell no real-world
    event and return "evidence_step": "".* (in its own slot, so one set can mix both styles).
-3. **User prompt**, per slot: its `SC` label, `BRIEF:` and the BRIEF as JSON. In an evidence story, the evidence block follows
+3. **User prompt** (`writer_prompt`): `ASSET:` and `SYSTEMS:` as JSON once, then per slot its `SC` label, `BRIEF:` and the
+   BRIEF as JSON (the facts the call shares are left out of it). In an evidence story, the evidence block follows
    (`evidence_block`): `EVIDENCE (untrusted data):`, then the JSON between `<<<UNTRUSTED_EVIDENCE_BEGIN>>>` and
    `<<<UNTRUSTED_EVIDENCE_END>>>` (section 7).
 4. **Temperature.** `CHAT_TEMPERATURES` (`app/core/constants/common.py`) maps `write_scenario` to `None`, so
@@ -2578,7 +2590,7 @@ asked for, left out):
      busy or unreachable; an HTTP 429 waits longer and asks the same model again. A timeout is not retried
      there; the fallback model answers instead.
    - `max_tokens` is the task's own answer room (`CHAT_MAX_OUTPUT_TOKENS`, from `CII_ANSWER_TOKENS_<TASK>`; UAT
-     for a set: `write_scenario` and `repair_scenario` 6,144, `plan_check` 3,072), or
+     for a set: `write_scenario` 6,144, `repair_scenario` 5,632, `plan_check` 3,072), or
      the model's limit while its thinking is on. An answer cut off at the cap (`finish_reason` "length", outcome
      `truncated`) is asked once more at the model's full limit; cut off again, it raises `TruncatedAiAnswer`,
      which also becomes `generation_failed`. A refused prompt is unreadable at once, with no re-ask. A refused
@@ -2647,8 +2659,9 @@ is `unchecked` with no warning, and none of this section's verdicts, notes or re
    review is read on its own. `CHAT_TEMPERATURES` sends temperature 0.0.
 2. **System prompt:** `app/prompts.toml` `[scenario.reviewer]` `text`. In the original
    style code appends `[scenario.reviewer]` `no_evidence`: any `[n]` marker or real-world event breaks rule 8.
-3. **User prompt**, in this order:
-   - `PLAN:` and the BRIEF record plus `critical_service` (`_critical_service`, from the asset context); so
+3. **User prompt** (`plan_check_prompt`), in this order:
+   - once: `ASSET:` (with `critical_service`, from `_critical_service`) and `SYSTEMS:`, as for the writer;
+   - per slot, `PLAN:` and the slot's BRIEF record; so
      PLAN carries `threat.threat_actions` whenever the writer's BRIEF did;
    - the same evidence block as the writer saw (story only);
    - `SCENARIO:` and the draft as the writer answered it (`draft_answer`).
@@ -2757,18 +2770,16 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
       this attacker's action";
    5. the sentence it makes has more words than the maximum of `EVIDENCE_STATEMENT_WORD_LIMIT` (default 80): "its
       sentence would run over the 80-word limit".
-3. **The sentence** (`_tied`): the step with its first letter capitalised and its final "." removed, a link, the
-   title in double quotes, then:
-   - a technique: ", " and a users form naming who used it, at most 2, as the evidence block names them ("the
-     APT41 group", "the NKAbuse malware", "the Triton campaign"), joined by "and", with "has" for one;
-   - a vulnerability or an advisory: ": " and its first stated fact.
+3. **The sentence** (`_tied`): the step with its first letter capitalised and its final "." removed, a link, then:
+   - a technique: `the "{title}" technique`, naming no one who used it (D72);
+   - a vulnerability or an advisory: the title in double quotes, ": " and its first stated fact.
 
    The pools are in `Precedent`: `LINKS` for source-documented evidence (matches, mirrors, resembles, echoes, is
    an example of, is a form of, corresponds to, reflects), `RELATED_LINKS` for nearest evidence (is related to,
    is closely related to, relates to, is broadly related to, is loosely related to, is in the same family as)
-   and `USERS` ("a technique {names} {verb} used", "which {names} {verb} used", "used by {names}"). `place`
-   picks one of each, modulo its size: the 6 slots of a set never share a link, no two neighbouring slots
-   share a users form, and the next set (its epoch one on) starts one further on.
+   `place` picks one, modulo its size: the 6 slots of a set never share a link, and the next set (its epoch one
+   on) starts one further on. Since D72 no form names who used the technique, and a step that names one
+   anywhere is refused (`NAMES_A_USER`).
 4. A failed step leaves no sentence; `_checked` adds a `citation_removed` **warning**, never a blocker and never
    a rewrite: "The writer's evidence step was not used ({reason}): the platform cites its own precedent sentence
    from the same source instead." With nothing cited, or a cited entry whose title is cleaned away or holds a
@@ -2776,9 +2787,8 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
    stands.
 5. When the card is built (`written_record`, section 9), `_cited(brief, draft)` finds the cited entry again
    with `_precedent(brief.evidence)`: the first entry whose claim (`_claim`) is one plain sentence. The claim is
-   code's own sentence: `Precedent.USED_BY` *This attack could use the "{technique}" technique, which {names}
-   {verb} used*, `USED_RELATED` (*This attack is related to the "{technique}" technique, ...*) for a nearest
-   entry, or `RELATED_RECORD` (*A related record: {fact}*) for a record that is not a technique.
+   code's own sentence: `Precedent.COULD_USE` *This attack could use the "{technique}" technique*, `RELATED_TO`
+   (*This attack is related to the "{technique}" technique*) for a nearest entry, or `RELATED_RECORD` (*A related record: {fact}*) for a record that is not a technique.
 6. `supports` is code's sentence from the step, else the claim, its final "." removed. The statement becomes
    **narrative + " " + supports + " [1]."**
 7. `content.evidence` stores that one entry with `n: 1` and `supports`, beside `content.evidence_mode`,
@@ -2792,9 +2802,9 @@ the PLAN, then the evidence block, then the draft. Its answer, whole:
 
 | Slot | Step (writer) | Code adds |
 |---|---|---|
-| SC1 | Flooding the Enterprise Command & Control Centre Platform's network links | **matches** "Network Denial of Service", a technique the APT28 group and the NKAbuse malware have used |
-| SC2 | Seizing a privileged account on the Enterprise Command & Control Centre Platform | **mirrors** "Valid Accounts", which the APT41 group and the FIN8 group have used |
-| SC3 (nearest) | Gaining entry to the Intelligent Traffic Systems Platform through remote access | **relates to** "Exploitation of Remote Services", used by the Bad Rabbit malware and the NotPetya malware |
+| SC1 | Flooding the Enterprise Command & Control Centre Platform's network links | **matches** the "Network Denial of Service" technique |
+| SC2 | Seizing a privileged account on the Enterprise Command & Control Centre Platform | **mirrors** the "Valid Accounts" technique |
+| SC3 (nearest) | Gaining entry to the Intelligent Traffic Systems Platform through remote access | **relates to** the "Exploitation of Remote Services" technique |
 
 **In the example**
 
@@ -2802,11 +2812,9 @@ The run predates D38 (2026-10-27), D54 (2026-10-28) and D65 (2026-10-30). Its wr
 passage, opening "In real-world attacks,", and the reviewer answered `evidence_supported: true`, so it was cited
 with no `citation_removed` warning. Today the writer would give a step such as "Sending forged OT protocol
 commands to the Traffic Signal Control System", and the first slot of a set at epoch 0 would cite *Sending forged
-OT protocol commands to the Traffic Signal Control System matches "Command Message", a technique the Industroyer
-malware and the 2015 Ukraine Electric Power Attack campaign have used*. Had the step failed, code's own sentence
-would be *This attack could use the "Command Message" technique, which Industroyer and the 2015 Ukraine Electric
-Power Attack campaign have used* (we computed this by running `_claim` on the stored entry; the run did not use
-it).
+OT protocol commands to the Traffic Signal Control System matches the "Command Message" technique*. Had the step
+failed, code's own sentence would be *This attack could use the "Command Message" technique* (computed by
+running `_claim` on the stored entry; the run did not use it).
 
 The saved statement ends:
 
@@ -4132,8 +4140,8 @@ stateDiagram-v2
     (`AiLimits.MODEL_COOL_DOWN_SECONDS`), so its calls do not each wait for it first.
   - **Answer length:** each chat task asks for at most its own `max_tokens`, its answer room
     (`CHAT_MAX_OUTPUT_TOKENS`, from `CII_ANSWER_TOKENS_<TASK>`, section 17.4; UAT: `relevance_gate` 10,240,
-    `write_scenario` and `repair_scenario` 6,144, `plan_check` 3,072, each for a whole batch or set;
-    `service_mapper` 4,096); a model whose thinking is on asks for the model's limit. An
+    `write_scenario` 6,144, `repair_scenario` 5,632, `plan_check` 3,072, each for a whole batch or set;
+    `remediation_plan` 3,584, `service_mapper` 3,072); a model whose thinking is on asks for the model's limit. An
     answer cut off at its cap is recorded with outcome `truncated` and asked once more at the model's limit.
   - **Size:** a call whose question estimate and answer room are over `CII_AI_CALL_TOKENS_LIMIT` (UAT 20,000)
     is sent as two halves; the gateway holds both while a call runs, against its tokens a minute.
@@ -4323,9 +4331,10 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | the search calls (embedding, reranker) at once, all pods |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
 | `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 17 lines each (`.env.example`); its `..._CHAT_FALLBACK_MODEL` blank = no fallback, and its other fallback lines are ignored. UAT (31-Oct-2026): threat scenarios on kimi-k2.5, 180 requests and 24,000 tokens a minute (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, just under the gateway's 25,000; 290,000 at 300,000), 4 at once, no backup; remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, threat actions 1024, writing 6144, repair 6144, plan check 3072, remediation 8192, service mapper 4096 (UAT the same; gate, writing, repair and plan check answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, threat actions 512, writing 6144, repair 5632, plan check 3072, remediation 3584, service mapper 3072 (UAT the same; gate, writing, repair and plan check answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 (UAT the same; 3, 12 at a 300,000 budget) | gate batches at once per run, whole threats per gate batch (35 threats at 40: 1 call), scenarios in one write call per job (3 if a write times out), remote reranker calls at once per process |
 | `CII_SCENARIO_REVIEW_ENABLED` | false (UAT false) | true: an AI reviewer judges each written set (one call a set, one more for a rewritten set, §8.5); false: code's checks only, each card `unchecked` with no warning (D64) |
+| `CII_THREAT_FINDING_REUSE_HOURS` | 24 (UAT 24) | threat finding takes an earlier run's answer to the very same question for this many hours (a second Start on an unchanged asset: no gate call, 5.6); 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 (UAT 20000; 250000 at a 300,000 budget) | the most tokens one AI call may hold (question estimate + answer room); a bigger batch is sent as two halves |
 | `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_MODEL_COOL_DOWN_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 120, 4, 180 | after a 429: the longest one wait before its ±20 % (TSG's own 2, 5, 10, 15 s steps too), all waits (4 retries at most: 0, 20, 40, 60 s) before the fallback, how long a refused model goes last, the slow-down's floor and how long it lasts (section 15) |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |

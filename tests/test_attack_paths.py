@@ -157,6 +157,18 @@ def test_paths_are_ranked_by_impact_then_confidence_then_stride_order() -> None:
     assert ranked == [strong_spoofing, strong_tampering, medium, surer, weak_spoofing]
 
 
+def test_paths_are_ranked_by_risk_then_impact_then_confidence() -> None:
+    """Owner, 31 Oct: the attacker shapes risk. Impact 3 x likelihood 2 (6) comes before 2 x 3 (6) on its
+    impact, then 2 x 2 (4), then 3 x 1 (3) however sure the gate was of it: the product, never the sum."""
+
+    def path(key: str, impact: int, likelihood: int, confidence: float) -> AttackPath:
+        return AttackPath((planned(key, key, impact=impact, likelihood=likelihood, confidence=confidence),))
+
+    rare, likely, severe = path("lib:1", 3, 1, 90.0), path("lib:2", 2, 3, 50.0), path("lib:3", 3, 2, 40.0)
+    even = path("lib:4", 2, 2, 10.0)
+    assert rank_paths([rare, even, likely, severe]) == [severe, likely, even, rare]
+
+
 def _turn(path_id: str, systems: list[int], entry_points: list[int]) -> dict[str, Any]:
     return {"path_id": path_id, "systems": systems, "entry_points": entry_points}
 

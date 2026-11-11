@@ -47,6 +47,8 @@ class WriterBrief:
     critical_service: str | None
     category: StrideCategory
     attacker: str  # the acting attacker, always described as a type of attacker
+    why_this_attacker: str  # the gate's reason for this attacker, on this path ("" when it gave none)
+    likelihood: str  # HIGH, MEDIUM or LOW: how likely a listed attacker would attempt the threat
     threat_type: str
     threat: str
     why_it_applies: str  # the relevance check's reason, systems by name
