@@ -22,7 +22,6 @@ from app.domain.remediation.rules import (
     check_register_systems,
     decidable_version,
     decision_change,
-    newest_done_version,
 )
 from app.models.remediation.plan import PlanDraft, RemediationResult, RemediationStatus, shown_item
 from app.models.remediation.requests import (
@@ -380,7 +379,6 @@ def test_the_record_decision_waits_while_a_version_is_undecided(
 def test_the_decided_version_defaults_to_the_newest_done_and_must_be_done() -> None:
     """None asked: the newest done; 404 a version the plan does not have; 409 one not done, or none done."""
     read = _read(Status.DONE, Status.DONE, Status.RUNNING)
-    assert newest_done_version(read) == 2
     assert (decidable_version(read, None, "r1"), decidable_version(read, 1, "r1")) == (2, 1)
     with pytest.raises(NotFound) as unknown:
         decidable_version(read, 9, "r1")

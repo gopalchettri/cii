@@ -41,7 +41,7 @@ from app.domain.remediation.plan import (
     assess_alternatives,
     assess_controls,
     build_snapshot,
-    risk_scope,
+    list_affected_systems,
     write_plan,
 )
 from app.domain.scenario.controls import ControlMapper, controls_record
@@ -134,14 +134,14 @@ class RemediationPlanJob:
         mapped = self._mapped_controls(lease, scenario, context, library, by_id)
         items = mapped["items"]
         register = lease.record["register"]
-        systems, affected = risk_scope(scenario, context, register)
+        affected = list_affected_systems(context, register)
         categories = context.system_categories()
-        library_mapped, warnings = assess_controls(items, register, controls, systems, affected, categories)
+        library_mapped, warnings = assess_controls(items, register, controls, affected, categories)
         identified = [item["control_id"] for item in items]
         found = self._mapper.find_alternatives(
             scenario, context, library, identified, Remediation.ALTERNATIVES, mapped
         )
-        alternatives = assess_alternatives(found, register, controls, systems, affected, categories)
+        alternatives = assess_alternatives(found, register, controls, affected, categories)
         snapshot = build_snapshot(
             scenario, context, register, library_mapped, warnings, affected, alternatives
         )

@@ -29,11 +29,11 @@ from app.domain.remediation.plan import (
     active_mapped_controls,
     assess_controls,
     build_snapshot,
-    clip,
     describe_ref,
+    list_affected_systems,
     plan_prompt,
+    redact_and_shorten_text,
     resolve_control_refs,
-    risk_scope,
     write_plan,
 )
 from app.domain.scenario.controls import ControlMapper, controls_record
@@ -137,18 +137,16 @@ def _snapshot(
 ) -> dict[str, Any]:
     """A version's snapshot over LIBRARY: REGISTER with `register`'s changes, ITEMS unless `items`."""
     stored, scenario = _register(**(REGISTER | register)), scenario or SCENARIO
-    library_mapped, warnings = _assessed(ITEMS if items is None else items, stored, scenario)
-    offered, _ = _assessed(alternatives, stored, scenario)
-    affected = risk_scope(scenario, CONTEXT, stored)[1]
+    library_mapped, warnings = _assessed(ITEMS if items is None else items, stored)
+    offered, _ = _assessed(alternatives, stored)
+    affected = list_affected_systems(CONTEXT, stored)
     return build_snapshot(scenario, CONTEXT, stored, library_mapped, warnings, affected, offered)
 
 
-def _assessed(
-    items: Any, stored: dict[str, Any], scenario: dict[str, Any] = SCENARIO
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """assess_controls over LIBRARY and CONTEXT's systems, with the risk scope the register gives."""
-    scope = risk_scope(scenario, CONTEXT, stored)
-    return assess_controls(list(items), stored, LIBRARY, *scope, CONTEXT.system_categories())
+def _assessed(items: Any, stored: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """assess_controls over LIBRARY and CONTEXT's systems the register's risk list names."""
+    affected = list_affected_systems(CONTEXT, stored)
+    return assess_controls(list(items), stored, LIBRARY, affected, CONTEXT.system_categories())
 
 
 #: A partially implemented control's description: it extends what is in place.
@@ -286,7 +284,7 @@ def test_an_unknown_register_ref_and_a_retired_mapped_control_warn_once_each() -
     assert "CII-CID-9" in retired and retired.endswith(
         "matches no active library control — it covers no scenario control"
     )
-    affected = risk_scope(SCENARIO, CONTEXT, stored)[1]
+    affected = list_affected_systems(CONTEXT, stored)
     snapshot = build_snapshot(SCENARIO, CONTEXT, stored, library_mapped, warnings, affected, [])
     _, written, _ = _written(_answer(), snapshot=snapshot)
     assert written[:2] == warnings  # the version's warnings start with them
@@ -352,22 +350,15 @@ NO_SYSTEM = pytest.mark.parametrize("none", [None, "", []], ids=["null", "blank"
 @NO_SYSTEM
 def test_existing_controls_on_no_supporting_system_are_needed_wherever_the_risk_is(none: Any) -> None:
     """The risk on both systems, the existing-controls list naming none: CII-CID-5, an existing control, is
-    not implemented and still needed on both, like CII-CID-6, which no one has; old flags stored with the risk
-    list saying "on every system" never decide, even for a register without the existing-controls list."""
-    legacy = {
-        "existing_controls_all_supporting_system_applicable": 1,
-        "existing_controls_all_subsystems": "Yes",
-    }
+    not implemented and still needed on both, like CII-CID-6, which no one has."""
     lists = {"supporting_systems_applicable_to_existing_controls": none}
-    stored = _register(existing_controls=["CII-CID-5"], **lists) | legacy
-    without_the_list = {key: value for key, value in stored.items() if key not in lists}
-    for register in (stored, without_the_list):
-        library_mapped, _ = _assessed([_item(5), _item(6)], register)
-        assessed = [
-            (row["implementation_status"], row["protected_systems"], row["required_systems"])
-            for row in library_mapped
-        ]
-        assert assessed == [(NOT_IMPLEMENTED, [], [SCADA, HISTORIAN])] * 2
+    stored = _register(existing_controls=["CII-CID-5"], **lists)
+    library_mapped, _ = _assessed([_item(5), _item(6)], stored)
+    assessed = [
+        (row["implementation_status"], row["protected_systems"], row["required_systems"])
+        for row in library_mapped
+    ]
+    assert assessed == [(NOT_IMPLEMENTED, [], [SCADA, HISTORIAN])] * 2
 
 
 @NO_SYSTEM
@@ -412,69 +403,6 @@ def test_a_list_naming_no_system_never_covers_every_system() -> None:
     assert flags == (0, 0)
 
 
-def test_a_register_stored_before_the_flag_reads_its_yes_no() -> None:
-    """A plan regenerated from a register saved before 2026-10-21 has only its Yes/No flag."""
-    older = {"existing_controls": ["CII-CID-1"], "existing_controls_all_subsystems": "Yes"}
-    scope, categories = risk_scope(SCENARIO, CONTEXT, older), CONTEXT.system_categories()
-    library_mapped, _ = assess_controls([_item(1)], older, LIBRARY, *scope, categories)
-    assert library_mapped[0]["implementation_status"] == IMPLEMENTED
-    said_no = older | {"existing_controls_all_subsystems": "No"}
-    scope = risk_scope(SCENARIO, CONTEXT, said_no)
-    library_mapped, _ = assess_controls([_item(1)], said_no, LIBRARY, *scope, categories)
-    assert library_mapped[0]["implementation_status"] == NOT_IMPLEMENTED  # no systems named: on none
-
-
-OLD_ON_ALL = {"all_supporting_systems_applicable": 1, "existing_controls_all_supporting_system_applicable": 1}
-OLD_BY_SYSTEM = {
-    "all_supporting_systems_applicable": 1,
-    "existing_controls_all_supporting_system_applicable": 0,
-}
-OLD_RISK_ON_SCADA = {"all_supporting_systems_applicable": 0}  # the scenario's own system
-
-
-@pytest.mark.parametrize(
-    ("flags", "on", "status", "protected", "required"),
-    [
-        (OLD_ON_ALL, None, IMPLEMENTED, [SCADA, HISTORIAN], []),
-        (OLD_BY_SYSTEM, [321, 322], IMPLEMENTED, [SCADA, HISTORIAN], []),
-        (OLD_BY_SYSTEM, [321], PARTIAL, [SCADA], [HISTORIAN]),
-        (OLD_BY_SYSTEM | OLD_RISK_ON_SCADA, [321], IMPLEMENTED, [SCADA], []),
-        (OLD_BY_SYSTEM | OLD_RISK_ON_SCADA, [322], NOT_IMPLEMENTED, [], [SCADA]),
-    ],
-    ids=["on-all", "listed-on-both", "on-one-of-two", "on-the-only-affected", "only-off-the-affected"],
-)
-def test_a_register_stored_before_the_lists_assesses_as_before(
-    flags: dict[str, int],
-    on: list[int] | None,
-    status: ImplementationStatus,
-    protected: list[dict[str, Any]],
-    required: list[dict[str, Any]],
-) -> None:
-    """A plan regenerated from a register stored with the two flags and each control's own systems: the risk
-    on every system (flag 1) or the scenario's own, each control on every system (flag 1) or its own list;
-    the snapshot keeps the stored flags."""
-    entry = {"control_id": None, "control_code": "CII-CID-5", "control_name": None}
-    old = REGISTER | flags | {"existing_controls": [entry | ({"supporting_system_ids": on} if on else {})]}
-    library_mapped, warnings = _assessed([_item(5)], old)
-    found = (library_mapped[0]["protected_systems"], library_mapped[0]["required_systems"])
-    assert (warnings, library_mapped[0]["implementation_status"], found) == (
-        [],
-        status,
-        (protected, required),
-    )
-    snapshot = build_snapshot(
-        SCENARIO, CONTEXT, old, library_mapped, [], risk_scope(SCENARIO, CONTEXT, old)[1], []
-    )
-    stored_flags = (
-        snapshot["risk_scope"]["all_supporting_systems_applicable"],
-        snapshot["existing_controls"]["all_supporting_systems_applicable"],
-    )
-    assert stored_flags == (
-        flags["all_supporting_systems_applicable"],
-        flags["existing_controls_all_supporting_system_applicable"],
-    )
-
-
 #: The owner's picture: an asset with four OT supporting systems, the risk on all four.
 HISTORIAN_1, WORKSTATION_2, SCADA_3, FIREWALL_4 = (
     {"supporting_system_id": system_id, "name": name}
@@ -513,9 +441,9 @@ def test_the_owners_four_systems_example(
         supporting_systems_applicable_to_existing_controls=existing_on,
         **lists,
     )
-    systems, affected = risk_scope(SCENARIO, FOUR_SYSTEMS, stored)
+    affected = list_affected_systems(FOUR_SYSTEMS, stored)
     categories = FOUR_SYSTEMS.system_categories()
-    rows, _ = assess_controls([_item(1), _item(6)], stored, LIBRARY, systems, affected, categories)
+    rows, _ = assess_controls([_item(1), _item(6)], stored, LIBRARY, affected, categories)
     assessed = [
         (row["implementation_status"], row["protected_systems"], row["required_systems"]) for row in rows
     ]
@@ -530,7 +458,6 @@ WIDE = dataclasses.replace(
         {"id": s["supporting_system_id"], "name": s["name"]} for s in (SCADA, HISTORIAN, WORKSTATION)
     ],
 )
-UNNAMED = {**SCENARIO, "content": {**SCENARIO["content"], "systems": []}}
 
 
 @pytest.mark.parametrize(
@@ -551,28 +478,10 @@ def test_the_risk_is_on_the_systems_the_request_lists(
     stored = _register(
         existing_controls=["CII-CID-5"], supporting_systems_applicable_to_existing_controls=listed, **lists
     )
-    systems, found = risk_scope(SCENARIO, context, stored)
+    found = list_affected_systems(context, stored)
     assert found == affected
-    (row,), _ = assess_controls([_item(5)], stored, LIBRARY, systems, found, context.system_categories())
+    (row,), _ = assess_controls([_item(5)], stored, LIBRARY, found, context.system_categories())
     assert (row["implementation_status"], row["protected_systems"]) == (IMPLEMENTED, affected)
-
-
-@pytest.mark.parametrize(
-    ("context", "flags", "scenario", "affected"),
-    [
-        (WIDE, OLD_ON_ALL, SCENARIO, [SCADA, HISTORIAN, WORKSTATION]),
-        (WIDE, OLD_RISK_ON_SCADA, SCENARIO, [SCADA]),
-        (WIDE, OLD_RISK_ON_SCADA, UNNAMED, [SCADA, HISTORIAN]),
-        (CONTEXT, OLD_ON_ALL, SCENARIO, [SCADA, HISTORIAN]),
-    ],
-    ids=["every-system-of-the-asset", "the-scenarios-own", "none-named-the-runs", "run-stored-before"],
-)
-def test_a_register_stored_before_the_lists_keeps_its_risk_scope(
-    context: FrozenContext, flags: dict[str, int], scenario: dict[str, Any], affected: list[dict[str, Any]]
-) -> None:
-    """Flag 1: every system linked to the asset; 0: the scenario's own, the run's when it names none, never
-    the asset's others."""
-    assert risk_scope(scenario, context, REGISTER | flags)[1] == affected
 
 
 #: Asset 103 with a third, IT system beside its two OT ones; and the same with that one's category unknown.
@@ -608,16 +517,16 @@ def test_a_control_counts_only_on_systems_of_its_asset_type(
     named by hand), every affected system. A register control on every system is then implemented."""
     every = {"supporting_systems_applicable_to_risk": [321, 322, 324]}
     stored = _register(**every)
-    systems, affected = risk_scope(SCENARIO, context, stored)
+    affected = list_affected_systems(context, stored)
     categories = context.system_categories()
-    (row,), _ = assess_controls([_item(control_id)], stored, LIBRARY, systems, affected, categories)
+    (row,), _ = assess_controls([_item(control_id)], stored, LIBRARY, affected, categories)
     assert (row["implementation_status"], row["required_systems"]) == (NOT_IMPLEMENTED, needed)
     on_all = _register(
         existing_controls=[{"control_id": control_id}],
         supporting_systems_applicable_to_existing_controls=[321, 322, 324],
         **every,
     )
-    (row,), _ = assess_controls([_item(control_id)], on_all, LIBRARY, systems, affected, categories)
+    (row,), _ = assess_controls([_item(control_id)], on_all, LIBRARY, affected, categories)
     assert (row["implementation_status"], row["protected_systems"]) == (IMPLEMENTED, needed)
 
 
@@ -776,9 +685,15 @@ def test_free_text_is_redacted_and_cut_at_2000_and_a_statement_at_4000(size: int
     # Ordinary prose: one long run of letters would read as a secret.
     text = ("the grid could stop " * (size // 20 + 1))[:size]
     free, statement = Remediation.TEXT_MAX_CHARS, Remediation.STATEMENT_MAX_CHARS
-    clipped = clip(text)
-    assert clipped == (text if size <= free else text[:free] + MARK) and clip(clipped) == clipped
-    assert clip("Mail ops.lead@grid.example.com now") == "Mail [REDACTED] now" and clip(None) is None
+    clipped = redact_and_shorten_text(text)
+    assert (
+        clipped == (text if size <= free else text[:free] + MARK)
+        and redact_and_shorten_text(clipped) == clipped
+    )
+    assert (
+        redact_and_shorten_text("Mail ops.lead@grid.example.com now") == "Mail [REDACTED] now"
+        and redact_and_shorten_text(None) is None
+    )
     content = SCENARIO["content"] | {
         "title": "Ask ops.lead@grid.example.com",
         "statement": text,

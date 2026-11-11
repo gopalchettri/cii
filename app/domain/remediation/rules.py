@@ -68,7 +68,7 @@ def check_regenerable(read: dict[str, Any], remediation_id: str, max_version_cou
     """The new version's number: 409 while the latest is being written or the version limit is reached."""
     latest = read["job"]["epoch"]
     if read["status"] not in (Status.DONE, Status.FAILED, Status.CANCELLED):
-        raise version_in_progress(remediation_id, latest)
+        raise version_still_generating_error(remediation_id, latest)
     if latest >= max_version_count:
         message = RemediationMessage.VERSION_LIMIT_REACHED.format(
             remediation_id=remediation_id, max_versions=max_version_count
@@ -83,13 +83,13 @@ def outage_failed(read: dict[str, Any]) -> bool:
     return read["status"] == Status.FAILED and error.get("code") == ErrorCode.UNAVAILABLE
 
 
-def version_in_progress(remediation_id: str, version: int) -> Conflict:
+def version_still_generating_error(remediation_id: str, version: int) -> Conflict:
     """409 generation_in_progress: the latest version is still being written."""
     message = RemediationMessage.VERSION_IN_PROGRESS.format(version=version, remediation_id=remediation_id)
     return Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
 
 
-def plan_exists(scenario_id: str, remediation_id: str | None) -> Conflict:
+def plan_already_exists_error(scenario_id: str, remediation_id: str | None) -> Conflict:
     """409 plan_already_exists: one plan per scenario, regenerated instead."""
     message = RemediationMessage.PLAN_EXISTS.format(scenario_id=scenario_id, remediation_id=remediation_id)
     return Conflict(
@@ -192,17 +192,10 @@ def new_version(number: int, principal: Principal, now: datetime) -> dict[str, A
     }
 
 
-def newest_done_version(read: dict[str, Any]) -> int | None:
-    """The highest version number whose status is done, or None."""
-    return max(
-        (item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE),
-        default=None,
-    )
-
-
 def decidable_version(read: dict[str, Any], asked: int | None, remediation_id: str) -> int:
     """The version to decide (asked, else the newest done): 409 none done, 404 unknown, 409 not done."""
-    version = asked if asked is not None else newest_done_version(read)
+    done = [item["version"] for item in read["versions"] if version_status(read, item) == Status.DONE]
+    version = asked if asked is not None else max(done, default=None)
     if version is None:
         message = RemediationMessage.NO_DONE_VERSION.format(remediation_id=remediation_id)
         raise Conflict(message, reason=ConflictReason.NOT_COMPLETE)
