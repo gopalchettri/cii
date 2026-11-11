@@ -236,6 +236,49 @@ def detail(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def build_remediation_chat(settings: Any) -> Any:
+    """Remediation's chat model, its calls kept in memory and no slot or rate limit."""
+    return chat_model_from(
+        module_chat(settings, ChatModule.REMEDIATION),
+        settings.ai_key_header,
+        _CallsInMemory(),  # type: ignore[arg-type]
+        UNLIMITED_AI_SLOTS,
+        UNLIMITED_AI_REQUEST_RATE,
+        UNLIMITED_AI_SLOTS,
+        UNLIMITED_AI_REQUEST_RATE,
+    )
+
+
+def build_rows(
+    plans: Sequence[dict[str, Any]], written: Sequence[dict[str, Any]], by_code: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Each plan with both ways' written versions, kept controls and measures."""
+    return [
+        {
+            "doc": plan["scenario"],
+            "source": plan["record"]["source"],
+            "written": versions,
+            "lists": {
+                way: kept(versions[way]["plan"], by_code) if "plan" in versions[way] else [] for way in WAYS
+            },
+            "measures": {way: measures(versions[way]) for way in WAYS},
+        }
+        for plan, versions in zip(plans, written, strict=True)
+    ]
+
+
+def mark_kept_controls(rows: list[dict[str, Any]]) -> Counter[str]:
+    """The reviewer's marks on each row's kept controls, SET plans a call; returns the reviewer's usage."""
+    usage: Counter[str] = Counter()
+    for start in range(0, len(rows), SET):
+        batch = rows[start : start + SET]
+        marks = check.review([r["doc"] for r in batch], [r["lists"] for r in batch], usage)
+        for row, marked in zip(batch, marks, strict=True):
+            row["marks"] = marked
+        print(f"reviewed {min(start + SET, len(rows))} of {len(rows)} plans", flush=True)
+    return usage
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Whether plans keep better controls when shown all found ones."
@@ -252,16 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     by_id = {control.control_id: control for control in library}
     by_code = {control.code: control for control in library}
     search, mapper = get_library_search().snapshot(wait=True), ControlMapper(get_rerank_model())
-    calls = _CallsInMemory()
-    chat = chat_model_from(
-        module_chat(settings, ChatModule.REMEDIATION),
-        settings.ai_key_header,
-        calls,  # type: ignore[arg-type]
-        UNLIMITED_AI_SLOTS,
-        UNLIMITED_AI_REQUEST_RATE,
-        UNLIMITED_AI_SLOTS,
-        UNLIMITED_AI_REQUEST_RATE,
-    )
+    chat = build_remediation_chat(settings)
     db = MongoClient(settings.mongo_url)[settings.mongo_db]
     plans = load_plans(db, args.plans, by_id)
     for plan in plans:
@@ -270,25 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     with ThreadPoolExecutor(max_workers=4) as pool:  # each plan's two ways side by side
         futures = [{way: pool.submit(write, chat, shots[way]) for way in WAYS} for shots in inputs]
         written = [{way: future.result() for way, future in pair.items()} for pair in futures]
-    rows = [
-        {
-            "doc": plan["scenario"],
-            "source": plan["record"]["source"],
-            "written": versions,
-            "lists": {
-                way: kept(versions[way]["plan"], by_code) if "plan" in versions[way] else [] for way in WAYS
-            },
-            "measures": {way: measures(versions[way]) for way in WAYS},
-        }
-        for plan, versions in zip(plans, written, strict=True)
-    ]
-    usage: Counter[str] = Counter()
-    for start in range(0, len(rows), SET):
-        batch = rows[start : start + SET]
-        marks = check.review([r["doc"] for r in batch], [r["lists"] for r in batch], usage)
-        for row, marked in zip(batch, marks, strict=True):
-            row["marks"] = marked
-        print(f"reviewed {min(start + SET, len(rows))} of {len(rows)} plans", flush=True)
+    rows = build_rows(plans, written, by_code)
+    usage = mark_kept_controls(rows)
     print("\n".join(report(rows)))
     print(f"\nreviewer: {usage['calls']} calls, {usage['tokens_in']:,} tokens in")
     if args.out:
