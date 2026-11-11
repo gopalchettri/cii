@@ -31,7 +31,6 @@ from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Conflict
 from app.data_access.jobs.job_repository import JobRepository
 from app.data_access.scenario.asset_repository import AssetRepository
-from app.domain.scenario.plan import request_fingerprint
 from app.models.admin.api_clients import Principal
 from app.models.scenario.asset_context import FrozenContext
 from app.models.scenario.views import StartRunRequest, session_status_from_record
@@ -427,7 +426,7 @@ def _run_service_over(monkeypatch: pytest.MonkeyPatch, sessions: Any) -> ThreatS
     context = FrozenContext.from_record(
         {"asset": asset, "asset_context": {}, "systems": [], "missing_facts": []}
     )
-    monkeypatch.setattr(service_module, "freeze_context", lambda request, rows: context)
+    monkeypatch.setattr(service_module, "build_run_context", lambda request, rows: context)
     assets = SimpleNamespace(get_asset_context=lambda *args: None)
     service = threat_scenario_service(sessions=sessions, assets=assets)
     monkeypatch.setattr(service, "_refuse_without_intel_data", lambda: None)
@@ -459,7 +458,7 @@ def test_a_same_key_start_that_loses_the_insert_replays_the_winner(monkeypatch: 
         "asset_id": 103,
         "status": Status.QUEUED,
         "updated_at": datetime.now(UTC),
-        "request_hash": request_fingerprint(request),
+        "request_hash": request.fingerprint(),
     }
     reads = iter([None, winner])  # nothing holds the key before the insert; the winner does after it
     sessions = SimpleNamespace(
@@ -470,3 +469,15 @@ def test_a_same_key_start_that_loses_the_insert_replays_the_winner(monkeypatch: 
         Principal("client", "u1", 86, "DESC"), request, "key-1"
     )
     assert (board.session_id, created) == ("run-1", False)
+
+
+def test_a_key_whose_run_holds_no_request_hash_is_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A replayed key matches only a run that stored its request's hash: one without it is another request."""
+    earlier = {"_id": "run-1", "kind": "generated", "asset_id": 103, "created_at": datetime.now(UTC)}
+    sessions = SimpleNamespace(get=lambda *args, **where: earlier)
+    service = _run_service_over(monkeypatch, sessions)
+    with pytest.raises(Conflict) as refused:
+        service.create_threat_scenario_session(
+            Principal("client", "u1", 86, "DESC"), StartRunRequest.model_validate(START), "key-1"
+        )
+    assert refused.value.reason == ConflictReason.IDEMPOTENCY_KEY_CONFLICT

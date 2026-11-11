@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.core.constants import ControlMatch, Decision, RunKind
-from app.domain.scenario.results import build_scenario_view
+from app.domain.scenario.session import build_scenario_view
 
 V1_KEYS = [
     "scenario_id", "scenario", "threat", "actors", "controls", "accepted", "replaces_accepted_version",
@@ -222,7 +222,13 @@ def test_a_failure_card_whose_attacker_no_check_supports_names_no_v1_actor() -> 
     refused so that none is attributed, yet v1's flat field named the nearest attacker; its actors keep their
     roles and how the attacker was decided."""
     failure = {"code": "invalid_plan", "message": "Path p1 cannot be written: no attacker fits its threat."}
-    acting = {"id": 68, "name": "Nation-state/APT", "role": "acting", "closest": True, "selection": "ranked"}
+    acting = {
+        "id": 68,
+        "name": "Nation-state/APT",
+        "role": "acting",
+        "closest": True,
+        "selection": "none_fits",
+    }
     record = _record(status="failed", failure=failure) | _content(actors=[acting])
     record.pop("controls")
     view = build_scenario_view(record)

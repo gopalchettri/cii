@@ -1,49 +1,18 @@
-"""Each category a threat was accepted for keeps its own reason through every merge, so a scenario written
-as a kind reads that kind's reason; the card's threat block shows the threat's own category."""
+"""A scenario written as a kind reads that kind's reason; the card's threat block shows the threat's own
+category. Each category keeping its reason through a fold: tests/test_threat_quality.py."""
 
 import dataclasses
 
-from app.core.constants import PlanCheckStatus, Route, StrideCategory
-from app.domain.scenario.plan import (
-    merge_two_threats,
-    place_for,
-    planned_threat_record,
-    threat_reason_for,
-)
-from app.domain.scenario.results import _threat_block, build_scenario_view
-from app.domain.scenario.write import brief_entry_point_options, build_brief, written_record
-from app.models.scenario.plan import KindPlace, PlannedThreat
-from app.models.scenario.write import PlanCheck, WrittenScenario
-from tests.planner_samples import CONTEXT, planned
+from app.core.constants import StrideCategory
+from app.domain.scenario.session import _build_threat_block, build_scenario_view
+from app.domain.scenario.write import build_scenario_card, build_writer_input
+from app.models.scenario.write import WrittenScenario
+from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 
 S = StrideCategory
 SPOOFING_WHY = "A former vendor account still active could be used to log in as an operator."
 PRIVILEGE_WHY = "The same account could be added to the operator role and gain engineer rights."
-
-
-def _judged(category: S, reason: str, key: str = "lib:233") -> PlannedThreat:
-    """A gate verdict: the threat accepted under one category with that category's reason."""
-    return planned(key, "Shared, stale or orphaned account misuse", categories=(category,), reason=reason)
-
-
-def _spoofing_and_privilege() -> PlannedThreat:
-    return merge_two_threats(
-        _judged(S.SPOOFING, SPOOFING_WHY), _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY)
-    )
-
-
-def test_a_merge_keeps_each_categorys_own_reason() -> None:
-    merged = _spoofing_and_privilege()
-    assert merged.categories == (S.SPOOFING, S.ELEVATION_OF_PRIVILEGE)
-    assert merged.reason == SPOOFING_WHY  # the threat's own reason
-    assert threat_reason_for(merged, S.ELEVATION_OF_PRIVILEGE) == PRIVILEGE_WHY
-    assert planned_threat_record(merged)["reasons"] == {
-        S.SPOOFING: SPOOFING_WHY,
-        S.ELEVATION_OF_PRIVILEGE: PRIVILEGE_WHY,
-    }
-    folded = merge_two_threats(merged, _judged(S.SPOOFING, "another reworded reason", key="ai:x"))
-    assert threat_reason_for(folded, S.SPOOFING) == SPOOFING_WHY  # the kept one's wins a category both have
 
 
 def test_the_brief_reads_the_kinds_own_reason() -> None:
@@ -52,23 +21,9 @@ def test_the_brief_reads_the_kinds_own_reason() -> None:
         "reasons": {S.SPOOFING: SPOOFING_WHY, S.ELEVATION_OF_PRIVILEGE: PRIVILEGE_WHY},
     }
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Elevation of Privilege", "systems": [321]}
-    brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
-    assert brief.why_it_applies == PRIVILEGE_WHY and brief.category == S.ELEVATION_OF_PRIVILEGE
-
-
-def test_every_paths_reason_belongs_to_its_kind() -> None:
-    """The recurrence guard: whatever order verdicts are merged in, each kind reads its own reason."""
-    verdicts = [_judged(S.SPOOFING, "s"), _judged(S.TAMPERING, "t"), _judged(S.ELEVATION_OF_PRIVILEGE, "e")]
-    for first in range(3):
-        order = verdicts[first:] + verdicts[:first]
-        merged = order[0]
-        for other in order[1:]:
-            merged = merge_two_threats(merged, other)
-        assert {kind: threat_reason_for(merged, kind) for kind in merged.categories} == {
-            S.SPOOFING: "s",
-            S.TAMPERING: "t",
-            S.ELEVATION_OF_PRIVILEGE: "e",
-        }
+    brief = build_writer_input({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
+    assert brief.facts["threat"]["why_it_applies"] == PRIVILEGE_WHY
+    assert brief.facts["category"] == S.ELEVATION_OF_PRIVILEGE
 
 
 def test_the_cards_threat_block_shows_the_threats_own_category() -> None:
@@ -87,11 +42,11 @@ def test_the_cards_threat_block_shows_the_threats_own_category() -> None:
         "systems": [321],
         "rank": 1,
     }
-    brief = build_brief({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
-    draft = dataclasses.replace(_CLEAN, entry_point=brief_entry_point_options(brief)[0])
-    written = WrittenScenario(draft, (), PlanCheck(PlanCheckStatus.CONSISTENT, ()), Route.STANDALONE)
+    brief = build_writer_input({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE)
+    draft = dataclasses.replace(_CLEAN, entry_point=brief.entry_options[0])
+    written = WrittenScenario(draft, ())
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
-    record = written_record(run, path, threat, brief, written) | {"_id": "s1", "session_id": "run-1"}
+    record = build_scenario_card(run, path, threat, brief, written) | {"_id": "s1", "session_id": "run-1"}
     view = build_scenario_view(record)
     assert (view.threat.threat_category, view.threat.threat_category_id) == (S.SPOOFING, 1)
     assert view.scenario is not None and view.scenario.threat_category == "Information Disclosure"
@@ -105,24 +60,7 @@ def test_the_threat_blocks_category_id_is_its_own_categorys() -> None:
         "category_id": 12,
         "threat": {"key": "lib:1", "category": S.SPOOFING},
     }
-    block = _threat_block(old_plan)
+    block = _build_threat_block(old_plan)
     assert (block.threat_category, block.threat_category_id) == (S.SPOOFING, None)  # before: (Spoofing, 12)
     same_kind = old_plan | {"threat": {"key": "lib:1", "category": S.TAMPERING}}
-    assert _threat_block(same_kind).threat_category_id == 12
-
-
-def test_each_kind_keeps_its_own_place_through_any_merge_order() -> None:
-    """Like its reason, each kind's systems, impact and confidence survive a merge in either order."""
-    spoofing = dataclasses.replace(
-        _judged(S.SPOOFING, SPOOFING_WHY), kind_places=((S.SPOOFING, KindPlace((321,), 3, 90.0)),)
-    )
-    privilege = dataclasses.replace(
-        _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY),
-        systems=(322,),
-        kind_places=((S.ELEVATION_OF_PRIVILEGE, KindPlace((322,), 1, 40.0)),),
-    )
-    for kept, other in ((spoofing, privilege), (privilege, spoofing)):
-        merged = merge_two_threats(kept, other)
-        assert place_for(merged, S.SPOOFING) == KindPlace((321,), 3, 90.0)
-        assert place_for(merged, S.ELEVATION_OF_PRIVILEGE) == KindPlace((322,), 1, 40.0)
-        assert merged.systems == (321, 322)
+    assert _build_threat_block(same_kind).threat_category_id == 12

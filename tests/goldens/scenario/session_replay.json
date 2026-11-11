@@ -1,0 +1,58 @@
+{
+ "fingerprint": "a7fe2fa74ca86a3f76be3c63ca8fa17d313b0b127b89f4f4b4dba81eacb8e3a1",
+ "intel": {
+  "indexed": {
+   "returned": null
+  },
+  "none": {
+   "code": "conflict",
+   "detail": "External intelligence is on (EXTERNAL_INTELLIGENCE_ENABLED=true) but holds no data yet. Import it: POST /v1/tsg/intel/refresh, then GET /v1/tsg/intel/health until snapshot_id is set. Or turn it off: PUT /v1/tsg/intel/switch {\"enabled\": false}.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "intel_no_data",
+   "status": 409
+  }
+ },
+ "replays": {
+  "manual": {
+   "code": "conflict",
+   "detail": "This Idempotency-Key was already used for another request.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "idempotency_key_conflict",
+   "status": 409
+  },
+  "no_hash": {
+   "code": "conflict",
+   "detail": "This Idempotency-Key was already used for another request.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "idempotency_key_conflict",
+   "status": 409
+  },
+  "other_asset": {
+   "code": "conflict",
+   "detail": "This Idempotency-Key was already used for another request.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "idempotency_key_conflict",
+   "status": 409
+  },
+  "other_body": {
+   "code": "conflict",
+   "detail": "This Idempotency-Key was already used for another request.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "idempotency_key_conflict",
+   "status": 409
+  },
+  "same": {
+   "returned": null
+  }
+ }
+}

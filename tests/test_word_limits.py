@@ -6,7 +6,7 @@ import pytest
 from app.core.config import Settings
 from app.core.constants import Writing
 from app.domain.scenario import write
-from app.domain.scenario.write import WRITER_SYSTEM_PROMPT, with_word_limits
+from app.domain.scenario.write import WRITER_SYSTEM_PROMPT, build_writer_system_prompt
 
 KEYS = ("THREAT_SCENARIO_WORD_LIMIT", "RISK_STATEMENT_WORD_LIMIT", "EVIDENCE_STATEMENT_WORD_LIMIT")
 
@@ -20,7 +20,7 @@ def test_the_writer_asks_for_the_configured_lengths(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(write, "get_settings", lambda: settings)
     slots = (Writing.SCENARIO_WORDS_SLOT, Writing.RISK_WORDS_SLOT)
     assert all(slot in WRITER_SYSTEM_PROMPT for slot in slots)
-    filled = with_word_limits(WRITER_SYSTEM_PROMPT)
+    filled = build_writer_system_prompt()
     assert "150 to 200 WORDS, NEVER MORE" in filled and "100 to 150 WORDS, NEVER MORE" in filled
     assert "30 to 80" not in filled  # D65: the evidence sentence is code's, its limit checked by code
     assert "The upper number of each range is a hard limit." in filled

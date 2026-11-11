@@ -1,0 +1,211 @@
+{
+ "budget": [
+  true,
+  true
+ ],
+ "counts": {
+  "abandoned": 1,
+  "outage_cards": 1,
+  "planned": 4,
+  "remaining": 2,
+  "replaced": 1
+ },
+ "next_batch": [
+  {
+   "path_id": "84c07ebadbc26e6d",
+   "replaces": null
+  },
+  {
+   "path_id": "cfcc04d78faed9c8",
+   "replaces": null
+  }
+ ],
+ "next_set": [
+  [
+   "cfcc04d78faed9c8",
+   "84c07ebadbc26e6d"
+  ],
+  [
+   {
+    "path_id": "84c07ebadbc26e6d",
+    "replaces": null
+   },
+   {
+    "path_id": "cfcc04d78faed9c8",
+    "replaces": null
+   }
+  ]
+ ],
+ "nothing_left": {
+  "code": "conflict",
+  "detail": "Every attack path of run 'run-1' left to write was given up.",
+  "details": null,
+  "errors": null,
+  "raised": "Conflict",
+  "reason": "scenarios_abandoned",
+  "status": 409
+ },
+ "reserve": {
+  "abandoned": false,
+  "also_applies": [],
+  "attempts": 0,
+  "categories": [
+   "Information Disclosure"
+  ],
+  "category": "Information Disclosure",
+  "category_id": 14,
+  "confidence": 80.0,
+  "entry_points": [
+   322
+  ],
+  "entry_system": 322,
+  "impact": 1,
+  "path_id": "2ad43445c638a737",
+  "rank": 5,
+  "selected": false,
+  "served": null,
+  "steps": [
+   "lib:4"
+  ],
+  "systems": [
+   322
+  ],
+  "unselected_reason": "target_reached"
+ },
+ "still": [
+  false,
+  false,
+  false,
+  true,
+  true,
+  true,
+  false,
+  true,
+  true,
+  true,
+  true,
+  true
+ ],
+ "summary": {
+  "delivered": 1,
+  "outcome": "partial",
+  "reason": "scenarios_abandoned",
+  "remaining": 2
+ },
+ "trace_view": {
+  "counts": {
+   "ai_threats": 1,
+   "already_held": 0,
+   "asset_type_mismatch": 0,
+   "first_set": 6,
+   "gap_fill_lost": 2,
+   "gate_accepted": 4,
+   "gate_asked": 7,
+   "library_threats": 6,
+   "merged": 0,
+   "needs_unrecorded": 1,
+   "needs_unrecorded_elsewhere": 0,
+   "no_attacker": 1,
+   "no_linked_actor": 0,
+   "not_judged": 0,
+   "not_relevant": 2,
+   "not_selected": 1,
+   "paths": 3,
+   "selected": 2,
+   "threats": 3,
+   "type_fits_no_place": 0,
+   "unfit_after_merge": 0
+  },
+  "drops": [
+   {
+    "detail": "It could reach SCADA server from the office network.",
+    "kind": null,
+    "reason": "none_fits",
+    "stage": "attacker",
+    "threat_key": "lib:5",
+    "threat_name": "Flood of requests overwhelms the historian"
+   },
+   {
+    "detail": "Data theft",
+    "kind": "Information Disclosure",
+    "reason": "type_unmatched",
+    "stage": "gap_fill",
+    "threat_key": "ai:ransomware exfiltrates historian records",
+    "threat_name": "Ransomware exfiltrates historian records"
+   },
+   {
+    "detail": "",
+    "kind": "Repudiation",
+    "reason": "library_repeat",
+    "stage": "gap_fill",
+    "threat_key": "ai:insider erases audit trail on sys 1",
+    "threat_name": "Insider erases audit trail on SCADA server"
+   },
+   {
+    "detail": "a central log server",
+    "kind": "Repudiation",
+    "reason": "needs_unrecorded",
+    "stage": "gate",
+    "threat_key": "lib:3",
+    "threat_name": "Insider deletes audit logs"
+   },
+   {
+    "detail": "No data leaves the control network.",
+    "kind": "Information Disclosure",
+    "reason": "not_relevant",
+    "stage": "gate",
+    "threat_key": "lib:4",
+    "threat_name": "Ransomware exfiltrates data"
+   },
+   {
+    "detail": "Nothing recorded allows it.",
+    "kind": "Elevation of Privilege",
+    "reason": "not_relevant",
+    "stage": "gate",
+    "threat_key": "lib:6",
+    "threat_name": "Insider abuses admin rights"
+   }
+  ],
+  "drops_total": 6,
+  "groups": {
+   "SCADA server": 1,
+   "SCADA server + Historian": 2
+  },
+  "landscape_cut": false,
+  "session_id": "run-golden-1",
+  "turns": {
+   "Historian": 1,
+   "SCADA server": 2
+  },
+  "writing": {
+   "given_up": 2,
+   "given_up_paths": [
+    {
+     "kind": "Denial of Service",
+     "path_id": "4a2ec48560942e06",
+     "rank": 2,
+     "reason": "ai_busy",
+     "repeats": null,
+     "replaced_by": null,
+     "threat_key": "lib:5"
+    },
+    {
+     "kind": "Repudiation",
+     "path_id": "2e90b23a30d2b689",
+     "rank": 4,
+     "reason": "unknown_id",
+     "repeats": null,
+     "replaced_by": "84c07ebadbc26e6d",
+     "threat_key": "lib:3"
+    }
+   ],
+   "replaced": 1,
+   "served": 1,
+   "still_to_write": 2
+  }
+ },
+ "why_none": [
+  "scenarios_abandoned",
+  "target_reached"
+ ]
+}

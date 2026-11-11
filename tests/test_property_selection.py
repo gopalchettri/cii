@@ -11,10 +11,12 @@ from typing import Any
 import pytest
 
 from app.core.config import get_settings
+from app.core.constants import ContextProperties
 from app.core.exceptions import Invalid, SetupError
-from app.domain.scenario import plan as plan_module
-from app.domain.scenario.controls import control_query
-from app.domain.scenario.plan import check_required, describe_asset_for_ai, raw_system_facts
+from app.domain.scenario import session
+from app.domain.scenario.plan import describe_asset_for_ai
+from app.domain.scenario.session import check_required_facts
+from app.domain.scenario.write import build_control_query
 from app.models.scenario.asset_context import AssetContextRows, FrozenContext
 from app.models.scenario.views import StartRunRequest
 
@@ -46,7 +48,7 @@ def _system_row(system_id: int, **changes: Any) -> dict[str, Any]:
         "id": system_id, "name": f"System {system_id}", "category_code": "IT", "category_name": "IT",
         "past_incidents": None, "technology_used": "[21]", "dr_location": None,
         "last_dr_test_date": datetime(1900, 1, 1), "rto_target_mins": Decimal(0),
-        **dict.fromkeys(plan_module.SINGLE_SELECT_CODES),
+        **dict.fromkeys(ContextProperties.SINGLE_SELECT_CODES),
         **dict.fromkeys(("backup_tested", "backup_multi_site", "document_drp_exists")),
     }  # fmt: skip
     return row | changes
@@ -62,6 +64,11 @@ def _rows(asset: dict[str, Any] | None = None, *systems: dict[str, Any]) -> Asse
     )
 
 
+def _on_every_system(context: FrozenContext) -> dict[str, Any]:
+    """CONTENT as a card on every frozen system of `context`."""
+    return CONTENT | {"systems": [{"id": system["id"]} for system in context.systems]}
+
+
 def _without(row: dict[str, Any], column: str) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key != column}
 
@@ -73,14 +80,14 @@ def _texts(context: FrozenContext) -> str:
         [
             json.dumps(context.to_record(), default=str),
             describe_asset_for_ai(context, 30_000).text,
-            control_query(CONTENT, context, context.systems).text,
-            *(json.dumps(raw_system_facts(system), default=str) for system in context.systems),
+            build_control_query(_on_every_system(context), context).text,
+            *(json.dumps(FrozenContext.read_system_facts(system), default=str) for system in context.systems),
         ]
     )
 
 
 def _freeze(rows: AssetContextRows) -> FrozenContext:
-    return plan_module.freeze_context(REQUEST, rows)
+    return session.build_run_context(REQUEST, rows)
 
 
 def test_a_column_removed_from_the_procedure_reaches_no_step() -> None:
@@ -123,10 +130,12 @@ def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
     assert context.systems[0]["recovery_notes"] == NEW_FACT
     for text in (
         describe_asset_for_ai(context, 30_000).text,
-        json.dumps(raw_system_facts(context.systems[0])),
+        json.dumps(FrozenContext.read_system_facts(context.systems[0])),
     ):
         assert NEW_FACT in text
-    controls_text = control_query(CONTENT, context, context.systems).text  # owner 2026-10-11: controls too
+    controls_text = build_control_query(
+        _on_every_system(context), context
+    ).text  # owner 2026-10-11: controls too
     assert NEW_FACT in controls_text and "site_notes: Marker site notes Delta" in controls_text
 
 
@@ -257,10 +266,10 @@ def test_recorded_means_what_the_ai_would_be_shown(
     monkeypatch.setattr(get_settings(), "system_properties_required", "dr_location")
     systems = [{"id": 1567, "name": "SCADA", "dr_location": value}]
     if recorded:
-        check_required(REQUEST, {"name": "Grid Centre"}, systems)
+        check_required_facts(REQUEST, {"name": "Grid Centre"}, systems)
     else:
         with pytest.raises(Invalid):
-            check_required(REQUEST, {"name": "Grid Centre"}, systems)
+            check_required_facts(REQUEST, {"name": "Grid Centre"}, systems)
 
 
 def test_the_refusal_names_every_gap_once_in_a_fixed_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -277,7 +286,7 @@ def test_the_refusal_names_every_gap_once_in_a_fixed_order(monkeypatch: pytest.M
         {"id": 1568, "name": "Historian", "technology_used": None, "dr_location": None},
     ]
     with pytest.raises(Invalid) as refused:
-        check_required(REQUEST, asset, systems)
+        check_required_facts(REQUEST, asset, systems)
     assert refused.value.reason == "required_facts_missing"
     assert refused.value.errors == [
         {"field": "body.asset_id", "message": "asset 1206: cii_asset_description, location not recorded."},
@@ -312,9 +321,9 @@ def test_a_required_name_the_procedure_does_not_return_is_a_setup_error(
 def test_the_control_query_names_the_asset_without_empty_brackets() -> None:
     """With asset_type not returned (or not recorded) the reranker's text reads "Asset: <name>", never
     "Asset: <name> ()"; with it, "Asset: <name> (<type>)"."""
-    typed = control_query(CONTENT, _freeze(_rows()), []).text
+    typed = build_control_query(CONTENT, _freeze(_rows())).text
     assert "Asset: Grid Centre (Control system)" in typed
-    untyped = control_query(CONTENT, _freeze(_rows(_without(_asset_row(), "asset_type"))), []).text
+    untyped = build_control_query(CONTENT, _freeze(_rows(_without(_asset_row(), "asset_type")))).text
     assert "Asset: Grid Centre\n" in untyped and "()" not in untyped
 
 
@@ -322,7 +331,7 @@ def test_a_placeholder_asset_type_is_no_type_in_the_control_query() -> None:
     """Review 2026-10-11: "N/A" or blanks are not a type: "Asset: <name>", as for a type not recorded."""
     context = _freeze(_rows())
     placeholder = dataclasses.replace(context, asset_context=context.asset_context | {"asset_type": " N/A "})
-    text = control_query(CONTENT, placeholder, []).text
+    text = build_control_query(CONTENT, placeholder).text
     assert "Asset: Grid Centre\n" in text and "N/A" not in text
 
 
@@ -330,15 +339,15 @@ def test_dropdown_names_the_procedure_already_gave_are_kept() -> None:
     """G217: the owner's procedure names dropdowns itself (by option id): "Historian, Windows" and "In-house"
     reached the app as text and were dropped as unknown saved values."""
     options = {"technology-used": {1: "SCADA"}, "managed-by": {1: "In-house"}}
-    assert plan_module._multi_select_names("Historian, Windows", "technology-used", options) == [
+    assert session._translate_option_codes_to_names("technology_used", "Historian, Windows", options) == [
         "Historian",
         "Windows",
     ]
-    assert plan_module._multi_select_names("[1]", "technology-used", options) == [
+    assert session._translate_option_codes_to_names("technology_used", "[1]", options) == [
         "SCADA"
     ]  # saved values, as before
     assert (
-        plan_module._multi_select_names("[1, x", "technology-used", options) is None
+        session._translate_option_codes_to_names("technology_used", "[1, x", options) is None
     )  # a broken array: none
-    assert plan_module._single_select_name("In-house", "managed-by", options) == "In-house"
-    assert plan_module._single_select_name(1, "managed-by", options) == "In-house"
+    assert session._translate_option_codes_to_names("managed_by", "In-house", options) == "In-house"
+    assert session._translate_option_codes_to_names("managed_by", 1, options) == "In-house"

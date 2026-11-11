@@ -44,8 +44,8 @@ from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepo
 from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
 from app.domain.external_intelligence.rerank_gate import rerank_gate_for
-from app.domain.scenario.controls import ControlMapper
 from app.domain.scenario.plan import ThreatFinder
+from app.domain.scenario.write import ControlMapper
 from app.realtime.publisher import (
     publish_mapping_status,
     publish_remediation_status,

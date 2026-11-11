@@ -81,12 +81,12 @@ def evidence_note(card: dict[str, Any]) -> str:
 def words(card: dict[str, Any]) -> str:
     """The narrative, the evidence passage and the risk each within its configured word maximum."""
     from app.core.config import get_settings
-    from app.domain.scenario.write import narrative_of
+    from app.domain.scenario.write import read_statement_without_citation
 
     settings, content = get_settings(), card["content"]
     passage = next((e["supports"] for e in content.get("evidence") or [] if e.get("supports")), "")
     texts = (
-        ("statement", narrative_of(content), settings.scenario_words[1]),
+        ("statement", read_statement_without_citation(content), settings.scenario_words[1]),
         ("evidence passage", passage, settings.evidence_words[1]),
         ("risk", content.get("risk_statement") or "", settings.risk_words[1]),
     )
@@ -113,21 +113,20 @@ def served_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
-    """Each served card that copies an earlier one of another path the run still holds: the same threat key,
-    kind and systems, or the same statement (the app's own duplicate_of). The run holds the duplicate check's
-    register (MAPPED_VERSIONS): a replaced rejected version is served but has left it."""
-    from app.core.constants import Decision
-    from app.domain.scenario.write import duplicate_of
+    """Returns each served card copying an earlier one the run still holds, by id."""
+    from app.core.constants import Decision, FindingMessage
+    from app.domain.scenario.write import find_duplicate_scenario_id
 
     found: dict[str, str] = {}
     for index, card in enumerate(served):
+        # the duplicate check's register (MAPPED_VERSIONS): a replaced rejected version is served, not held
         held = [
             c
             for c in served[:index]
             if c.get("superseded_by") is None or c.get("decision") == Decision.ACCEPTED
         ]
-        if copy := duplicate_of(card["content"], card["path_id"], held):
-            found[card["_id"]] = copy.message
+        if copy_id := find_duplicate_scenario_id(card["content"], card["path_id"], held):
+            found[card["_id"]] = FindingMessage.NEAR_DUPLICATE.format(scenario_id=copy_id)
     return found
 
 

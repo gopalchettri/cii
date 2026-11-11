@@ -17,12 +17,11 @@ from app.core.constants import AiOutcome, AiTask
 from app.core.exceptions import JobFailed, LeaseLost
 from app.core.lease_signal import lease_lost_signal, raise_if_lease_lost
 from app.domain.remediation.plan import write_plan
-from app.domain.scenario.write import draft_answer, write_set
+from app.domain.scenario.write import write_scenario_set
 from app.search.service import _SnapshotKeeper
-from tests.fakes import FakeChatModel
+from tests.fakes import FakeChatModel, draft_answer
 from tests.test_remediation_plan import _snapshot
 from tests.test_scenario_writing import _CLEAN, _brief_of, _plan_threat
-from tests.test_scenario_writing import _CONSISTENT as _OK
 
 
 class _HeldLibrary:
@@ -111,10 +110,7 @@ def test_the_reviewer_remediation_plan_and_writer_reuse_answers() -> None:
         write_plan(planner, _snapshot())  # type: ignore[arg-type]
     writer = FakeChatModel()
     writer.queue(AiTask.WRITE_SCENARIO, {"scenario_title": "x"})  # unreadable: its slot is rewritten
-    writer.responders |= {
-        AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN),
-        AiTask.PLAN_CHECK: lambda _: _OK,
-    }
+    writer.responders |= {AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN)}
     answer = writer.ask_for_checked_json
 
     def recorded(task: AiTask, *args: Any, reuse_earlier_answer: bool = False, **options: Any) -> Any:
@@ -122,11 +118,10 @@ def test_the_reviewer_remediation_plan_and_writer_reuse_answers() -> None:
         return answer(task, *args, reuse_earlier_answer=reuse_earlier_answer, **options)
 
     writer.ask_for_checked_json = recorded  # type: ignore[method-assign]
-    list(write_set(writer, [("SC1", _brief_of(_plan_threat()))]))  # type: ignore[arg-type]
+    list(write_scenario_set(writer, [("SC1", _brief_of(_plan_threat()))]))  # type: ignore[arg-type]
     assert reuse_of == {
         AiTask.REMEDIATION_PLAN: True,
         AiTask.WRITE_SCENARIO: True,
-        AiTask.PLAN_CHECK: True,
         AiTask.REPAIR_SCENARIO: True,
     }
 
@@ -134,8 +129,8 @@ def test_the_reviewer_remediation_plan_and_writer_reuse_answers() -> None:
 def test_ai_log_lines_keep_the_jobs_task_and_name_the_limiter_unmasked() -> None:
     """An AI step is logged as ai_task (the job's bound task stays), a limiter as limiter (never masked)."""
     with capture_logs() as logs:
-        update_call_metrics(AiTask.PLAN_CHECK, "test-chat", AiOutcome.OK, 1, 2, 0.5)
+        update_call_metrics(AiTask.WRITE_SCENARIO, "test-chat", AiOutcome.OK, 1, 2, 0.5)
         AiSlots(None, 0, 0, key="tsg:test-slots")._note_redis_failure()
     call, untracked = logs
-    assert call["ai_task"] == AiTask.PLAN_CHECK and "task" not in call
+    assert call["ai_task"] == AiTask.WRITE_SCENARIO and "task" not in call
     assert untracked["limiter"] == "tsg:test-slots" and "key" not in untracked

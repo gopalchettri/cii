@@ -1,0 +1,217 @@
+{
+ "asset_not_owned": {
+  "code": "forbidden",
+  "detail": "Asset 1206 does not belong to your entity.",
+  "details": null,
+  "errors": null,
+  "raised": "Forbidden",
+  "reason": "asset_not_owned",
+  "status": 403
+ },
+ "facts_missing": {
+  "code": "validation_error",
+  "detail": "Required properties are not recorded: asset 1206: data_handled; system 1567: past_incidents; system 1568: past_incidents.",
+  "details": null,
+  "errors": [
+   {
+    "field": "body.asset_id",
+    "message": "asset 1206: data_handled not recorded."
+   },
+   {
+    "field": "body.supporting_system_id.0",
+    "message": "system 1567: past_incidents not recorded."
+   },
+   {
+    "field": "body.supporting_system_id.1",
+    "message": "system 1568: past_incidents not recorded."
+   }
+  ],
+  "raised": "Invalid",
+  "reason": "required_facts_missing",
+  "status": 422
+ },
+ "frozen": {
+  "returned": {
+   "missing_facts": [
+    "dr_drill_frequency",
+    "managed_by",
+    "network_connectivity_primary_dr",
+    "targeted_users"
+   ],
+   "record": {
+    "asset": {
+     "category_code": "OT",
+     "id": 1206,
+     "name": "Grid Centre"
+    },
+    "asset_context": {
+     "asset_priority": "High",
+     "asset_type": "Control system",
+     "blob": null,
+     "cii_asset_description": "Runs the grid.",
+     "critical_service": "Electricity supply",
+     "data_handled": "Telemetry",
+     "entity_technology_context": null,
+     "last_review": "2025-03-02T10:00:00",
+     "never_reviewed": null,
+     "operating_system": "Windows",
+     "sector": "Energy",
+     "sub_sector": null,
+     "target_rto_hours": 4.0
+    },
+    "asset_systems": [
+     {
+      "category_code": "IT",
+      "id": 1567,
+      "name": "System 1567"
+     },
+     {
+      "category_code": "IT",
+      "id": 1568,
+      "name": "System 1568"
+     },
+     {
+      "category_code": "IT",
+      "id": 1570,
+      "name": "System 1570"
+     }
+    ],
+    "missing_facts": [
+     "dr_drill_frequency",
+     "managed_by",
+     "network_connectivity_primary_dr",
+     "targeted_users"
+    ],
+    "systems": [
+     {
+      "accessability_channel": "Internet",
+      "alias": "SYS1",
+      "category_code": "IT",
+      "category_name": "IT",
+      "database_platforms": [
+       "Oracle",
+       "SQL Server"
+      ],
+      "dr_drill_frequency": null,
+      "hosting_location": "On premises",
+      "id": 1567,
+      "managed_by": null,
+      "name": "System 1567",
+      "network_connectivity_primary_dr": null,
+      "past_incidents": "A phishing wave in 2024",
+      "rto_target_mins": 30.5,
+      "targeted_users": null,
+      "technology_used": [
+       "Windows",
+       "Siemens WinCC"
+      ]
+     },
+     {
+      "accessability_channel": "Internet",
+      "alias": "SYS2",
+      "category_code": "IT",
+      "category_name": "IT",
+      "database_platforms": [
+       "Oracle",
+       "SQL Server"
+      ],
+      "dr_drill_frequency": null,
+      "hosting_location": "On premises",
+      "id": 1568,
+      "managed_by": null,
+      "name": "System 1568",
+      "network_connectivity_primary_dr": null,
+      "past_incidents": "A phishing wave in 2024",
+      "rto_target_mins": 30.5,
+      "targeted_users": null,
+      "technology_used": [
+       "Windows",
+       "Siemens WinCC"
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "head_missing": {
+  "code": "setup_error",
+  "detail": "dbo.tsg_GetAssetContext must return id, name, category_code in its supporting system rows; it does not.",
+  "details": null,
+  "errors": null,
+  "raised": "SetupError",
+  "reason": null,
+  "status": 500
+ },
+ "options_shape": {
+  "code": "setup_error",
+  "detail": "dbo.tsg_GetAssetContext's dropdown names (part 5) must return code, name and value (or id), not code, label. Fix the procedure's part 5.",
+  "details": null,
+  "errors": null,
+  "raised": "SetupError",
+  "reason": null,
+  "status": 500
+ },
+ "required_not_returned": {
+  "code": "setup_error",
+  "detail": "ASSET_PROPERTIES_REQUIRED names data_handled, which dbo.tsg_GetAssetContext does not return: add the column to the procedure or remove the name from the setting.",
+  "details": null,
+  "errors": null,
+  "raised": "SetupError",
+  "reason": null,
+  "status": 500
+ },
+ "reserved_name": {
+  "code": "setup_error",
+  "detail": "dbo.tsg_GetAssetContext returns alias in its asset rows: reserved names, never shown to the AI. Rename them with AS (e.g. AS asset_criticality).",
+  "details": null,
+  "errors": null,
+  "raised": "SetupError",
+  "reason": null,
+  "status": 500
+ },
+ "sector_not_parent": {
+  "code": "validation_error",
+  "detail": "Sector 5 is not the parent of sub-sector 51; its sector is 6.",
+  "details": null,
+  "errors": [
+   {
+    "field": "body.sector_id",
+    "message": "Sector 5 is not the parent of sub-sector 51; its sector is 6."
+   }
+  ],
+  "raised": "Invalid",
+  "reason": null,
+  "status": 422
+ },
+ "sector_unknown": {
+  "code": "not_found",
+  "detail": "Sector 5 does not exist.",
+  "details": null,
+  "errors": null,
+  "raised": "NotFound",
+  "reason": null,
+  "status": 404
+ },
+ "service_unknown": {
+  "code": "not_found",
+  "detail": "Service 1624 does not exist.",
+  "details": null,
+  "errors": null,
+  "raised": "NotFound",
+  "reason": null,
+  "status": 404
+ },
+ "system_not_linked": {
+  "code": "forbidden",
+  "detail": "Supporting systems [1568] are not linked to asset 1206.",
+  "details": {
+   "system_ids": [
+    1568
+   ]
+  },
+  "errors": null,
+  "raised": "Forbidden",
+  "reason": "system_not_linked",
+  "status": 403
+ }
+}

@@ -9,9 +9,20 @@ import pytest
 
 from app.core.constants import StoryFindingCode
 from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
-from app.domain.scenario.write import echo_findings
+from app.domain.scenario.write import _apply_safety_checks
+from app.models.scenario.write import Finding, ScenarioDraft, WriterBrief
 
 SANITISER = UntrustedTextSanitiser()
+
+
+def echo_findings(text: str) -> list[Finding]:
+    """The echo check's findings for a story telling `text`."""
+    brief = WriterBrief({}, (), {}, "Threat", (), (), ())
+    draft = ScenarioDraft("", text, "", (), "")
+    return [
+        f for f in _apply_safety_checks(brief, draft).findings if f.code == StoryFindingCode.INJECTION_ECHO
+    ]
+
 
 #: Sentences from advisories, CVE descriptions and attack stories that merely describe what an attacker does.
 LEGITIMATE = [

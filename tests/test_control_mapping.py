@@ -14,7 +14,12 @@ from structlog.testing import capture_logs
 
 from app import container
 from app.ai import reranks_in_background
-from app.core.asset_types import asset_type_fits, unknown_asset_type
+from app.core.asset_types import (
+    asset_type_fits,
+    compatible_asset_types,
+    place_asset_types,
+    unknown_asset_type,
+)
 from app.core.config import get_settings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
@@ -34,8 +39,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, LeaseLost, Unavailable
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.controls import ControlMapper, is_about_ai
-from app.domain.scenario.library_rules import compatible_asset_types, place_asset_types
+from app.domain.scenario.write import ControlMapper, build_control_query
 from app.models.library.library import LibraryControl, ThreatLibrary
 from app.models.scenario.views import session_status_from_record
 from app.search.service import LibrarySearch
@@ -344,7 +348,7 @@ def test_a_claimed_scenario_carries_the_evidence_facts_its_ai_check_reads() -> N
         else:
             claimed = leases.claim_scenario_controls_by_id(scenario_id, "worker-a")
         assert claimed is not None and claimed["content"]["evidence"][0]["facts"] == facts
-        assert not is_about_ai(claimed["content"])
+        assert not build_control_query(claimed["content"], _OT_CONTEXT).is_about_ai
 
 
 def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish() -> None:
@@ -937,6 +941,8 @@ def test_alternatives_are_the_next_best_fitting_controls_never_an_identified_one
         }
     )
     mapper = ControlMapper(rerank)  # type: ignore[arg-type]
-    found = mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, _snapshot(*controls), identified=[2, 1], count=2)
+    found = mapper.find_alternative_controls(
+        _SCENARIO, _OT_CONTEXT, _snapshot(*controls), identified=[2, 1], count=2
+    )
     assert [(control.code, score) for control, score in found] == [("C-OT-3", 70.0), ("C-OT-4", 40.0)]
-    assert mapper.find_alternatives(_SCENARIO, _OT_CONTEXT, _snapshot(), identified=[], count=2) == []
+    assert mapper.find_alternative_controls(_SCENARIO, _OT_CONTEXT, _snapshot(), identified=[], count=2) == []

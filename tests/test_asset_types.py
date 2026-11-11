@@ -18,7 +18,7 @@ from app.core.constants import (
     PlanStage,
     StrideCategory,
 )
-from app.domain.scenario.plan import build_plan, place_for, places_by_kind, ways_in
+from app.domain.scenario.plan import build_plan
 from app.models.library.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -93,12 +93,9 @@ def test_a_threat_gets_in_only_where_its_type_fits_and_is_refused_where_it_canno
         LOG_WIPE.name: (322,),
     }
     ransomware = next(threat for threat in findings.threats if threat.name == RANSOMWARE.name)
-    assert {ways_in(place) for place in places_by_kind(ransomware).values()} == {(321,)}
+    assert ransomware.main_place.entry_points == (321,)
     refused = {
-        rejected["threat"]
-        for audit in findings.audits
-        for rejected in audit.rejected
-        if rejected["code"] == CandidateRejection.ASSET_TYPE_MISMATCH
+        drop.threat_name for drop in findings.drops if drop.reason == CandidateRejection.ASSET_TYPE_MISMATCH
     }
     assert refused == {FLOOD.name, ADMIN_ABUSE.name}
     assert S.ELEVATION_OF_PRIVILEGE in gap_filled(chat)
@@ -162,9 +159,8 @@ def test_a_fold_never_brings_a_way_in_of_another_type() -> None:
     rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
     findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
     assert {threat.name: threat.systems for threat in findings.threats} == {RANSOMWARE.name: (321, 322)}
-    (threat,) = findings.threats  # the twin's kind involves the IT system, but enters through the OT one
-    twin_kind = place_for(threat, S.INFORMATION_DISCLOSURE)
-    assert twin_kind.systems == (321, 322) and ways_in(twin_kind) == (321,)
+    (threat,) = findings.threats  # the twin involves the IT system, but the path enters through the OT one
+    assert S.INFORMATION_DISCLOSURE in threat.categories and threat.main_place.entry_points == (321,)
     (path,) = build_plan(findings, 0)["paths"]  # one card per threat
     assert path["entry_points"] == [321] and path["entry_system"] == 321
 
@@ -183,9 +179,7 @@ def test_a_kind_a_twin_brought_onto_no_fitting_place_is_dropped_and_traced() -> 
     findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
     (threat,) = findings.threats
     assert S.INFORMATION_DISCLOSURE not in threat.categories and threat.systems == (321,)
-    assert [
-        (d["kind"], d["stage"], d["reason"]) for d in findings.drops if d["stage"] == PlanStage.MERGE
-    ] == [
+    assert [(d.kind, d.stage, d.reason) for d in findings.drops if d.stage == PlanStage.MERGE] == [
         (S.INFORMATION_DISCLOSURE, PlanStage.MERGE, CandidateRejection.ASSET_TYPE_MISMATCH),
         (None, PlanStage.MERGE, PlanLoss.MERGED),
     ]
@@ -282,5 +276,5 @@ def test_a_dropped_kinds_attacker_never_speaks_for_the_kinds_that_stay() -> None
     rerank = FakeRerankModel({("Malware", "Malware"): 90.0})
     findings = finder(chat, rerank, threats=_library(_typed(RANSOMWARE, "OT"))).find_threats(MIXED)
     assert findings.threats == []
-    attacker = [(d["threat_name"], d["reason"]) for d in findings.drops if d["stage"] == PlanStage.ATTACKER]
+    attacker = [(d.threat_name, d.reason) for d in findings.drops if d.stage == PlanStage.ATTACKER]
     assert attacker == [(RANSOMWARE.name, AttackerCheck.NONE_FITS)]

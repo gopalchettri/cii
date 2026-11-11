@@ -33,7 +33,7 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.data_access.jobs.job_repository import JobLease, JobRepository
-from app.domain.scenario.plan import next_paths_to_write, next_set_paths, planned_threat_record
+from app.domain.scenario.session import pick_next_paths_to_write
 from app.models.scenario.plan import PlannedActor
 from app.worker import jobs
 from app.worker.scenario import plan_progress, write_job
@@ -42,7 +42,6 @@ from tests.fakes import FakeChatModel, brief_of
 from tests.planner_samples import CONTEXT, planned
 
 _ACTORS = (PlannedActor(7, "Cybercriminal", ActorRole.ACTING),)
-_CONSISTENT = {"rules": {"1": "holds"}, "same_threat": True, "same_impact": True}
 #: Every live update the job sends (the runs it names).
 PUBLISHED: list[str] = []
 
@@ -59,9 +58,7 @@ def _queued_run(
     or the first `first_set` (INITIAL_SET_SIZE), and its batch that set's first six."""
     record_id = uuid.uuid4().hex
     threats = [
-        planned_threat_record(
-            planned(f"lib:{number}", name, systems=systems, actors=_ACTORS, reason="It applies.")
-        )
+        planned(f"lib:{number}", name, systems=systems, actors=_ACTORS, reason="It applies.").to_record({})
         for number, name in enumerate(threat_names, start=1)
     ]
     paths = [
@@ -80,8 +77,7 @@ def _queued_run(
         }
         for rank, threat in enumerate(threats, start=1)
     ]
-    asked = next_set_paths(paths, len(paths) if first_set is None else first_set)
-    batch = next_paths_to_write(path for path in paths if path["path_id"] in asked)
+    asked, batch = pick_next_paths_to_write(paths, len(paths) if first_set is None else first_set)
     now = datetime.now(UTC)
     _sessions().insert_one(
         {
@@ -170,7 +166,6 @@ def write_job_with(chat: FakeChatModel, library: Any) -> ScenarioWriteJob:
 def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
     fake = FakeChatModel()
     fake.responders[AiTask.WRITE_SCENARIO] = _answer_for
-    fake.responders[AiTask.PLAN_CHECK] = lambda _: _CONSISTENT
     actors = SimpleNamespace(
         actors=(SimpleNamespace(actor_id=7, name="Cybercriminal"),),
         threats=[SimpleNamespace(catalogue_id=number, type_id=1) for number in range(1, 30)],
@@ -323,12 +318,8 @@ def test_an_unreadable_path_is_abandoned_at_once_and_the_run_ends_partial(
     assert run["last_action"]["outcome"] == RunActionOutcome.PARTIAL and run["counts"]["abandoned"] == 1
     card = _scenarios_of(record_id)[1]
     assert (card["status"], card["failure"]["code"]) == (ScenarioStatus.FAILED, ErrorCode.GENERATION_FAILED)
-    # one write of the set, one rewrite of the unreadable slot alone, one review of the good one
-    assert [task for task, _ in chat.calls] == [
-        AiTask.WRITE_SCENARIO,
-        AiTask.PLAN_CHECK,
-        AiTask.REPAIR_SCENARIO,
-    ]
+    # one write of the set, then one rewrite of the unreadable slot alone
+    assert [task for task, _ in chat.calls] == [AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO]
     (rewrite,) = chat.asked(AiTask.REPAIR_SCENARIO)
     assert '"Good threat"' not in rewrite  # the rewrite is told why its first answer was unreadable
     assert "scenario_statement Field required" in rewrite.split("REJECTED:")[1]
@@ -547,12 +538,11 @@ def test_each_saved_scenario_says_which_write_made_it_and_when(
         assert stamp["started_at"] is not None and stamp["started_at"] <= stamp["finished_at"]
 
 
-def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_thread(
+def test_the_duplicate_check_reads_the_store_once_per_batch_on_the_job_thread(
     chat: FakeChatModel, sent: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A scenario saved meanwhile is seen and two saves of one batch never race: the batch reads the held
-    scenarios once before any AI call, then each save reads them itself, one after the other, on the job's
-    thread."""
+    """The batch reads the held scenarios once before any AI call, on the job's thread; each save adds its
+    scenario to them (only the lease holder saves), so no save reads them again."""
     scenarios = container.get_threat_scenario_repository()
     read = scenarios.list_scenarios_for_duplicate_check
     threads: list[int] = []
@@ -564,7 +554,7 @@ def test_each_duplicate_check_reads_the_store_right_before_its_save_on_the_job_t
     monkeypatch.setattr(scenarios, "list_scenarios_for_duplicate_check", recorded)
     record_id = _queued_run(["Threat 1", "Threat 2", "Threat 3", "Threat 4"])
     assert _deliver_until_done(record_id) == 1
-    assert threads == [threading.get_ident()] * (1 + 4)
+    assert threads == [threading.get_ident()]
 
 
 @pytest.mark.usefixtures("chat")

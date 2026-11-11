@@ -18,8 +18,7 @@ from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.jobs import cancel_first, check_run_cancel_stopped_something, run_job_kind_and_status
-from app.domain.scenario.results import build_board
-from app.domain.scenario.review import check_session_of_caller
+from app.domain.scenario.session import build_status_board, get_session_owned_by_caller
 from app.domain.shared.audit import audit_target, caller_actor
 from app.models.admin.api_clients import Principal
 from app.models.jobs.views import (
@@ -79,8 +78,8 @@ class JobService:
             AuditAction.RUN_CANCELLED, caller_actor(principal), target, after=after
         )
         record = self._sessions.get(fields="status", _id=run.session_id)
-        record = check_session_of_caller(record, run.session_id, principal.entity_id)
-        return build_board(session_status_from_record(record))
+        record = get_session_owned_by_caller(record, run.session_id, principal.entity_id)
+        return build_status_board(session_status_from_record(record))
 
     def delete_threat_scenario_session(self, principal: Principal, run: SessionStatus) -> SessionDeleted:
         """Remove the run for good, with its scenarios, their SQL operation records and its remediation plans.

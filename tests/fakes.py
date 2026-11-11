@@ -12,6 +12,7 @@ import numpy as np
 from app.ai import TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, AiTask
 from app.core.exceptions import Unavailable
+from app.models.scenario.write import ScenarioDraft
 
 #: An answer: a JSON object, an exception to raise, or a function of the user prompt giving either.
 Answer = dict[str, Any] | BaseException | Callable[[str], dict[str, Any]]
@@ -42,7 +43,6 @@ _SLOT = re.compile(r"^SLOT (\S+)\n", re.MULTILINE)
 _SET_KEYS = {
     AiTask.WRITE_SCENARIO: "scenarios",
     AiTask.REPAIR_SCENARIO: "scenarios",
-    AiTask.PLAN_CHECK: "reviews",
 }
 
 
@@ -53,10 +53,23 @@ def slot_blocks(user_prompt: str) -> list[tuple[str, str]]:
     return [(match[1], user_prompt[match.start() : end]) for match, end in zip(starts, ends, strict=False)]
 
 
+def draft_answer(draft: ScenarioDraft) -> dict[str, Any]:
+    """The writer's answer that reads back as `draft`."""
+    answer: dict[str, Any] = {
+        "scenario_title": draft.title,
+        "scenario_statement": draft.statement,
+        "risk_statement": draft.risk,
+        "assumptions": list(draft.assumptions),
+        "entry_point": draft.entry_point,
+    }
+    if draft.evidence_statement:
+        answer["evidence_statement"] = draft.evidence_statement
+    return answer | ({"system_reasons": dict(draft.system_reasons)} if draft.system_reasons else {})
+
+
 def _slot_threat(block: str) -> str:
-    """The threat name a slot's BRIEF or PLAN gives, as an answer copies it back."""
-    heading = "BRIEF:\n" if "BRIEF:\n" in block else "PLAN:\n"
-    record, _ = json.JSONDecoder().raw_decode(block.split(heading, 1)[1])
+    """The threat name a slot's BRIEF gives, as an answer copies it back."""
+    record, _ = json.JSONDecoder().raw_decode(block.split("BRIEF:\n", 1)[1])
     return str(record["threat"]["threat"])
 
 
@@ -69,9 +82,9 @@ class FakeChatModel:
     """ChatModel's planner surface. Per task, queued answers are used first, then the task's responder; a
     rejected first answer is re-asked once, and a usable first answer is kept when the re-ask is unusable or
     finds the AI unavailable, as the real model does (ask_for_checked_json).
-    A set prompt (writer, rewrite, reviewer) is answered slot by slot: each slot takes the next queued answer
+    A set prompt (writer, rewrite) is answered slot by slot: each slot takes the next queued answer
     or the responder's answer to its own block, with its slot and threat copied back; an exception in any slot
-    fails the whole call, and a queued answer holding the set's list ("scenarios", "reviews") is the whole
+    fails the whole call, and a queued answer holding the set's list ("scenarios") is the whole
     call's answer, as given. A rewrite with nothing of its own queued or responding is answered as a write."""
 
     def __init__(self, max_prompt_chars: int = 60_000) -> None:

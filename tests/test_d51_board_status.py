@@ -31,8 +31,7 @@ from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
 from app.core.database import get_mongodb
 from app.data_access.admin.admin_job_repository import AdminJobRepository
-from app.domain.scenario.plan import plan_counts
-from app.domain.scenario.results import build_board
+from app.domain.scenario.session import build_status_board, count_plan_paths
 from app.domain.service_mapper.views import mapping_status
 from app.models.scenario.views import session_status_from_record
 from app.worker import jobs, reaper
@@ -61,7 +60,7 @@ LONG_AGO = datetime.now(UTC) - timedelta(hours=2)
 def test_a_failed_run_reads_in_progress_until_its_controls_are_matched() -> None:
     """`error` is terminal for a client: it comes once nothing of the run is still being matched."""
     failed = _written(Status.FAILED, **_SET) | {"job": _FAILED}
-    matching = build_board(_run(**failed | {"counts": _SET | {"controls_waiting": 2}}))
+    matching = build_status_board(_run(**failed | {"counts": _SET | {"controls_waiting": 2}}))
     progress = matching.progress
     assert (progress.scenarios, progress.controls, progress.overall, matching.session_status) == (
         S.ERROR,
@@ -70,14 +69,14 @@ def test_a_failed_run_reads_in_progress_until_its_controls_are_matched() -> None
         Session.FAILED,
     )
     assert matching.error is not None and matching.error.code == "unavailable"
-    assert build_board(_run(**failed)).progress.overall == Overall.ERROR  # its controls are done
+    assert build_status_board(_run(**failed)).progress.overall == Overall.ERROR  # its controls are done
 
 
 # A finished run whose controls were cancelled.
 
 
 def test_a_finished_run_whose_controls_were_cancelled_reads_cancelled() -> None:
-    board = build_board(_run(**_written(planned=6, written=6, accepted=6, controls_cancelled=1)))
+    board = build_status_board(_run(**_written(planned=6, written=6, accepted=6, controls_cancelled=1)))
     progress = board.progress
     assert (progress.controls, progress.overall, board.session_status) == (
         S.CANCELLED,
@@ -89,7 +88,7 @@ def test_a_finished_run_whose_controls_were_cancelled_reads_cancelled() -> None:
 def test_a_finished_run_whose_controls_were_cancelled_reads_cancelled_beside_failed_controls() -> None:
     """A cancel leaves controls that failed for good as they are: the stage reads error, overall cancelled."""
     counts = {"planned": 6, "written": 6, "accepted": 6, "controls_failed": 1, "controls_cancelled": 2}
-    board = build_board(_run(**_written(**counts)))
+    board = build_status_board(_run(**_written(**counts)))
     progress = board.progress
     assert (progress.controls, progress.overall, board.session_status) == (
         S.ERROR,
@@ -181,7 +180,7 @@ def test_the_reaper_stores_why_it_gave_each_job_up() -> None:
     lines = {line["record_id"]: line["reason"] for line in logs if line["event"] == LogEvent.JOB_FAILED}
     shown_in_logs = [lines[key] for key in (worn_out, never_started, mapping)]
     assert shown_in_logs == ["abandoned", "never_started", "abandoned"]
-    board = build_board(session_status_from_record(_records().find_one({"_id": worn_out})))
+    board = build_status_board(session_status_from_record(_records().find_one({"_id": worn_out})))
     assert board.error is not None and board.error.reason == AbandonReason.WORKER_STOPPED
     assert board.progress.error_reason is None  # an AI outage's reason only
     shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}), 5)
@@ -245,11 +244,13 @@ def test_the_plan_counts_a_path_an_ai_outage_cost_as_an_outage_card() -> None:
         _path("p4", 4, **_RULE),
         _path("p5", 5, **outage, abandoned_reason=AiOutage.DOWN, served="s5"),  # a late save won
     ]
-    assert plan_counts(paths)["outage_cards"] == 2
+    assert count_plan_paths(paths)["outage_cards"] == 2
 
 
 def test_a_run_holding_an_outage_card_waits_for_its_regenerate() -> None:
-    board = build_board(_run(**_written(planned=6, written=5, accepted=5, abandoned=1, outage_cards=1)))
+    board = build_status_board(
+        _run(**_written(planned=6, written=5, accepted=5, abandoned=1, outage_cards=1))
+    )
     count = board.progress.scenario_count
     assert (board.progress.overall, count.remaining, count.complete) == (Overall.AWAITING_REVIEW, 0, False)
 
@@ -272,5 +273,7 @@ def test_a_path_given_up_after_its_last_ai_outage_keeps_the_run_awaiting_its_reg
     written = {"session_id": record_id, "status": ScenarioStatus.DONE}
     get_mongodb()[Collection.SCENARIOS].update_many(written, {"$set": {"decision": "accepted"}})
     container.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)
-    progress = build_board(session_status_from_record(_records().find_one({"_id": record_id}))).progress
+    progress = build_status_board(
+        session_status_from_record(_records().find_one({"_id": record_id}))
+    ).progress
     assert (progress.overall, progress.scenario_count.complete) == (Overall.AWAITING_REVIEW, False)

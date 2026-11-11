@@ -22,8 +22,8 @@ from app.core.constants import (
 from app.core.exceptions import Unavailable
 from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import evidence_problem
 from app.models.external_intelligence.evidence import Evidence
+from app.worker.scenario.write_job import find_evidence_outage
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.switch.test_switch import MemoryFlags
@@ -42,10 +42,12 @@ pytestmark = pytest.mark.usefixtures("story_chat", "sent")
 
 def test_the_gate_holds_back_only_an_outage() -> None:
     settled = {"snapshot_id": "s1", "failure": None}
-    assert evidence_problem({"evidence": [], "intel_search": settled}) is None  # written without evidence
-    assert isinstance(evidence_problem({"intel_search": settled | {"failure": "down"}}), Unavailable)
-    assert isinstance(evidence_problem({"intel_search": None}), Unavailable)  # never searched: no snapshot
-    assert evidence_problem({"evidence": [TECHNIQUE.as_doc()], "intel_search": settled}) is None
+    assert find_evidence_outage({"evidence": [], "intel_search": settled}) is None  # written without evidence
+    assert isinstance(find_evidence_outage({"intel_search": settled | {"failure": "down"}}), Unavailable)
+    assert isinstance(
+        find_evidence_outage({"intel_search": None}), Unavailable
+    )  # never searched: no snapshot
+    assert find_evidence_outage({"evidence": [TECHNIQUE.as_doc()], "intel_search": settled}) is None
 
 
 @pytest.mark.parametrize(

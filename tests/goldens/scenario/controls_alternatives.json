@@ -1,0 +1,49 @@
+{
+ "reranks": [
+  {
+   "documents": [
+    "Network segmentation: Split the control network",
+    "Multi-factor login: Ask a second factor at every login",
+    "Backup of controller logic: Back up PLC and SCADA logic",
+    "Central logging: Collect every system's logs",
+    "Backup policy: A written backup policy"
+   ],
+   "query": "Category: Elevation of Privilege\nThreat: Privilege misuse: Insider abuses admin rights\nAttacker: Malicious insider\nTitle: Insider abuses admin rights at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Operator HMI: asset_type: OT; technology_used: Windows\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+  },
+  {
+   "documents": [
+    "Network segmentation: Split the control network",
+    "Multi-factor login: Ask a second factor at every login",
+    "Backup of controller logic: Back up PLC and SCADA logic",
+    "Central logging: Collect every system's logs",
+    "Backup policy: A written backup policy"
+   ],
+   "query": "Category: Elevation of Privilege\nThreat: Privilege misuse: Insider abuses admin rights\nAttacker: Malicious insider\nTitle: Insider abuses admin rights at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Operator HMI: asset_type: OT; technology_used: Windows\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+  }
+ ],
+ "reused": [
+  [
+   4,
+   75.0
+  ],
+  [
+   3,
+   61.0
+  ],
+  [
+   7,
+   58.0
+  ]
+ ],
+ "reused_calls": 0,
+ "searched": [
+  [
+   3,
+   61.0
+  ],
+  [
+   7,
+   58.0
+  ]
+ ]
+}

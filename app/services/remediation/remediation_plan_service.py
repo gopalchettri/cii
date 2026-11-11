@@ -60,7 +60,7 @@ from app.domain.remediation.rules import (
     still_accepted,
     version_still_generating_error,
 )
-from app.domain.scenario.plan import freeze_context
+from app.domain.scenario.session import build_run_context
 from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
 from app.models.admin.api_clients import Principal
@@ -304,7 +304,7 @@ class RemediationPlanService:
     ) -> dict[str, Any]:
         """Saves the scenario (accepted by its writer) and its run; everything a 422 or 409 could refuse is
         checked before the first write, and no AI is called."""
-        context = freeze_context(manual, self._assets.get_asset_context(principal.entity_id, manual))
+        context = build_run_context(manual, self._assets.get_asset_context(principal.entity_id, manual))
         check_register_systems(body, [system["id"] for system in context.linked_systems()])
         self._library.check_library_once()  # a row a curator added in the last minute is seen
         loaded = self._library.get_loaded_libraries()

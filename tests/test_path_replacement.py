@@ -5,7 +5,7 @@ write job's side: test_replacement_job.py."""
 from typing import Any
 
 from app.core.constants import Generation, UnselectedReason
-from app.domain.scenario.plan import best_reserve, budget_left
+from app.domain.scenario.session import pick_replacement_path
 
 _REACHED = UnselectedReason.TARGET_REACHED
 
@@ -37,15 +37,15 @@ def test_the_reserve_is_the_best_ranked_path_the_scenario_count_left_out() -> No
     failed = _path("p2", 2, [2], abandoned=True)
     next_in_rank = _reserve("p3", 3, [1])
     later = _reserve("p4", 4, [2])
-    assert best_reserve([kept, failed, later, next_in_rank], {}, {"p1", "p2"}) == next_in_rank
+    assert pick_replacement_path([kept, failed, later, next_in_rank], {}, {"p1", "p2"}) == next_in_rank
 
 
 def test_a_reserve_whose_attacker_no_check_supports_is_never_promoted() -> None:
     """Its brief would be refused (ATTACKER_UNSUPPORTED): promoting it only spends the write budget."""
     kept, unsupported, writable = _path("p1", 1, [1]), _reserve("p2", 2, [2]), _reserve("p3", 3, [1])
     threats = {"lib:p2": {"attacker_check": "none_fits", "actors": [{"role": "acting", "closest": True}]}}
-    assert best_reserve([kept, unsupported, writable], threats, {"p1"}) == writable
-    assert best_reserve([kept, unsupported], threats, {"p1"}) is None
+    assert pick_replacement_path([kept, unsupported, writable], threats, {"p1"}) == writable
+    assert pick_replacement_path([kept, unsupported], threats, {"p1"}) is None
 
 
 def test_with_no_reserve_a_later_sets_best_open_path_is_pulled_forward() -> None:
@@ -55,10 +55,12 @@ def test_with_no_reserve_a_later_sets_best_open_path_is_pulled_forward() -> None
     failed, in_set = _path("p1", 1, [1], abandoned=True), _path("p2", 2, [2])
     written, next_best, after = _path("p3", 3, [3], served="s3"), _path("p4", 4, [4]), _path("p5", 5, [5])
     every_path = [failed, in_set, written, after, next_best]
-    assert best_reserve(every_path, {}, {"p1", "p2"}) == next_best
+    assert pick_replacement_path(every_path, {}, {"p1", "p2"}) == next_best
     threats = {"lib:p4": {"attacker_check": "none_fits", "actors": [{"role": "acting", "closest": True}]}}
-    assert best_reserve(every_path, threats, {"p1", "p2"}) == after
-    assert best_reserve(every_path, {}, {"p1", "p2", "p4", "p5"}) is None  # nothing open outside the set
+    assert pick_replacement_path(every_path, threats, {"p1", "p2"}) == after
+    assert (
+        pick_replacement_path(every_path, {}, {"p1", "p2", "p4", "p5"}) is None
+    )  # nothing open outside the set
 
 
 def test_none_promoted_twice_or_brought_back() -> None:
@@ -69,13 +71,19 @@ def test_none_promoted_twice_or_brought_back() -> None:
         unselected_reason=UnselectedReason.REPLACED_AFTER_FAILURE,
     )  # fmt: skip
     promoted = _path("p3", 3, [1], replaces="p1")
-    assert best_reserve([replaced, _path("p2", 2, [2]), promoted], {}, {"p1", "p2", "p3"}) is None
+    assert pick_replacement_path([replaced, _path("p2", 2, [2]), promoted], {}, {"p1", "p2", "p3"}) is None
 
 
 def test_the_budget_is_the_sets_own_paths_times_the_attempts_and_a_replacement_brings_none() -> None:
     limit = 2 * Generation.MAX_PATH_ATTEMPTS
     written = _path("p1", 1, [1], served="s1", attempts=limit - 3)
     failing = _path("p2", 2, [2], attempts=1)
-    assert budget_left([written, failing])  # limit - 3 + 1 + 1 spent
+    reserve = _reserve("p4", 4, [1])
+    assert (
+        pick_replacement_path([written, failing, reserve], {}, {"p1", "p2"}) == reserve
+    )  # limit - 3 + 1 + 1 spent
     promoted = _path("p3", 3, [3], attempts=1, replaces="p2")
-    assert not budget_left([written, failing, promoted])  # its try counts; it adds no budget
+    every_path = [written, failing, promoted, reserve]
+    assert (
+        pick_replacement_path(every_path, {}, {"p1", "p2", "p3"}) is None
+    )  # its try counts; it adds no budget

@@ -1,0 +1,26 @@
+{
+ "known": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  77,
+  91
+ ],
+ "named": {
+  "Badge  cloning": [
+   "curator_rejected",
+   null,
+   null
+  ],
+  "New one": null,
+  "Phishing steals operator credentials": [
+   "existing",
+   2,
+   2
+  ],
+  "T-12 Operator account takeover": null
+ }
+}

@@ -6,13 +6,19 @@ from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.core.constants import Generation, Limits, SessionMessage, UnselectedReason
-from app.domain.scenario.plan import select_up_to_target
+from app.domain.scenario.plan import build_plan
 from app.models.scenario.views import StartRunRequest
+from tests.planner_samples import planned
+from tests.test_attack_paths import findings_of
 
 
-def _paths(count: int) -> list[dict]:
-    """`count` valid paths, deliberately out of rank order (the target must sort them)."""
-    return [{"path_id": f"p{rank}", "rank": rank} for rank in reversed(range(1, count + 1))]
+def _plan(count: int, target: int) -> list[dict]:
+    """The paths of `count` threats given deliberately out of rank order (p1 the best), `target` selected."""
+    threats = [
+        planned(f"lib:{rank}", f"p{rank}", confidence=90.0 - rank) for rank in reversed(range(1, count + 1))
+    ]
+    paths = build_plan(findings_of(*threats), target)["paths"]
+    return [path | {"path_id": f"p{path['steps'][0].split(':')[1]}"} for path in paths]
 
 
 def _selected(paths: list[dict]) -> list[str]:
@@ -26,11 +32,11 @@ def test_both_limits_are_zero_or_a_positive_number() -> None:
 
 def test_target_zero_writes_every_valid_path() -> None:
     every_path = [f"p{rank}" for rank in range(1, 8)]
-    assert _selected(select_up_to_target(_paths(7), max_scenarios=0)) == every_path
+    assert _selected(_plan(7, target=0)) == every_path
 
 
 def test_a_positive_target_keeps_the_most_relevant_and_sets_the_rest_aside() -> None:
-    planned = select_up_to_target(_paths(7), max_scenarios=3)
+    planned = _plan(7, target=3)
     assert _selected(planned) == ["p1", "p2", "p3"]
     set_aside = [path for path in planned if not path["selected"]]
     # kept in the plan, in rank order
@@ -39,7 +45,7 @@ def test_a_positive_target_keeps_the_most_relevant_and_sets_the_rest_aside() -> 
 
 
 def test_fewer_paths_than_the_target_are_all_written_and_none_invented() -> None:
-    planned = select_up_to_target(_paths(4), max_scenarios=15)
+    planned = _plan(4, target=15)
     assert len(planned) == 4
     assert _selected(planned) == ["p1", "p2", "p3", "p4"]
 

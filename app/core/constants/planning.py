@@ -145,6 +145,35 @@ class ContextProperties:
         "sub_sector": "subsector_id",
         "critical_service": "service_id",
     }
+    #: Coded columns holding one saved option value, and the option code that names it.
+    SINGLE_SELECT_CODES: Final[dict[str, str]] = {
+        "accessability_channel": "acc-channel",
+        "hosting_location": "hosting-location",
+        "network_connectivity_primary_dr": "network-connectivity",
+        "dr_drill_frequency": "dr-drill",
+        "managed_by": "managed-by",
+    }
+    SINGLE_SELECT_CODES_WITH_PRIORITY: Final[dict[str, str]] = {
+        **SINGLE_SELECT_CODES,
+        "asset_priority": "priority",
+    }
+    #: Coded columns holding a JSON array of saved option values, or the names the procedure already joined.
+    MULTI_SELECT_CODES: Final[dict[str, str]] = {
+        "technology_used": "technology-used",
+        "database_platforms": "database-platforms",
+        "targeted_users": "targeted-users",
+        "saas_platform_list": "saas-platforms",
+        "public_cloud_platforms": "pub-c-platforms",
+    }
+    NAME_FACTS: Final[tuple[str, ...]] = (
+        "critical_service",
+        "sector",
+        "sub_sector",
+    )  # names, spaces collapsed
+    NEVER_TESTED_YEAR: Final[int] = 1900  # SQL Server's minimum date: "never", not a real date
+    # the settings naming the required facts
+    ASSET_REQUIRED_SETTING: Final[str] = "ASSET_PROPERTIES_REQUIRED"
+    SYSTEM_REQUIRED_SETTING: Final[str] = "SYSTEM_PROPERTIES_REQUIRED"
 
 
 class PropertyMessage(StrEnum):

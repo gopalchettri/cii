@@ -22,6 +22,7 @@ from app.core.constants import (
     Decision,
     Dependency,
     IntelDocId,
+    IntelMessage,
     LibrarySource,
     LogEvent,
     PlanTraceMessage,
@@ -55,32 +56,23 @@ from app.domain.library.curation import (
     scenario_actor_ids,
     threat_to_promote,
 )
-from app.domain.scenario.library_rules import known_threat_ids
-from app.domain.scenario.plan import (
-    check_intel_has_data,
-    check_same_start_request,
-    freeze_context,
-    library_threats_named,
-    nothing_left_to_write,
-    request_fingerprint,
-    set_and_first_batch,
-)
-from app.domain.scenario.plan_trace import plan_trace_view
-from app.domain.scenario.results import build_board, build_scenario_view
-from app.domain.scenario.review import (
-    Targets,
-    cancel_stamp_seen,
-    check_review_open,
-    check_session_of_caller,
-    check_something_to_accept,
-    controls_pending,
-    controls_were_cancelled,
-    decidable_targets,
-    decided_stamp,
-    decision_outcome,
-    regenerate_batch,
-    split_accept_all,
-    versions_to_replace,
+from app.domain.scenario.session import (
+    ScenarioTargets,
+    build_plan_trace_view,
+    build_regenerate_batch,
+    build_run_context,
+    build_scenario_view,
+    build_status_board,
+    check_session_ready_for_review,
+    find_library_threat_by_name,
+    find_versions_to_replace,
+    find_why_no_path_left,
+    get_scenarios_to_decide,
+    get_session_owned_by_caller,
+    list_active_or_pending_threat_ids,
+    pick_next_paths_to_write,
+    pick_scenarios_for_accept_all,
+    read_decision_results,
 )
 from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
@@ -121,6 +113,13 @@ _RUN_COUNTS: Final = (
     "controls_failed",
 )
 
+#: The message of each reason a next set has no path left to write.
+_NO_PATH_LEFT_MESSAGES: Final = {
+    ConflictReason.NOTHING_LEFT: ReviewMessage.NOTHING_LEFT,
+    ConflictReason.TARGET_REACHED: ReviewMessage.TARGET_REACHED,
+    ConflictReason.SCENARIOS_ABANDONED: ReviewMessage.SCENARIOS_ABANDONED,
+}
+
 #: A page of tsg_scenarios records and the total of the read.
 ScenarioPage = tuple[list[dict[str, Any]], int]
 
@@ -157,26 +156,28 @@ class ThreatScenarioService:
         """Starts a run: (its status board, True when created now, False for a replay of the caller's
         Idempotency-Key); 409 duplicate_request for a repeat of a `derived` one."""
         if replayed := self._replay(principal, request, idempotency_key, derived):
-            return build_board(replayed), False
+            return build_status_board(replayed), False
         self._refuse_without_intel_data()  # never a run that can only fail its evidence searches
         asset_context = self._assets.get_asset_context(principal.entity_id, request)
-        context = freeze_context(request, asset_context)
+        context = build_run_context(request, asset_context)
         record = _new_run_record(principal, request, idempotency_key, context)
         clash = self._sessions.create_scenario_session(record)
         # A parallel start with the same key won: its replay.
         if clash and (replayed := self._replay(principal, request, idempotency_key, derived)):
-            return build_board(replayed), False
+            return build_status_board(replayed), False
         if clash is RunClash.IDEMPOTENCY_KEY:  # the run that took the key was deleted since
             message = SessionMessage.IDEMPOTENCY_KEY_RUN_GONE
             raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
         self._announce_start(principal, record, context)
-        return build_board(session_status_from_record(record)), True
+        return build_status_board(session_status_from_record(record)), True
 
     def _refuse_without_intel_data(self) -> None:
         """409 intel_no_data while external intelligence is on and its active snapshot indexes nothing."""
         if not self._switch.is_on():
             return
-        check_intel_has_data(self._intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {})
+        snapshot = self._intel_snapshots.get("description", _id=IntelDocId.ACTIVE_SNAPSHOT) or {}
+        if not (snapshot.get("counts") or {}).get("indexed"):
+            raise Conflict(IntelMessage.NO_DATA_YET, reason=ConflictReason.INTEL_NO_DATA)
 
     def _replay(
         self, principal: Principal, request: StartRunRequest, key: str, derived: bool
@@ -186,7 +187,13 @@ class ThreatScenarioService:
         earlier = self._sessions.get(fields="replay", entity_id=principal.entity_id, idempotency_key=key)
         if earlier is None:
             return None
-        check_same_start_request(earlier, request)
+        if (
+            earlier.get("kind") == RunKind.MANUAL
+            or earlier["asset_id"] != request.asset_id
+            or earlier.get("request_hash") != request.fingerprint()
+        ):
+            message = SessionMessage.IDEMPOTENCY_KEY_CONFLICT
+            raise Conflict(message, reason=ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
         if derived:
             raise duplicate_request(earlier["created_at"], session_id=earlier["_id"])
         return session_status_from_record(earlier)
@@ -210,13 +217,13 @@ class ThreatScenarioService:
 
     def get_threat_scenario_session(self, run: SessionStatus) -> RunBoard:
         """The run's status board."""
-        return build_board(run)
+        return build_status_board(run)
 
     def get_threat_scenario_session_status(self, session_id: str, entity_id: int) -> SessionStatus:
         """The status of a run the caller's entity owns, read by id only: 404 unknown, 403 another
         entity's."""
         record = self._sessions.get(fields="status", _id=session_id)
-        return session_status_from_record(check_session_of_caller(record, session_id, entity_id))
+        return session_status_from_record(get_session_owned_by_caller(record, session_id, entity_id))
 
     def get_threat_scenario_session_live_status(self, session_id: str) -> dict[str, Any] | None:
         """The run's status body read now; None while MongoDB cannot say; NotFound once the run is deleted."""
@@ -227,7 +234,7 @@ class ThreatScenarioService:
             return None
         if record is None:
             raise NotFound(SessionMessage.NOT_FOUND.format(session_id=session_id))
-        return build_board(session_status_from_record(record)).model_dump(mode="json")
+        return build_status_board(session_status_from_record(record)).model_dump(mode="json")
 
     # Reading scenarios.
 
@@ -240,7 +247,7 @@ class ThreatScenarioService:
         page = self._scenario_list(
             self._scenario_page(in_turns, offset, limit, session_id=run.session_id), include_replaced
         )
-        board = build_board(run)
+        board = build_status_board(run)
         header = board.model_dump(include={"session_id", "entity_id", "asset_id", "asset_name", "user_id"})
         return RunResults(
             **header,
@@ -257,7 +264,7 @@ class ThreatScenarioService:
         if record is None or not record.get("plan_trace"):
             raise NotFound(PlanTraceMessage.NOT_PLANNED.format(session_id=run.session_id))
         paths = (record.get("plan") or {}).get("paths") or []
-        return plan_trace_view(run.session_id, record["plan_trace"], paths)
+        return build_plan_trace_view(run.session_id, record["plan_trace"], paths)
 
     def get_threat_scenario(self, session_id: str, scenario_id: str) -> ScenarioView:
         """One scenario of the run in full, with every version it replaced; 404 when it is not in the run."""
@@ -338,7 +345,7 @@ class ThreatScenarioService:
         self, principal: Principal, run: SessionStatus, request: AcceptRequest
     ) -> AcceptResult:
         """Accepts the chosen scenarios, or every acceptable one ("all")."""
-        check_review_open(run)
+        check_session_ready_for_review(run)
         if request.scenario_ids is None:  # v1's mode "none": decides nothing, writes nothing
             return AcceptResult(accepted=[], replaced=[], skipped=[], controls_pending=[])
         replaced: list[str] = []
@@ -351,18 +358,17 @@ class ThreatScenarioService:
         skipped += raced
         changes = {"accepted": newly, "replaced": replaced}
         self._announce_decisions(principal, run.session_id, AuditAction.SCENARIOS_ACCEPTED, changes, skipped)
-        return AcceptResult(
-            accepted=accepted,
-            replaced=replaced,
-            skipped=skipped,
-            controls_pending=controls_pending(targets, accepted),
-        )
+        unmapped = {
+            target["_id"] for target in targets if (target.get("controls") or {}).get("status") != Status.DONE
+        }
+        pending = [scenario_id for scenario_id in accepted if scenario_id in unmapped]
+        return AcceptResult(accepted=accepted, replaced=replaced, skipped=skipped, controls_pending=pending)
 
     def reject_threat_scenarios(
         self, principal: Principal, run: SessionStatus, request: ScenarioIdsRequest
     ) -> RejectResult:
         """Rejects the chosen scenarios."""
-        check_review_open(run)
+        check_session_ready_for_review(run)
         targets = self._chosen(run.session_id, request.scenario_ids, Decision.REJECTED)
         rejected, newly, skipped = self._decide(run.session_id, targets, Decision.REJECTED, principal)
         self._announce_decisions(
@@ -384,13 +390,17 @@ class ThreatScenarioService:
         )
         return {row["path_id"]: row["_id"] for row in found}
 
-    def _chosen(self, session_id: str, scenario_ids: list[str], decision: Decision) -> Targets:
+    def _chosen(self, session_id: str, scenario_ids: list[str], decision: Decision) -> ScenarioTargets:
         """The targets in the order sent; 409 scenarios_not_decidable naming every id at fault."""
         found = self._list_review_targets(session_id, scenario_ids)
-        known = known_threat_ids(self._threat_library()) if decision == Decision.ACCEPTED else frozenset()
-        return decidable_targets(scenario_ids, found, decision, known)
+        held = (
+            list_active_or_pending_threat_ids(self._threat_library())
+            if decision == Decision.ACCEPTED
+            else frozenset()
+        )
+        return get_scenarios_to_decide(scenario_ids, found, decision, held)
 
-    def _everything_acceptable(self, session_id: str) -> tuple[Targets, list[TargetSkipped]]:
+    def _everything_acceptable(self, session_id: str) -> tuple[ScenarioTargets, list[TargetSkipped]]:
         """Accept-all's targets and skips among the run's current written versions not rejected."""
         rows = self._scenarios.list(
             fields="target",
@@ -400,17 +410,23 @@ class ThreatScenarioService:
             newest=True,
             not_rejected=True,
         )
-        check_something_to_accept(session_id, rows)
+        if not rows:
+            message = ReviewMessage.NOTHING_TO_ACCEPT.format(session_id=session_id)
+            raise Conflict(message, reason=ConflictReason.NOTHING_TO_ACCEPT)
         path_ids = sorted({row["path_id"] for row in rows})
         accepted = self._accepted_version_of_attack_paths(session_id, path_ids)
-        return split_accept_all(rows, accepted, known_threat_ids(self._threat_library()))
+        return pick_scenarios_for_accept_all(
+            rows, accepted, list_active_or_pending_threat_ids(self._threat_library())
+        )
 
-    def _make_room(self, session_id: str, targets: Targets, replace: bool, principal: Principal) -> list[str]:
+    def _make_room(
+        self, session_id: str, targets: ScenarioTargets, replace: bool, principal: Principal
+    ) -> list[str]:
         """One accepted version per path: the other accepted versions of the targets' paths go back to
         pending first, with replace_accepted (their ids returned), else 409 duplicate_version."""
         path_ids = list(dict.fromkeys(target["path_id"] for target in targets))
         accepted = self._accepted_version_of_attack_paths(session_id, path_ids)
-        others = versions_to_replace(targets, accepted, replace)
+        others = find_versions_to_replace(targets, accepted, replace)
         if others:
             # A crash before the accept leaves the path with none accepted: the same call repeated heals it.
             stamp = _new_decided_stamp(principal)
@@ -418,7 +434,7 @@ class ThreatScenarioService:
         return others
 
     def _decide(
-        self, session_id: str, targets: Targets, decision: Decision, principal: Principal
+        self, session_id: str, targets: ScenarioTargets, decision: Decision, principal: Principal
     ) -> tuple[list[str], list[str], list[TargetSkipped]]:
         """(ids holding `decision` now, newly given it, skipped by a race): one update for the pending ones,
         and one re-read only when it could not change them all."""
@@ -433,7 +449,7 @@ class ThreatScenarioService:
         if changed == len(pending):
             return ids, pending, []
         now = self._list_review_targets(session_id, ids)
-        return decision_outcome(ids, pending, now, decision, stamp["decision_id"])
+        return read_decision_results(ids, pending, now, decision, stamp["decision_id"])
 
     def _announce_decisions(
         self,
@@ -465,20 +481,22 @@ class ThreatScenarioService:
     def write_next_threat_scenario_set(self, principal: Principal, run: SessionStatus) -> RunActionStarted:
         """Queues the next NEXT_SET_SIZE open paths, best rank first; none left, resumes the controls a cancel
         stopped, else 409 naming why."""
-        check_review_open(run)
+        check_session_ready_for_review(run)
         record = self._sessions.get(fields="attack_paths", _id=run.session_id)
         if record is None:  # deleted since the status read
             raise NotFound(SessionMessage.NOT_FOUND.format(session_id=run.session_id))
         paths = (record.get("plan") or {}).get("paths") or []
-        asked, batch = set_and_first_batch(paths, get_settings().next_set_size)
+        asked, batch = pick_next_paths_to_write(paths, get_settings().next_set_size)
         if asked:
             epoch = self._queue_write_job(principal, run, RunActionKind.NEXT_SET, batch, asked)
             return _started(run, ActionStatus.GENERATING, epoch)
-        resumed = self._resume_controls(run.session_id, cancel_stamp_seen(run), restart_times=True)
+        cancelled_at = (run.cancelled or {}).get("at")  # the cancel the caller saw
+        resumed = self._resume_controls(run.session_id, cancelled_at, restart_times=True)
         if resumed is None:
             raise run_being_deleted(run.session_id)
         if not resumed:
-            raise nothing_left_to_write(run.session_id, paths)
+            reason = find_why_no_path_left(paths)
+            raise Conflict(_NO_PATH_LEFT_MESSAGES[reason].format(session_id=run.session_id), reason=reason)
         self._publish_session_status(run.session_id)
         target = audit_target(AuditTarget.SESSION, run.session_id)
         after = {"controls_resumed": resumed}
@@ -493,9 +511,9 @@ class ThreatScenarioService:
     ) -> RunActionStarted:
         """Queues a new version of each chosen scenario, or an AI outage's failure card written again in its
         place; 409 scenarios_not_regenerable names each bad id."""
-        check_review_open(run)
+        check_session_ready_for_review(run)
         targets = self._list_review_targets(run.session_id, request.scenario_ids)
-        batch = regenerate_batch(request.scenario_ids, targets)
+        batch = build_regenerate_batch(request.scenario_ids, targets)
         epoch = self._queue_write_job(principal, run, RunActionKind.REGENERATE, batch)
         return _started(run, ActionStatus.REGENERATING, epoch)
 
@@ -517,7 +535,8 @@ class ThreatScenarioService:
             message = ReviewMessage.GENERATION_IN_PROGRESS.format(session_id=run.session_id)
             raise Conflict(message, reason=ConflictReason.GENERATION_IN_PROGRESS)
         epoch = run.epoch + 1
-        if controls_were_cancelled(run):  # a cancelled run is resumed whole
+        cancelled = run.status == Status.CANCELLED or run.cancelled is not None
+        if cancelled or run.counts.get("controls_cancelled", 0) > 0:  # a cancelled run is resumed whole
             self._resume_controls(run.session_id, None)  # the new job cleared the cancel stamp it saw
         # A lost send is re-sent by the reaper.
         self._send_job(TaskName.WRITE_SCENARIOS, run.session_id, epoch)
@@ -580,7 +599,7 @@ class ThreatScenarioService:
     ) -> PromotedThreat:
         """The library's answer for the threat's name, in memory first: only a new name reaches SQL Server."""
         name, type_name = threat["name"], threat["type"]["name"]
-        known = library_threats_named(self._threat_library(), name)
+        known = find_library_threat_by_name(self._threat_library(), name)
         if known is not None:
             outcome, type_id, catalogue_id = known
         else:
@@ -613,7 +632,7 @@ def _new_run_record(
         "client_id": principal.client_id,  # the calling system: stored, never shown, never used to refuse
         "asset_id": request.asset_id,
         "request": request.model_dump(exclude={"asset_id"}),
-        "request_hash": request_fingerprint(request),
+        "request_hash": request.fingerprint(),
         "context": context.to_record(),
         "status": Status.QUEUED,
         "step": Step.THREATS,
@@ -634,5 +653,13 @@ def _started(run: SessionStatus, status: ActionStatus, epoch: int) -> RunActionS
 
 
 def _new_decided_stamp(principal: Principal) -> dict[str, Any]:
-    """This call's decided stamp: now, and a new decision id."""
-    return decided_stamp(principal, utc_now(), uuid.uuid4().hex)
+    """Returns who decided and when; a new decision id names the call, so a race's re-read knows which ids
+    it decided."""
+    now = utc_now()
+    return {
+        "decided_by": principal.user_id,
+        "decided_by_client": principal.client_id,
+        "decided_at": now,
+        "decision_id": uuid.uuid4().hex,
+        "updated_at": now,
+    }

@@ -7,8 +7,9 @@ from typing import Any
 
 from app.core.constants import AiTask, AttackerCheck, LibraryStatus
 from app.domain.remediation.manual import pick_manual_attacker
-from app.domain.scenario.plan import actor_pick, choose_actor, merge_two_threats, relevance_gate_prompt
-from app.models.scenario.plan import ActorPick, PlannedThreat
+from app.domain.scenario import plan as plan_module
+from app.domain.scenario.plan import describe_asset_for_ai
+from app.models.scenario.plan import ActorPick, Drop, PlannedThreat
 from tests.fakes import items_in
 from tests.planner_samples import (
     AFFILIATE,
@@ -22,6 +23,7 @@ from tests.planner_samples import (
     RANSOMWARE,
     S,
     finder,
+    gate_prompt,
     library_search,
     planned,
     planner_chat,
@@ -30,18 +32,31 @@ from tests.planner_samples import (
 LINKED = (GANG, AFFILIATE, INSIDER)  # one type's linked actors, best search rank first
 
 
+_LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
+
+
 def _threat(key: str, pick: ActorPick | None) -> PlannedThreat:
-    return PlannedThreat(
-        key=key, catalogue_id=int(key.split(":")[1]), type_id=1, type_name="Malware", name=key,
-        categories=(S.TAMPERING,), systems=(321,), impact=3, confidence=80.0, reason="It applies.",
-        actor_pick=pick,
-    )  # fmt: skip
+    return planned(key, key, impact=3, confidence=80.0, actor_pick=pick, linked_actors=LINKED)
+
+
+def _pick_attacker(threat: PlannedThreat) -> tuple[list[PlannedThreat], list[Drop]]:
+    """The threat with its acting attacker, or the drop that says none fits."""
+    drops: list[Drop] = []
+    return plan_module._set_main_category_and_attacker([threat], drops), drops
+
+
+def _read_pick(item: dict[str, Any], listed: list[str]) -> ActorPick | None:
+    """The gate's pick as code reads a relevant verdict naming these attacker fields."""
+    verdict = {"slot": "R1", "threat": "Ransomware", "relevant": True, "likelihood": "HIGH", "systems": []}
+    return plan_module._read_one_threat_answer(
+        verdict | item, {"attackers": listed}, {}, _LANDSCAPE
+    ).actor_pick
 
 
 def test_threats_of_one_type_with_different_facts_get_different_actors() -> None:
     """Each pick is kept with its reason, never the search ranking's first; only the acting one is planned."""
-    insider = choose_actor(_threat("lib:1", ActorPick(INSIDER.name, "Holds the admin login.")), LINKED)
-    gang = choose_actor(_threat("lib:2", ActorPick(GANG.name, "Reaches it from the internet.")), LINKED)
+    (insider,), _ = _pick_attacker(_threat("lib:1", ActorPick(INSIDER.name, "Holds the admin login.")))
+    (gang,), _ = _pick_attacker(_threat("lib:2", ActorPick(GANG.name, "Reaches it from the internet.")))
     assert [insider.actors[0].name, gang.actors[0].name] == [INSIDER.name, GANG.name]
     assert insider.attacker_check == gang.attacker_check == AttackerCheck.CHOSEN
     assert insider.attacker_check_reason == "Holds the admin login." and len(insider.actors) == 1
@@ -50,22 +65,21 @@ def test_threats_of_one_type_with_different_facts_get_different_actors() -> None
 def test_an_unlisted_or_missing_pick_is_none_fits_and_a_listed_name_without_a_reason_acts() -> None:
     """Only a listed name acts, never a guess; no re-ask. None plausible or none named: not planned."""
     listed = [GANG.name, INSIDER.name]
-    unlisted = actor_pick({"attacker": "APT99", "attacker_reason": "Famous."}, listed)
+    unlisted = _read_pick({"attacker": "APT99", "attacker_reason": "Famous."}, listed)
     assert unlisted == ActorPick(None, "Famous.")
-    assert actor_pick({"attacker": GANG.name, "attacker_reason": ""}, listed) == ActorPick(GANG.name, "")
-    assert actor_pick({"attacker": None}, listed) == ActorPick(None, "")
-    assert actor_pick({"attacker_reason": "Reaches it."}, listed) == ActorPick(None, "Reaches it.")
-    assert actor_pick({"attacker": "ransomware GANG", "attacker_reason": "Reaches it."}, listed) == ActorPick(
+    assert _read_pick({"attacker": GANG.name, "attacker_reason": ""}, listed) == ActorPick(GANG.name, "")
+    assert _read_pick({"attacker": None}, listed) == ActorPick(None, "")
+    assert _read_pick({"attacker_reason": "Reaches it."}, listed) == ActorPick(None, "Reaches it.")
+    assert _read_pick({"attacker": "ransomware GANG", "attacker_reason": "Reaches it."}, listed) == ActorPick(
         GANG.name, "Reaches it."
     )
-    unpicked = choose_actor(_threat("lib:1", None), LINKED)
-    assert unpicked.actors == () and unpicked.attacker_check == AttackerCheck.NONE_FITS
-    none_fits = choose_actor(_threat("lib:1", ActorPick(None, "No listed attacker reaches it.")), LINKED)
-    assert none_fits.actors == () and none_fits.attacker_check == AttackerCheck.NONE_FITS
+    for pick in (None, ActorPick(None, "No listed attacker reaches it.")):
+        planned_threats, drops = _pick_attacker(_threat("lib:1", pick))
+        assert planned_threats == [] and [drop.reason for drop in drops] == [AttackerCheck.NONE_FITS]
 
 
 def test_the_gate_lists_each_threats_linked_attackers_and_never_judges_one_whose_type_links_none() -> None:
-    _, prompt = relevance_gate_prompt("LANDSCAPE", [])
+    prompt = gate_prompt([])
     assert "never default to the first name, a well-known attacker" in prompt
     assert '"attacker_reason"' in prompt and '"suitability"' not in prompt
     chat = planner_chat({PHISHING.name: ["SYS1"]})
@@ -106,7 +120,7 @@ def test_planning_uses_the_gates_picks_and_makes_no_attacker_call() -> None:
     (ransomware,) = findings.threats
     assert ransomware.actors[0].name == INSIDER.name and ransomware.attacker_check == AttackerCheck.CHOSEN
     assert ransomware.attacker_check_reason == "Holds SCADA server's admin login."
-    traced = {(drop["threat_name"], drop["stage"], drop["reason"]) for drop in findings.drops}
+    traced = {(drop.threat_name, drop.stage, drop.reason) for drop in findings.drops}
     assert {(PHISHING.name, "attacker", "none_fits"), (LOG_WIPE.name, "attacker", "none_fits")} <= traced
     assert {task for task, _ in chat.calls} <= {AiTask.RELEVANCE_GATE, AiTask.GAP_FILL}
 
@@ -130,15 +144,20 @@ def test_a_hand_written_threat_takes_its_linked_actors_else_its_types_else_the_w
 
 
 def test_one_kinds_none_fits_never_vetoes_the_attacker_another_kind_named() -> None:
-    """A threat merged across kinds keeps a pick that names an attacker over one that says none fits, in
+    """A threat folded with its twin keeps a pick that names an attacker over one that says none fits, in
     either order; a "none fits" still beats no pick at all."""
-    named = planned("lib:1", "Ransomware", actor_pick=ActorPick(GANG.name, "It needs a crew."))
-    none_fits = planned(
-        "lib:1", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), actor_pick=ActorPick(None, "None could.")
+    named = planned(
+        "lib:1", "Ransomware", actor_pick=ActorPick(GANG.name, "It needs a crew."), linked_actors=LINKED
     )
-    for kept, other in ((named, none_fits), (none_fits, named)):
-        merged = merge_two_threats(kept, other)
+    none_fits = planned(
+        "ai:x", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), actor_pick=ActorPick(None, "None could.")
+    )
+    for kept, other in ((named, none_fits), (dataclasses.replace(none_fits, linked_actors=LINKED), named)):
+        merged = plan_module._merge_threat_into_another(kept, other, CONTEXT, [])
         assert merged.actor_pick == ActorPick(GANG.name, "It needs a crew.")
-        assert choose_actor(merged, LINKED).attacker_check == AttackerCheck.CHOSEN
+        (acting,), _ = _pick_attacker(merged)
+        assert acting.attacker_check == AttackerCheck.CHOSEN
     unpicked = dataclasses.replace(named, actor_pick=None)
-    assert merge_two_threats(unpicked, none_fits).actor_pick == ActorPick(None, "None could.")
+    assert plan_module._merge_threat_into_another(unpicked, none_fits, CONTEXT, []).actor_pick == ActorPick(
+        None, "None could."
+    )

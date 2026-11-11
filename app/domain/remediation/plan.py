@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
-from app.core.asset_types import asset_type_fits
+from app.core.asset_types import asset_type_fits, compatible_asset_types
 from app.core.constants import (
     AiTask,
     ControlCoverage,
@@ -28,8 +28,6 @@ from app.core.exceptions import JobFailed
 from app.core.prompts import PROMPTS
 from app.core.redaction import redact
 from app.domain.remediation.schedule import action_name_or_position, schedule_plan
-from app.domain.scenario.library_rules import compatible_asset_types
-from app.domain.scenario.plan import raw_system_facts
 from app.domain.shared.ask_ai import ChatPrompt, answer_item_problems, ask_ai_and_check
 from app.domain.shared.names import name_match_key, shorten_text
 from app.domain.shared.prompt_redaction import drop_database_ids, facts_safe_for_prompt, without_platform_note
@@ -254,7 +252,8 @@ def build_snapshot(
         "asset": redact_and_shorten_text(context.asset["name"]),
         "asset_context": _shorten_all_texts(facts_safe_for_prompt(context.asset_context)),
         "supporting_systems": [
-            _shorten_all_texts(facts_safe_for_prompt(raw_system_facts(system))) for system in context.systems
+            _shorten_all_texts(facts_safe_for_prompt(FrozenContext.read_system_facts(system)))
+            for system in context.systems
         ],
         "threat": _threat(content),
         "scenario": _scenario(content),

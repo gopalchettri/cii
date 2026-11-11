@@ -44,7 +44,7 @@ from app.domain.remediation.plan import (
     list_affected_systems,
     write_plan,
 )
-from app.domain.scenario.controls import ControlMapper, controls_record
+from app.domain.scenario.write import ControlMapper, build_controls_record
 from app.domain.shared.audit import audit_target
 from app.models.library.library import LibraryControl, ThreatProposal
 from app.models.scenario.asset_context import FrozenContext
@@ -138,7 +138,7 @@ class RemediationPlanJob:
         categories = context.system_categories()
         library_mapped, warnings = assess_controls(items, register, controls, affected, categories)
         identified = [item["control_id"] for item in items]
-        found = self._mapper.find_alternatives(
+        found = self._mapper.find_alternative_controls(
             scenario, context, library, identified, Remediation.ALTERNATIVES, mapped
         )
         alternatives = assess_alternatives(found, register, controls, affected, categories)
@@ -196,7 +196,7 @@ class RemediationPlanJob:
             if isinstance(exc, LeaseLost) and str(exc) == scenario_id:  # its control lease, not the job's
                 raise WaitingForAnotherJob(RemediationMessage.CONTROLS_BEING_MAPPED) from exc
             raise
-        record = controls_record(mapping, library)
+        record = build_controls_record(mapping, library)
         if not self._scenarios.update_scenario_controls(
             scenario_id, task_id, attempts, Status.DONE, mapping=record
         ):  # its claim was taken over meanwhile

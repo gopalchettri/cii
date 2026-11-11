@@ -2,7 +2,6 @@
 database, planned, written and its controls mapped by the real jobs on the test MongoDB with fake AI models,
 then read, one scenario accepted, and read again."""
 
-import json
 import uuid
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
@@ -176,14 +175,6 @@ def _gate_giving_actions(user_prompt: str) -> dict[str, Any]:
     return answer | {"verdicts": [verdict | {"actions": [_ACTION]} for verdict in answer["verdicts"]]}
 
 
-def _review_carrying_out_every_action(block: str) -> dict[str, Any]:
-    """A clean review of one slot, judging each action its PLAN lists carried out."""
-    plan, _ = json.JSONDecoder().raw_decode(block.split("PLAN:\n", 1)[1])
-    actions = plan["threat"].get("threat_actions") or []
-    consistent = {"rules": {"1": "holds"}, "same_threat": True, "same_impact": True}
-    return consistent | {"threat_actions": dict.fromkeys(actions, "carried out")}
-
-
 def _unreadable_first(threats: set[str], written: Callable[[str], dict[str, Any]]) -> Callable[..., Any]:
     """A writer whose first answer for each of `threats` is missing its texts; its rewrite is good."""
     return lambda block: (
@@ -196,15 +187,14 @@ def _unreadable_first(threats: set[str], written: Callable[[str], dict[str, Any]
 @pytest.mark.parametrize(
     ("unreadable", "calls"),
     [
-        (set(), [AiTask.RELEVANCE_GATE, AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]),
+        (set(), [AiTask.RELEVANCE_GATE, AiTask.WRITE_SCENARIO]),
         (
             {LOG_WIPE.name, ADMIN_ABUSE.name},
-            [AiTask.RELEVANCE_GATE, AiTask.WRITE_SCENARIO, AiTask.PLAN_CHECK]
-            + [AiTask.REPAIR_SCENARIO, AiTask.PLAN_CHECK],
+            [AiTask.RELEVANCE_GATE, AiTask.WRITE_SCENARIO, AiTask.REPAIR_SCENARIO],
         ),
     ],
 )
-def test_a_click_plans_and_writes_its_first_set_of_six_in_three_ai_calls(
+def test_a_click_plans_and_writes_its_first_set_of_six_in_two_ai_calls(
     client: TestClient,
     api_key: str,
     jobs_faked: list[tuple[Any, ...]],
@@ -213,14 +203,13 @@ def test_a_click_plans_and_writes_its_first_set_of_six_in_three_ai_calls(
     unreadable: set[str],
     calls: list[AiTask],
 ) -> None:
-    """Lean design, plan test 1: a click (the plan and its first set of 6) with good answers makes exactly 3
-    AI model calls: one threat check for every threat, one write and one review for the set. Two unreadable
-    first drafts add one rewrite and one review holding only those two: 4 writing calls. The threat check's
-    actions are stored with systems by name and reach every brief and review without them."""
+    """Lean design, plan test 1: a click (the plan and its first set of 6) with good answers makes exactly 2
+    AI model calls: one threat check for every threat and one write for the set. Two unreadable first drafts
+    add one rewrite holding only those two. The threat check's actions are stored with systems by name and
+    reach every brief without them."""
     monkeypatch.setattr(get_settings(), "initial_set_size", 6)
     monkeypatch.setattr(get_settings(), "total_scenario_count", 0)
     chat.responders[AiTask.RELEVANCE_GATE] = _gate_giving_actions
-    chat.responders[AiTask.PLAN_CHECK] = _review_carrying_out_every_action
     chat.responders[AiTask.WRITE_SCENARIO] = _unreadable_first(
         unreadable, chat.responders[AiTask.WRITE_SCENARIO]
     )
@@ -240,6 +229,3 @@ def test_a_click_plans_and_writes_its_first_set_of_six_in_three_ai_calls(
         brief_of(block) for prompt in chat.asked(AiTask.WRITE_SCENARIO) for _, block in slot_blocks(prompt)
     ]
     assert [brief["threat"]["threat_actions"] for brief in briefs] == [["altering setpoints"]] * 6
-    assert all(
-        '"threat_actions": ["altering setpoints"]' in prompt for prompt in chat.asked(AiTask.PLAN_CHECK)
-    )

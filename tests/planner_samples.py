@@ -6,10 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.core.constants import AiTask, StrideCategory
+from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import ThreatFinder
 from app.models.library.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
 from app.models.scenario.asset_context import FrozenContext
-from app.models.scenario.plan import CategoryAudit, PlannedThreat, ThreatFindings
+from app.models.scenario.plan import AttackPlace, Drop, PlannedThreat, ThreatFindings
 from app.search.service import LibrarySearch
 from tests.fakes import FakeChatModel, FakeEmbeddings, FakeRerankModel, items_in
 
@@ -174,20 +175,39 @@ def finder(chat: FakeChatModel, rerank: FakeRerankModel | None = None, **library
     return ThreatFinder(chat, search, rerank or FakeRerankModel(), embeddings)  # type: ignore[arg-type]
 
 
-def audit_of(findings: ThreatFindings, category: StrideCategory) -> CategoryAudit:
-    return next(audit for audit in findings.audits if audit.category == category)
+def drops_for(findings: ThreatFindings, kind: StrideCategory) -> list[Drop]:
+    """The candidates that left the plan under one category, in planning order."""
+    return [drop for drop in findings.drops if drop.kind == kind]
+
+
+def gate_prompt(items: list[dict[str, Any]]) -> str:
+    """The relevance gate's user prompt for these candidates, on the landscape "LANDSCAPE"."""
+    rules = plan_module._GATE_RULES
+    return plan_module._build_threat_finding_prompt("LANDSCAPE", StrideCategory, rules, "CANDIDATES", items)[
+        1
+    ]
+
+
+def gap_fill_prompt(kinds: list[StrideCategory]) -> str:
+    """The gap fill's user prompt for these empty categories, three library threats judged in each."""
+    items = [{"category": kind, "judged": 3, "rejected": []} for kind in kinds]
+    rules = plan_module._GAP_FILL_RULES
+    return plan_module._build_threat_finding_prompt("LANDSCAPE", kinds, rules, "EMPTY CATEGORIES", items)[1]
 
 
 def planned(key: str, name: str, systems: tuple[int, ...] = (321,), **fields: Any) -> PlannedThreat:
-    """A planned threat for the fold and path tests: "lib:<id>" keys are library threats."""
+    """A planned threat for the fold and path tests ("lib:<id>": a library one), one `reason` for all."""
     catalogue_id = int(key.split(":")[1]) if key.startswith("lib:") else None
-    defaults: dict[str, Any] = {
+    reason = fields.pop("reason", "It applies.")
+    values: dict[str, Any] = {
         "type_id": 1,
         "type_name": "Malware",
         "categories": (S.TAMPERING,),
         "impact": 2,
         "confidence": 70.0,
         "likelihood": 2,
-        "reason": "It applies.",
-    }
-    return PlannedThreat(key, catalogue_id, name=name, systems=systems, **(defaults | fields))
+    } | fields
+    values.setdefault("reasons", dict.fromkeys(values["categories"], reason))
+    values.setdefault("main_place", AttackPlace(systems, systems, values["impact"], values["confidence"]))
+    values.setdefault("gate_order", values["categories"])
+    return PlannedThreat(key, catalogue_id, name=name, systems=systems, **values)

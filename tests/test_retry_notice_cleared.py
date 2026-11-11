@@ -11,7 +11,7 @@ import pytest
 from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, Collection, Decision, Status, Step, TaskName
 from app.core.database import get_mongodb
 from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.results import build_board
+from app.domain.scenario.session import build_status_board
 from app.domain.service_mapper.views import mapping_status, mapping_view
 from app.models.remediation.plan import RemediationStatus
 from app.models.scenario.views import session_status_from_record
@@ -21,7 +21,7 @@ _READERS: dict[Collection, tuple[TaskName, dict[str, Any], list[Callable[[dict[s
     Collection.SESSIONS: (
         TaskName.FIND_THREATS,
         {"entity_id": 86, "asset_id": 103, "step": Step.THREATS},
-        [lambda record: build_board(session_status_from_record(record)).progress.retrying],
+        [lambda record: build_status_board(session_status_from_record(record)).progress.retrying],
     ),
     Collection.REMEDIATIONS: (
         TaskName.WRITE_PLAN,

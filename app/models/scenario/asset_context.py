@@ -3,6 +3,7 @@ run, which every later step reads and never changes. Which facts a run has is th
 choice: every column of its asset row and of the supporting systems sent; of the asset's other systems,
 only their id and name."""
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -54,6 +55,21 @@ class FrozenContext:
         prefix = ContextProperties.ORGANISATION_PREFIX
         own = {key: value for key, value in self.asset_context.items() if not key.startswith(prefix)}
         return own, {key: value for key, value in self.asset_context.items() if key.startswith(prefix)}
+
+    @staticmethod
+    def read_system_facts(system: dict[str, Any]) -> dict[str, Any]:
+        """A system's recorded facts, its category as its asset type; not yet safe for a prompt."""
+        facts = {
+            "asset_type" if key == "category_name" else key: value
+            for key, value in system.items()
+            if key not in ContextProperties.ALWAYS_USED
+        }
+        return {"name": system["name"], **facts}
+
+    def find_systems(self, system_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """The run's frozen supporting systems with these ids, in the run's order."""
+        wanted = set(system_ids)
+        return [system for system in self.systems if system["id"] in wanted]
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "FrozenContext":

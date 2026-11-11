@@ -2,6 +2,7 @@
 risk are; one long system description never pushes the others out; what was shortened is
 recorded (labels only); the mapper searches exactly CONTROL_CANDIDATES candidates."""
 
+import dataclasses
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,8 +11,8 @@ import pytest
 from app.core.config import Settings
 from app.core.constants import Controls, IntelKind, IntelSource
 from app.domain.external_intelligence.facts import PlainFactWriter
-from app.domain.scenario import controls
-from app.domain.scenario.controls import ControlMapper, control_query
+from app.domain.scenario import write
+from app.domain.scenario.write import ControlMapper, build_control_query
 from app.models.external_intelligence.evidence import IntelHit
 from app.models.external_intelligence.evidence_view import cited_evidence
 from tests.planner_samples import CONTEXT
@@ -36,12 +37,18 @@ def _content(statement_chars: int = 2600, risk_chars: int = 1300) -> dict[str, A
         "statement": ("story " * statement_chars)[:statement_chars],
         "risk_statement": ("impact " * risk_chars)[:risk_chars],
         "actors": [{"name": "an organised criminal group", "role": "acting"}],
+        "systems": [{"id": system["id"]} for system in SYSTEMS],
     }
+
+
+def _query(content: dict[str, Any], systems: list[dict[str, Any]] = SYSTEMS) -> Any:
+    """The control query of `content` in a run whose frozen systems are `systems`."""
+    return build_control_query(content, dataclasses.replace(CONTEXT, systems=systems))
 
 
 def test_long_texts_never_push_the_systems_or_the_asset_facts_out() -> None:
     """Built narrative first and cut from the end, a 400-word scenario and a 200-word risk left no system."""
-    query = control_query(_content(), CONTEXT, SYSTEMS)
+    query = _query(_content())
     assert len(query.text) <= Controls.QUERY_MAX_CHARS
     for system in SYSTEMS:
         assert (
@@ -54,14 +61,14 @@ def test_long_texts_never_push_the_systems_or_the_asset_facts_out() -> None:
 
 def test_one_long_system_description_never_pushes_the_others_out() -> None:
     systems = [{**SYSTEMS[0], "description": "x " * 2500}, *SYSTEMS[1:]]
-    query = control_query(_content(300, 200), CONTEXT, systems)
+    query = _query(_content(300, 200), systems)
     assert all(f"System {system['name']}:" in query.text for system in systems)
     assert query.shortened == ("system 1448",) and len(query.text) <= Controls.QUERY_MAX_CHARS
 
 
 def test_a_query_that_fits_is_whole_in_priority_order_and_the_same_every_time() -> None:
-    first = control_query(_content(300, 200), CONTEXT, SYSTEMS)
-    assert first.shortened == () and first == control_query(_content(300, 200), CONTEXT, SYSTEMS)
+    first = _query(_content(300, 200))
+    assert first.shortened == () and first == _query(_content(300, 200))
     text = first.text
     assert (
         text.index("Title:")
@@ -84,7 +91,7 @@ def test_the_mapper_searches_the_configured_candidates_and_records_what_was_shor
             return [[(control, 0.0) for control in _CONTROLS]]
 
     settings = Settings(CONTROL_CANDIDATES=25)  # type: ignore[call-arg]
-    monkeypatch.setattr(controls, "get_settings", lambda: settings)
+    monkeypatch.setattr(write, "get_settings", lambda: settings)
     rerank = _ScoresByText({"Backup of controller logic": 87.0})
     scenario = {**_SCENARIO, "content": {**_SCENARIO["content"], "statement": "story " * 900}}
     mapping = ControlMapper(rerank).map_controls(scenario, _OT_CONTEXT, Snapshot())  # type: ignore[arg-type]
@@ -97,7 +104,7 @@ def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> Non
     first = ["Access Management", "Filter Network Traffic", "Multi-factor Authentication"]
     second = ["Access Management", "Password Policies", "Audit", "Data Backup", "Code Signing"]
     evidence = [{"n": 1, "mitigations": first}, {"n": 2, "mitigations": second}]
-    query = control_query(_content(9_000, 9_000) | {"evidence": evidence}, CONTEXT, SYSTEMS)
+    query = _query(_content(9_000, 9_000) | {"evidence": evidence})
     names = (*first, "Password Policies", "Audit", "Data Backup")
     assert query.mitigations == names and len(names) == Controls.QUERY_MITIGATIONS
     line = "Mitigations (MITRE ATT&CK): " + "; ".join(names)
@@ -106,7 +113,7 @@ def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> Non
 
 
 def test_a_scenario_without_evidence_has_no_mitigation_line() -> None:
-    query = control_query(_content(), CONTEXT, SYSTEMS)
+    query = _query(_content())
     assert query.mitigations == () and "Mitigations" not in query.text
 
 

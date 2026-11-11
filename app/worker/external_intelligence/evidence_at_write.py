@@ -7,6 +7,7 @@ from typing import Any
 import structlog
 
 from app.ai.common import outage_reason
+from app.core.asset_types import compatible_asset_types
 from app.core.clock import utc_now
 from app.core.constants import (
     AuditAction,
@@ -23,7 +24,6 @@ from app.core.redaction import clipped_text, redact
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
 from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.scenario.library_rules import compatible_asset_types
 from app.domain.shared.audit import audit_target
 from app.domain.shared.names import shorten_text
 from app.models.external_intelligence.evidence import EvidenceBatchSummary

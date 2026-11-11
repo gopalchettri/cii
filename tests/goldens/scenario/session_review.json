@@ -1,0 +1,501 @@
+{
+ "accept": [
+  {
+   "reason": "already_rejected",
+   "scenario_id": "c"
+  },
+  {
+   "reason": "failure_scenario",
+   "scenario_id": "d"
+  },
+  {
+   "reason": "failure_scenario",
+   "scenario_id": "e"
+  },
+  {
+   "reason": "duplicate_version",
+   "scenario_id": "f1"
+  },
+  {
+   "reason": "library_inactive",
+   "scenario_id": "g"
+  },
+  {
+   "reason": "unknown",
+   "scenario_id": "x"
+  }
+ ],
+ "accept_all": [
+  [
+   {
+    "_id": "b",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "accepted",
+    "path_id": "p2",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   },
+   {
+    "_id": "c",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "rejected",
+    "path_id": "p3",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   },
+   {
+    "_id": "d",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "pending",
+    "failure": {
+     "reason": "ai_busy"
+    },
+    "path_id": "p4",
+    "source": "generated",
+    "status": "failed",
+    "superseded_by": null
+   },
+   {
+    "_id": "e",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "pending",
+    "failure": {
+     "reason": null
+    },
+    "path_id": "p5",
+    "source": "generated",
+    "status": "failed",
+    "superseded_by": null
+   },
+   {
+    "_id": "f1",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "pending",
+    "path_id": "p6",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   },
+   {
+    "_id": "h",
+    "content": {
+     "threat": {
+      "ai_generated": true,
+      "library_id": null
+     }
+    },
+    "controls": {},
+    "decision": "pending",
+    "path_id": "p8",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   },
+   {
+    "_id": "m",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "pending",
+    "path_id": "p9",
+    "source": "manual",
+    "status": "done",
+    "superseded_by": null
+   }
+  ],
+  [
+   {
+    "reason": "duplicate_version",
+    "scenario_id": "a"
+   },
+   {
+    "reason": "duplicate_version",
+    "scenario_id": "f2"
+   },
+   {
+    "reason": "library_inactive",
+    "scenario_id": "g"
+   }
+  ]
+ ],
+ "cancel_seen": [
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  "<datetime>",
+  null,
+  null,
+  "<datetime>",
+  null,
+  null
+ ],
+ "cancelled": [
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  false,
+  true,
+  false,
+  false,
+  true,
+  false,
+  false
+ ],
+ "controls_pending": [
+  "h"
+ ],
+ "decidable": {
+  "returned": [
+   {
+    "_id": "a",
+    "content": {
+     "threat": {
+      "ai_generated": false,
+      "library_id": 1
+     }
+    },
+    "controls": {
+     "status": "done"
+    },
+    "decision": "pending",
+    "path_id": "p1",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   },
+   {
+    "_id": "h",
+    "content": {
+     "threat": {
+      "ai_generated": true,
+      "library_id": null
+     }
+    },
+    "controls": {},
+    "decision": "pending",
+    "path_id": "p8",
+    "source": "generated",
+    "status": "done",
+    "superseded_by": null
+   }
+  ]
+ },
+ "not_decidable": {
+  "code": "conflict",
+  "detail": "Some scenarios cannot be accepted.",
+  "details": null,
+  "errors": [
+   {
+    "reason": "already_rejected",
+    "scenario_id": "c"
+   },
+   {
+    "reason": "failure_scenario",
+    "scenario_id": "d"
+   },
+   {
+    "reason": "failure_scenario",
+    "scenario_id": "e"
+   },
+   {
+    "reason": "duplicate_version",
+    "scenario_id": "f1"
+   },
+   {
+    "reason": "library_inactive",
+    "scenario_id": "g"
+   },
+   {
+    "reason": "unknown",
+    "scenario_id": "x"
+   }
+  ],
+  "raised": "Conflict",
+  "reason": "scenarios_not_decidable",
+  "status": 409
+ },
+ "not_regenerable": {
+  "code": "conflict",
+  "detail": "Some scenarios cannot be regenerated.",
+  "details": null,
+  "errors": [
+   {
+    "reason": "failure_scenario",
+    "scenario_id": "e"
+   },
+   {
+    "reason": "hand_written",
+    "scenario_id": "m"
+   }
+  ],
+  "raised": "Conflict",
+  "reason": "scenarios_not_regenerable",
+  "status": 409
+ },
+ "nothing_to_accept": {
+  "code": "conflict",
+  "detail": "Run 'run-golden-1' has no written scenario to accept.",
+  "details": null,
+  "errors": null,
+  "raised": "Conflict",
+  "reason": "nothing_to_accept",
+  "status": 409
+ },
+ "open": {
+  "awaiting_next_set": {
+   "returned": null
+  },
+  "awaiting_review": {
+   "returned": null
+  },
+  "cancelled_finding": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' was cancelled before its scenarios were planned: start a new run for its asset.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "run_cancelled",
+   "status": 409
+  },
+  "controls_cancelled": {
+   "returned": null
+  },
+  "controls_failed_manual": {
+   "returned": null
+  },
+  "failed_finding": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' failed before any scenario was written.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "run_failed",
+   "status": 409
+  },
+  "failed_writing": {
+   "returned": null
+  },
+  "finding_threats": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' is still generating: try again once it is done.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "generation_in_progress",
+   "status": 409
+  },
+  "mapping_controls": {
+   "returned": null
+  },
+  "next_set_running": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' is still generating: try again once it is done.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "generation_in_progress",
+   "status": 409
+  },
+  "outage_cards": {
+   "returned": null
+  },
+  "queued_first": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' is still generating: try again once it is done.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "generation_in_progress",
+   "status": 409
+  },
+  "regen_failed": {
+   "returned": null
+  },
+  "writing": {
+   "code": "conflict",
+   "detail": "Run 'run-golden-1' is still generating: try again once it is done.",
+   "details": null,
+   "errors": null,
+   "raised": "Conflict",
+   "reason": "generation_in_progress",
+   "status": 409
+  }
+ },
+ "outcome": [
+  [
+   "a"
+  ],
+  [
+   "a"
+  ],
+  [
+   {
+    "reason": "changed_concurrently",
+    "scenario_id": "b"
+   },
+   {
+    "reason": "changed_concurrently",
+    "scenario_id": "h"
+   }
+  ]
+ ],
+ "owner": [
+  {
+   "code": "not_found",
+   "detail": "Session 's' does not exist.",
+   "details": null,
+   "errors": null,
+   "raised": "NotFound",
+   "reason": null,
+   "status": 404
+  },
+  {
+   "code": "forbidden",
+   "detail": "Session 's' belongs to another entity.",
+   "details": null,
+   "errors": null,
+   "raised": "Forbidden",
+   "reason": null,
+   "status": 403
+  },
+  {
+   "returned": {
+    "entity_id": 86
+   }
+  }
+ ],
+ "regenerate": [
+  {
+   "reason": "failure_scenario",
+   "scenario_id": "e"
+  },
+  {
+   "reason": "duplicate_version",
+   "scenario_id": "f1"
+  },
+  {
+   "reason": "unknown",
+   "scenario_id": "x"
+  },
+  {
+   "reason": "hand_written",
+   "scenario_id": "m"
+  },
+  {
+   "reason": "version_not_current",
+   "scenario_id": "f2"
+  }
+ ],
+ "regenerate_batch": {
+  "returned": [
+   {
+    "path_id": "p1",
+    "replaces": "a"
+   },
+   {
+    "path_id": "p4",
+    "replaces": null
+   }
+  ]
+ },
+ "reject": [
+  {
+   "reason": "already_accepted",
+   "scenario_id": "b"
+  },
+  {
+   "reason": "failure_scenario",
+   "scenario_id": "d"
+  },
+  {
+   "reason": "failure_scenario",
+   "scenario_id": "e"
+  },
+  {
+   "reason": "unknown",
+   "scenario_id": "x"
+  }
+ ],
+ "replace_off": {
+  "code": "conflict",
+  "detail": "Another version of the same attack path is already accepted: send replace_accepted to replace it.",
+  "details": null,
+  "errors": [
+   {
+    "reason": "duplicate_version",
+    "scenario_id": "a"
+   }
+  ],
+  "raised": "Conflict",
+  "reason": "duplicate_version",
+  "status": 409
+ },
+ "replace_on": [
+  "old"
+ ],
+ "run": "run-golden-1",
+ "stamp": {
+  "decided_at": "<datetime>",
+  "decided_by": "u-1",
+  "decided_by_client": "c-1",
+  "decision_id": "d-9",
+  "updated_at": "<datetime>"
+ }
+}

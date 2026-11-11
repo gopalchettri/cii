@@ -39,7 +39,6 @@ from app.data_access.remediation.remediation_repository import RemediationReposi
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.data_access.service_mapper.mapping_repository import MappingRepository
-from app.domain.scenario.review import cancel_stamp_seen
 from app.models.admin.api_clients import Principal
 from app.services.jobs.job_service import JobService
 from tests.plan_addresses import plan_url
@@ -592,7 +591,7 @@ def test_a_cancel_landing_after_the_caller_read_the_run_stands(entity: int) -> N
     seen = container.get_threat_scenario_service().get_threat_scenario_session_status(run_id, entity)
     records = container.get_work_control_repository()
     records.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
-    assert records.resume_scenario_controls(run_id, cancel_stamp_seen(seen)) == 0
+    assert records.resume_scenario_controls(run_id, (seen.cancelled or {}).get("at")) == 0
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9"
     assert _controls(stopped) == _controls(waiting) == Status.CANCELLED

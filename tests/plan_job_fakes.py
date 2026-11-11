@@ -144,8 +144,8 @@ class FakeMapper:
         self.failure: Exception | None = None  # raised by the next mapping (an outage), then cleared
         self.alternatives: list[
             tuple[Any, float]
-        ] = []  # what find_alternatives offers (library controls, scores)
-        self.mapped: dict[str, Any] | None = None  # the controls record find_alternatives was given
+        ] = []  # what find_alternative_controls offers (library controls, scores)
+        self.mapped: dict[str, Any] | None = None  # the controls record find_alternative_controls was given
 
     def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> ControlMapping:
         self.asked.append(scenario["_id"])
@@ -158,7 +158,7 @@ class FakeMapper:
         control = MappedControl(control_id, code, "A control", None, "OT", 1, 87.4, ControlMatch.EXACT)
         return ControlMapping(items=(control,), query="the scenario and its risk")
 
-    def find_alternatives(
+    def find_alternative_controls(
         self,
         scenario: dict[str, Any],
         context: Any,

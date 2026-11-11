@@ -1,37 +1,46 @@
-"""Scenario writing: the writer's brief, its AI answer contracts, a draft, its findings and the written
-scenario. Frozen, so the paths written at once share nothing mutable."""
+"""Scenario writing's shapes: the brief, the writer's answer contract, a draft, its findings, the card."""
 
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 
 from app.core.constants import (
+    FINAL_FINDINGS,
+    FINDING_SEVERITIES,
+    STORY_FINDING_SEVERITIES,
     AiOutage,
     AnswerProblem,
     ErrorCode,
+    EvidenceMode,
     FindingCode,
-    PlanCheckStatus,
-    Route,
+    FindingSeverity,
     StoryFindingCode,
-    StrideCategory,
-    WriterStyle,
 )
+from app.models.library.library import ThreatLibrary
 
 
 @dataclass(frozen=True)
 class LiveLibrary:
-    """What the library holds active now: a path whose threat or attacker was retired since is not written."""
+    """What the library holds active now: a path whose threat or attacker was retired is not written."""
 
     threat_ids: frozenset[int]
     type_ids: frozenset[int]  # an AI-proposed threat stays writable while its library type is active
     actor_ids: frozenset[int]
 
+    @classmethod
+    def from_library(cls, library: ThreatLibrary) -> "LiveLibrary":
+        """The active threat, type and actor ids of `library`."""
+        return cls(
+            frozenset(threat.catalogue_id for threat in library.threats),
+            frozenset(threat.type_id for threat in library.threats),
+            frozenset(actor.actor_id for actor in library.actors),
+        )
+
 
 @dataclass(frozen=True)
 class BriefSystem:
-    """One supporting system on a brief: applicable when the route goes through it. Its id never reaches
-    the prompt."""
+    """One supporting system on a brief, applicable when the route goes through it."""
 
     id: int
     name: str
@@ -40,27 +49,31 @@ class BriefSystem:
 
 @dataclass(frozen=True)
 class WriterBrief:
-    """Everything the writer and the plan check read about one path: names and recorded facts, never an id."""
+    """Everything the writer reads about one path: names and recorded facts, never an id."""
 
     asset: dict[str, Any]  # name, type, description, sector ...: recorded facts only, cleaned for a prompt
-    asset_name: str
-    critical_service: str | None
-    category: StrideCategory
-    attacker: str  # the acting attacker, always described as a type of attacker
-    why_this_attacker: str  # the gate's reason for this attacker, on this path ("" when it gave none)
-    likelihood: str  # HIGH, MEDIUM or LOW: how likely a listed attacker would attempt the threat
-    threat_type: str
-    threat: str
-    why_it_applies: str  # the relevance check's reason, systems by name
-    systems: tuple[dict[str, Any], ...]  # the threat's systems, each its name plus recorded facts
-    other_systems: tuple[str, ...]  # the run's other systems, by name: never part of this scenario
-    threat_actions: tuple[str, ...] = ()  # the actions the threat's name states; (): the writer splits it
-    style: WriterStyle = WriterStyle.ORIGINAL
-    # Evidence docs in the plan's order, best first: the writer's grounding; the first citable one is [1].
+    systems: tuple[dict[str, Any], ...]  # the path's systems, each its name plus recorded facts
+    facts: dict[str, Any]  # the path's own BRIEF fields: category, attacker, threat, entry point options ...
+    threat: str  # the threat's name without its code: copied back by the writer, a title's qualifier
+    threat_actions: tuple[str, ...]  # the actions the threat's name states; (): the writer splits it
+    supporting_systems: tuple[BriefSystem, ...]  # every supporting system of the run, applicable or not
+    entry_options: tuple[str, ...]  # the systems the path may get in through; (): the asset itself
+    # Evidence docs in the plan's order, best first, only for an evidence story: the cited one is [1].
     evidence: tuple[dict[str, Any], ...] = ()
-    # Every supporting system of the run, applicable or not: each gets a reason (the writer's only for "yes").
-    supporting_systems: tuple[BriefSystem, ...] = ()
-    entry_system: str = ""  # the system the path gets in through, by its name in `systems` ("" = any of them)
+    cleaned_evidence: tuple[
+        tuple[str, tuple[str, ...]], ...
+    ] = ()  # each entry's (title, stated facts), cleaned
+    cited_index: int | None = None  # the index in `evidence` of the entry a story cites; None: not a story
+    cited_claim: str = ""  # code's own sentence about the cited entry
+    brief_text: str = ""  # the whole brief as JSON, casefolded: what a scenario may take a label or word from
+
+    def get_evidence_mode(self) -> EvidenceMode:
+        """Returns the brief's evidence mode: inferred, nearest or source-documented."""
+        if not self.evidence:
+            return EvidenceMode.INFERRED
+        if all(entry.get("nearest") for entry in self.evidence):
+            return EvidenceMode.NEAREST
+        return EvidenceMode.SOURCE_DOCUMENTED
 
 
 @dataclass(frozen=True)
@@ -69,10 +82,10 @@ class ScenarioDraft:
     statement: str
     risk: str
     assumptions: tuple[str, ...]
-    entry_point: str  # one of the brief's entry_point_options; "" = the asset itself
+    entry_point: str  # one of the brief's entry_options; "" = the asset itself
     system_reasons: tuple[tuple[str, str], ...] = ()  # (system name, its one-sentence reason), brief order
     evidence_statement: str = ""  # a story's closing sentence code built from its step ("" when none)
-    evidence_step: str = ""  # the writer's step of its story that the cited entry is about
+    evidence_problem: str = ""  # why the writer's step could not open that sentence ("" when it could)
 
 
 @dataclass(frozen=True)
@@ -80,27 +93,35 @@ class Finding:
     code: FindingCode | StoryFindingCode
     message: str
 
+    def get_severity(self) -> FindingSeverity:
+        """How serious the finding's code is."""
+        if isinstance(self.code, StoryFindingCode):
+            return STORY_FINDING_SEVERITIES[self.code]
+        return FINDING_SEVERITIES[self.code]
 
-@dataclass(frozen=True)
-class PlanCheck:
-    status: PlanCheckStatus
-    problems: tuple[str, ...] = ()
-    # The reviewer's verdicts on meaning; True when the check could not be made (stored as None then).
-    same_threat: bool = True  # the statement, and the cause its risk gives, carry the plan's threat
-    same_impact: bool = True  # the risk is the consequence of that same scenario's impact
-    actions_not_carried_out: tuple[str, ...] = ()  # the brief's listed actions not judged "carried out"
+    def build_record(self) -> dict[str, str]:
+        """The finding as the scenario stores it."""
+        return {"code": self.code, "severity": self.get_severity(), "message": self.message}
 
 
 @dataclass(frozen=True)
 class WrittenScenario:
-    """The draft written with what was found in it."""
+    """The draft with what the exact checks found in it."""
 
     draft: ScenarioDraft
-    findings: tuple[Finding, ...]  # the code rules' findings and the plan check's notes
-    plan_check: PlanCheck
-    route: Route
-    title_qualifier: str = ""  # the threat's name as a title carries it, to tell two same titles apart
-    rewritten: bool = False  # the draft is the writer's repair (_repaired), kept over its first draft
+    findings: tuple[Finding, ...]
+
+    def list_blocking_codes(self) -> list[str]:
+        """The codes of the findings that block it, sorted, each once."""
+        return sorted(
+            {finding.code for finding in self.findings if finding.get_severity() == FindingSeverity.BLOCKER}
+        )
+
+    def find_blocking_code(self) -> str:
+        """The code of the finding that blocks it, a final one first ("": none)."""
+        blockers = [finding for finding in self.findings if finding.get_severity() == FindingSeverity.BLOCKER]
+        first = min(blockers, key=lambda finding: finding.code not in FINAL_FINDINGS, default=None)
+        return str(first.code) if first else ""
 
 
 @dataclass(frozen=True)
@@ -114,7 +135,7 @@ class PathFailure:
 
 
 class ScenarioAnswer(BaseModel):
-    """The writer's answer; code settles entry_point against the brief's options."""
+    """The writer's answer for one slot; code settles entry_point against the brief's options."""
 
     scenario_title: str
     scenario_statement: str
@@ -132,20 +153,3 @@ class ScenarioAnswer(BaseModel):
         if not value.strip():
             raise ValueError(AnswerProblem.TEXT_REQUIRED)
         return value
-
-
-class PlanCheckAnswer(BaseModel):
-    """The reviewer's answer: per numbered rule "holds" or 'broken: "<exact words>" - <reason>'."""
-
-    rules: dict[str, str]
-    threat_actions: dict[str, str] = {}  # per listed action: "carried out", "only named" or "missing"
-    same_threat: bool  # required, so a reviewer that leaves them out is re-asked, never assumed
-    same_impact: bool
-
-    @model_validator(mode="after")
-    def check_every_rule_has_a_verdict(self) -> "PlanCheckAnswer":
-        """Every rule holds or is broken."""
-        verdicts = [verdict.strip().casefold() for verdict in self.rules.values()]
-        if not verdicts or not all(v == "holds" or v.startswith("broken") for v in verdicts):
-            raise ValueError(AnswerProblem.RULE_VERDICTS_REQUIRED)
-        return self

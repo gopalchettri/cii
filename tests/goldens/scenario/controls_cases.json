@@ -1,0 +1,240 @@
+{
+ "about_ai": {
+  "embeddings": [
+   {
+    "call": "query",
+    "corpus": "control",
+    "texts": [
+     "Category: Tampering\nThreat: AI misuse: Poisoning of the AI model that forecasts load\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+    ]
+   }
+  ],
+  "record": {
+   "items": [
+    {
+     "asset_type": null,
+     "code": "C-AI",
+     "control_id": 6,
+     "description": "Check what reaches a model",
+     "domain": "Artificial Intelligence & Autonomous Technologies",
+     "match": "exact",
+     "name": "Model input checks",
+     "rank": 1,
+     "rationale": "Score 65 is at or above the threshold of 60: strong.",
+     "score": 65.0,
+     "tier": "strong"
+    }
+   ],
+   "left_out_over_max": 0,
+   "made_with": {
+    "ai_controls": true,
+    "candidates": 40,
+    "embedding_model": "openai/text-embedding-3-large",
+    "library": {
+     "Control_Library": "07"
+    },
+    "max_controls": 10,
+    "min_controls": 1,
+    "mitigations": [],
+    "nearest_controls": 1,
+    "query_instruction": null,
+    "query_shortened": [],
+    "rerank_model": "C:/Chettri_World/DEVELOPMENT/Models/Reranker/bge-reranker-v2-m3",
+    "threshold": 60.0
+   },
+   "query": "Category: Tampering\nThreat: AI misuse: Poisoning of the AI model that forecasts load\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "shortfall": null,
+   "shortlist": [
+    {
+     "control_id": 2,
+     "score": 57.0
+    },
+    {
+     "control_id": 7,
+     "score": 33.0
+    },
+    {
+     "control_id": 4,
+     "score": 50.0
+    },
+    {
+     "control_id": 3,
+     "score": 36.0
+    },
+    {
+     "control_id": 6,
+     "score": 65.0
+    },
+    {
+     "control_id": 8,
+     "score": 15.0
+    }
+   ],
+   "warning": null
+  },
+  "reranks": [
+   {
+    "documents": [
+     "Backup of controller logic: Back up PLC and SCADA logic",
+     "Network segmentation: Split the control network",
+     "Multi-factor login: Ask a second factor at every login",
+     "Backup policy: A written backup policy",
+     "Model input checks: Check what reaches a model",
+     "Central logging: Collect every system's logs"
+    ],
+    "query": "Category: Tampering\nThreat: AI misuse: Poisoning of the AI model that forecasts load\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+   }
+  ]
+ },
+ "empty": {
+  "code": "control_library_empty",
+  "message": "The control library has no active control."
+ },
+ "nearest_only": {
+  "embeddings": [
+   {
+    "call": "query",
+    "corpus": "control",
+    "texts": [
+     "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+    ]
+   }
+  ],
+  "record": {
+   "items": [
+    {
+     "asset_type": "OT",
+     "code": "C-OT",
+     "control_id": 2,
+     "description": "Back up PLC and SCADA logic",
+     "domain": "BCDR",
+     "match": "nearest",
+     "name": "Backup of controller logic",
+     "rank": 1,
+     "rationale": "Score 5 is below the threshold of 60: fallback, one of the 1 nearest kept because no control reached it.",
+     "score": 5.0,
+     "tier": "fallback"
+    }
+   ],
+   "left_out_over_max": 0,
+   "made_with": {
+    "ai_controls": false,
+    "candidates": 40,
+    "embedding_model": "openai/text-embedding-3-large",
+    "library": {
+     "Control_Library": "07"
+    },
+    "max_controls": 10,
+    "min_controls": 1,
+    "mitigations": [],
+    "nearest_controls": 1,
+    "query_instruction": null,
+    "query_shortened": [],
+    "rerank_model": "C:/Chettri_World/DEVELOPMENT/Models/Reranker/bge-reranker-v2-m3",
+    "threshold": 60.0
+   },
+   "query": "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "shortfall": null,
+   "shortlist": [
+    {
+     "control_id": 2,
+     "score": 5.0
+    },
+    {
+     "control_id": 7,
+     "score": 5.0
+    },
+    {
+     "control_id": 3,
+     "score": 5.0
+    },
+    {
+     "control_id": 4,
+     "score": 5.0
+    },
+    {
+     "control_id": 8,
+     "score": 5.0
+    }
+   ],
+   "warning": "No control reached the control similarity threshold of 60; the 1 nearest compatible controls are kept (NEAREST_CONTROLS)."
+  }
+ },
+ "other_type": {
+  "embeddings": [
+   {
+    "call": "query",
+    "corpus": "control",
+    "texts": [
+     "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+    ]
+   },
+   {
+    "call": "query",
+    "corpus": "control",
+    "texts": [
+     "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+    ]
+   }
+  ],
+  "record": {
+   "items": [
+    {
+     "asset_type": "IT",
+     "code": "C-MFA2",
+     "control_id": 5,
+     "description": "Ask a second factor at every login",
+     "domain": "Access",
+     "match": "nearest",
+     "name": "Multi-factor login",
+     "rank": 1,
+     "rationale": "Score 50, asset type IT: another type than the scenario's, one of the 1 nearest kept: check that it fits.",
+     "score": 50.0,
+     "tier": "fallback"
+    }
+   ],
+   "left_out_over_max": 0,
+   "made_with": {
+    "ai_controls": false,
+    "candidates": 40,
+    "embedding_model": "openai/text-embedding-3-large",
+    "library": {
+     "Control_Library": "07"
+    },
+    "max_controls": 10,
+    "min_controls": 1,
+    "mitigations": [],
+    "nearest_controls": 1,
+    "query_instruction": null,
+    "query_shortened": [],
+    "rerank_model": "C:/Chettri_World/DEVELOPMENT/Models/Reranker/bge-reranker-v2-m3",
+    "threshold": 60.0
+   },
+   "query": "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission.",
+   "shortfall": null,
+   "shortlist": [
+    {
+     "control_id": 1,
+     "score": 45.0
+    },
+    {
+     "control_id": 5,
+     "score": 50.0
+    }
+   ],
+   "warning": "No control of asset type(s) IT\\OT, OT exists; the nearest control(s) of another type are kept: check that they fit."
+  }
+ },
+ "reranks": [
+  {
+   "documents": [
+    "Backup of controller logic: Back up PLC and SCADA logic",
+    "Network segmentation: Split the control network",
+    "Backup policy: A written backup policy",
+    "Multi-factor login: Ask a second factor at every login",
+    "Central logging: Collect every system's logs"
+   ],
+   "query": "Category: Tampering\nThreat: Malware: Ransomware encrypts backup servers\nAttacker: Malicious insider\nTitle: Ransomware encrypts backup servers at Grid Control Centre\nAsset: Grid Control Centre\nSystem SCADA server: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: Windows, Siemens WinCC; rto_target_mins: 30.0; last_dr_test_date: 2026-01-01\nSystem Historian: asset_type: OT; past_incidents: A flood of requests stopped it in 2024; technology_used: OSIsoft PI\nAsset facts: cii_asset_description: Runs the transmission grid. A flood of requests stopped it in 2024.; critical_service: Electricity transmission; sector: Energy; sub_sector: Electricity; target_rto_hours: 4.0; asset_priority: High\nScenario: A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop.\nRisk: Loss of control at Grid Control Centre could interrupt electricity transmission."
+  }
+ ]
+}

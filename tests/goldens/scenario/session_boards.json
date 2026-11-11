@@ -1,0 +1,534 @@
+{
+ "awaiting_next_set": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "awaiting_next_set",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 0,
+    "remaining": 6,
+    "served": 6,
+    "total": 12
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "awaiting_review": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "awaiting_review",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": true,
+    "pending_review": 3,
+    "rejected": 0,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "cancelled_finding": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {
+    "threats": "Cancelled by user u-2 at 2026-11-01 09:30:00 UTC."
+   },
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "cancelled",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": null,
+    "served": 6,
+    "total": null
+   },
+   "scenarios": "PENDING",
+   "threats": "CANCELLED",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": null,
+    "threats": null
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "cancelled",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "controls_cancelled": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "CANCELLED",
+   "error_message": {
+    "controls": "Cancelled by user u-2 at 2026-11-01 09:30:00 UTC."
+   },
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "cancelled",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 0,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": null,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "controls_failed_manual": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "ERROR",
+   "error_message": {
+    "controls": "Controls could not be matched for the hand-written scenario; regenerate its plan (POST .../treatment-plan/regenerate) to try again."
+   },
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "complete",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 0,
+    "remaining": 0,
+    "served": 1,
+    "total": 1
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": null,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "failed_finding": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": {
+   "code": "unavailable",
+   "message": "The AI is busy.",
+   "reason": "ai_busy"
+  },
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {
+    "threats": "The AI is busy."
+   },
+   "error_reason": "ai_busy",
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "error",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": null,
+    "served": 6,
+    "total": null
+   },
+   "scenarios": "PENDING",
+   "threats": "ERROR",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": null,
+    "threats": null
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "failed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "failed_writing": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": {
+   "code": "job_abandoned",
+   "message": "Abandoned.",
+   "reason": null
+  },
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {
+    "scenarios": "Abandoned."
+   },
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "error",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "ERROR",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": null,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "failed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "finding_threats": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "in_progress",
+   "retrying": {
+    "attempt": 2,
+    "max_attempts": 5,
+    "message": "The AI is busy.",
+    "reason": "ai_busy",
+    "retry_at": "2026-11-01T09:30:00Z",
+    "stage": "threats"
+   },
+   "scenario_count": {
+    "accepted": 2,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": null,
+    "served": 6,
+    "total": null
+   },
+   "scenarios": "PENDING",
+   "threats": "RUNNING",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": null,
+    "threats": null
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "active",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "mapping_controls": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "RUNNING",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "in_progress",
+   "retrying": {
+    "attempt": 1,
+    "max_attempts": 4,
+    "message": "The AI is busy.",
+    "reason": "ai_busy",
+    "retry_at": "2026-11-01T09:30:00Z",
+    "stage": "controls"
+   },
+   "scenario_count": {
+    "accepted": 0,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 0,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": null,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "next_set_running": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "RUNNING",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": {
+    "epoch": 3,
+    "outcome": "running",
+    "requested": 6
+   },
+   "last_regen": null,
+   "overall": "in_progress",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "RUNNING",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": null,
+    "scenarios": null,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "active",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "outage_cards": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {
+    "scenarios": "1 attack path(s) could not be written."
+   },
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "awaiting_review",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 0,
+    "remaining": 0,
+    "served": 5,
+    "total": 6
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "queued_first": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "pending",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": false,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": null,
+    "served": 6,
+    "total": null
+   },
+   "scenarios": "PENDING",
+   "threats": "PENDING",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": null,
+    "threats": null
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "active",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "regen_failed": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "COMPLETE",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": {
+    "epoch": 4,
+    "outcome": "failed",
+    "requested": 2
+   },
+   "overall": "complete",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 2,
+    "complete": true,
+    "pending_review": 0,
+    "rejected": 1,
+    "remaining": 0,
+    "served": 6,
+    "total": 6
+   },
+   "scenarios": "COMPLETE",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": 3.2,
+    "scenarios": 50.1,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "completed",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ },
+ "writing": {
+  "asset_id": 103,
+  "asset_name": "Grid Control Centre",
+  "entity_id": 86,
+  "error": null,
+  "progress": {
+   "controls": "RUNNING",
+   "error_message": {},
+   "error_reason": null,
+   "last_next_set": null,
+   "last_regen": null,
+   "overall": "in_progress",
+   "retrying": null,
+   "scenario_count": {
+    "accepted": 0,
+    "complete": false,
+    "pending_review": 2,
+    "rejected": 0,
+    "remaining": 4,
+    "served": 2,
+    "total": 6
+   },
+   "scenarios": "RUNNING",
+   "threats": "COMPLETE",
+   "timings": {
+    "controls": null,
+    "scenarios": null,
+    "threats": 12.3
+   }
+  },
+  "session_id": "run-golden-1",
+  "session_status": "active",
+  "updated_at": "2026-11-01T09:30:00Z",
+  "user_id": "u-1"
+ }
+}

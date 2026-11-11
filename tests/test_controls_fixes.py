@@ -27,7 +27,7 @@ from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, JobFailed, Unavailable
 from app.core.logging import current_request_id
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.results import build_board, build_scenario_view
+from app.domain.scenario.session import build_scenario_view, build_status_board
 from app.models.scenario.views import SessionStatus, session_status_from_record
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
@@ -115,7 +115,7 @@ def test_an_outage_on_the_last_attempt_recounts_and_publishes_the_run(run: dict[
         _deliver(record_id)
     assert (_controls(record_id)["status"], _counts(record_id)) == (Status.FAILED, (0, 1, 0))
     assert (record_id, "req-run") in run["published"]
-    board = build_board(
+    board = build_status_board(
         session_status_from_record(get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id}))
     )
     assert board.progress.controls == StageState.ERROR
@@ -257,5 +257,5 @@ def test_a_failed_runs_status_carries_its_error(
         session_id="s", entity_id=1, asset_id=1, status=status, step=Step.THREATS, error=error,
         updated_at=datetime.now(UTC),
     )  # fmt: skip
-    board = build_board(stored).model_dump(mode="json")
+    board = build_status_board(stored).model_dump(mode="json")
     assert board["error"] == shown

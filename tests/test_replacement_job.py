@@ -1,6 +1,6 @@
 """G229 in the write job (owner 2026-10-13: "Reject the invalid candidate and follow the bounded replacement
-policy ... final_scenario_count <= TOTAL_SCENARIO_COUNT"). A path whose scenario is blocked (here by the
-reviewer's mismatch or as a duplicate) is given up at once; with TOTAL_SCENARIO_COUNT N a reserve takes its
+policy ... final_scenario_count <= TOTAL_SCENARIO_COUNT"). A path whose scenario is blocked (here by a
+made-up label or as a duplicate) is given up at once; with TOTAL_SCENARIO_COUNT N a reserve takes its
 place in the same set, the selected count never grows; with 0 a later set's open path does, and with none left
 nothing is padded. A path repeating a held scenario is given up before any AI call. The job runs on the test
 MongoDB with the fake chat model."""
@@ -15,7 +15,6 @@ from app.core.constants import (
     ConflictReason,
     Decision,
     FindingCode,
-    FindingMessage,
     Generation,
     RunActionOutcome,
     ScenarioStatus,
@@ -35,14 +34,17 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
 
 pytestmark = pytest.mark.usefixtures("sent")
 
-_MISMATCH = FindingMessage.SCENARIO_MISMATCH.format(parts="threat")
 
+def _blocked_for_threats_named(fake: FakeChatModel, prefix: str) -> None:
+    """The fake writer, writing a made-up label (an exact rule's blocker) for the threats named `prefix`..."""
 
-def _mismatched_for_threats_named(fake: FakeChatModel, prefix: str) -> None:
-    """The fake reviewer, finding another threat told for the threats named `prefix`..."""
-    fake.responders[AiTask.PLAN_CHECK] = lambda prompt: {
-        "rules": {"1": "holds"}, "same_threat": f'"threat": "{prefix}' not in prompt, "same_impact": True,
-    }  # fmt: skip
+    def answer(user_prompt: str) -> dict[str, Any]:
+        written = _answer_for(user_prompt)
+        if f'"threat": "{prefix}' not in user_prompt:
+            return written
+        return written | {"scenario_statement": f"{written['scenario_statement']} It starts on SYS9."}
+
+    fake.responders[AiTask.WRITE_SCENARIO] = answer
 
 
 def _slots_written(fake: FakeChatModel) -> int:
@@ -62,14 +64,14 @@ def _on_the_asset_of(record_id: str, earlier: str) -> None:
 
 
 def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
     failed, reserve = paths["p1"], paths["p3"]
     assert (failed["selected"], failed["abandoned"]) == (False, True)
     assert failed["attempts"] == 1  # given up at once, never written again
-    assert (failed["abandoned_reason"], failed["replaced_by"]) == (FindingCode.SCENARIO_MISMATCH, "p3")
+    assert (failed["abandoned_reason"], failed["replaced_by"]) == (FindingCode.UNKNOWN_ID, "p3")
     assert reserve["selected"] and reserve["replaces"] == "p1" and reserve["served"]
     assert not paths["p4"]["selected"] and sum(path["selected"] for path in paths.values()) == 2
     assert _slots_written(chat) == 3  # p1, p2, p3
@@ -80,7 +82,7 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
 
 def test_with_no_limit_and_every_path_in_the_set_a_rejected_path_is_not_replaced(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """No reserve and no later set's path: nothing is padded, the set ends partial."""
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3"])
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
@@ -164,7 +166,7 @@ def test_a_path_repeating_its_own_runs_scenario_is_given_up_before_the_ai_and_a_
 def test_a_reserve_the_scenario_count_left_out_comes_before_a_later_sets_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """A limit of 3 and a set of 2: p1 is given up; p4, left out by the count, takes its place, not p3 (a
     later set's path, though better ranked), so 3 stay selected and p3 still waits for its set."""
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=3, first_set=2)
     _deliver_until_done(record_id)
     _, paths = _plan(record_id)
@@ -176,7 +178,7 @@ def test_a_reserve_the_scenario_count_left_out_comes_before_a_later_sets_path(ch
 def test_with_no_limit_a_rejected_path_is_replaced_by_the_next_sets_best_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """No reserve exists when every path is selected: the next set's best open path takes the blocked one's
     place, so the set is complete and the blocked path is not counted as one that could not be written."""
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], first_set=2)
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
@@ -191,7 +193,7 @@ def test_replacements_stop_when_the_sets_write_calls_are_spent(chat: FakeChatMod
     """A set of 1 may spend MAX_PATH_ATTEMPTS write calls: each path rejected and given up at once, a reserve
     in its place, until the calls are spent; the set stops there with reserves left, its last path given up
     with no replacement."""
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     names = [f"Wrong {n}" for n in range(Generation.MAX_PATH_ATTEMPTS + 3)]
     record_id = _queued_run(names, limit=1)
     _deliver_until_done(record_id)
@@ -207,7 +209,7 @@ def test_replacements_stop_when_the_sets_write_calls_are_spent(chat: FakeChatMod
 def test_a_next_set_whose_path_a_reserve_replaced_still_reads_what_was_asked(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
     """G268 (defect A): `requested` is written once, when the set is queued: a set of 2 whose first path a
     reserve replaced reads requested 2, delivered 2, nothing left (the limit left p4 out: target_reached)."""
-    _mismatched_for_threats_named(chat, "Wrong")
+    _blocked_for_threats_named(chat, "Wrong")
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)
     queued = {"outcome": RunActionOutcome.RUNNING, "requested": 2, "delivered": None, "reason": None,
               "remaining": None, "epoch": 1}  # fmt: skip

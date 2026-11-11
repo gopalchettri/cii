@@ -44,7 +44,7 @@ from app.core.asset_types import asset_type_fits, asset_type_label  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.constants import AiTask  # noqa: E402
 from app.core.constants.ai_limits import ChatModule  # noqa: E402
-from app.domain.scenario.controls import select_controls  # noqa: E402
+from app.domain.scenario.write import pick_controls_to_keep  # noqa: E402
 from app.domain.shared.names import name_match_key  # noqa: E402
 from app.models.library.library import LibraryControl  # noqa: E402
 from app.models.scenario.controls import ControlRule  # noqa: E402
@@ -210,7 +210,7 @@ def no_category(doc, by_id, score: Scorer, rule: ControlRule) -> list[LibraryCon
     """Today's selection on the stored candidates, scored by the search text without its category line."""
     query, candidates = search_text_without_category(doc), shortlist(doc, by_id)
     scores = score(query, [describe_control(control) for control in candidates])
-    mapping = select_controls(list(zip(candidates, scores, strict=True)), rule, query)
+    mapping = pick_controls_to_keep(list(zip(candidates, scores, strict=True)), rule, query)
     return [by_id[item.control_id] for item in mapping.items]
 
 
