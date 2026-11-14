@@ -111,12 +111,11 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
 def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(
     sql_test_engine: Engine,
 ) -> None:
-    """With technology_used shown (as the procedure's header invites), a value that is not a JSON list on a
-    system the request did not send never stops the asset's runs: it reads as no answer. The shown fact and
-    the bad value are one transaction, rolled back."""
-    source = (REPO / "scripts" / "sql" / "tsg_GetAssetContext.sql").read_text(encoding="utf-8")
-    shown = source.replace("--, Technology.technology_used", ", Technology.technology_used")
-    assert shown != source
+    """technology_used is shown (threat search reads each system's platform): a value that is not a JSON list
+    on a system the request did not send never stops the asset's runs: it reads as no answer. The procedure
+    as written and the bad value are one transaction, rolled back."""
+    shown = (REPO / "scripts" / "sql" / "tsg_GetAssetContext.sql").read_text(encoding="utf-8")
+    assert "\n    , Technology.technology_used" in shown  # shown, not commented out
     connection = sql_test_engine.raw_connection()
     driver = connection.driver_connection
     assert driver is not None
