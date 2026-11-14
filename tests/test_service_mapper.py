@@ -32,6 +32,7 @@ from app.core.constants import (
     MapperMessage,
     MappingOverall,
     Status,
+    StoredProcedure,
     TaskName,
 )
 from app.core.database import get_mongodb
@@ -69,21 +70,6 @@ def _request() -> CreateMappingRequest:
 
 def _catalog_rows() -> CatalogRows:
     return CatalogRows(
-        sector_summary=[{"SectorName": "Energy"}, {"SectorName": "Water"}],
-        service_mappings=[
-            {
-                "service_id": 1,
-                "service_name": "Power Generation System",
-                "sector_id": 10,
-                "sector_name": "Energy",
-            },
-            {
-                "service_id": 2,
-                "service_name": "Water Treatment Service",
-                "sector_id": 20,
-                "sector_name": "Water",
-            },
-        ],
         services=[
             {
                 "service_id": 1,
@@ -346,13 +332,17 @@ def test_an_email_or_a_secret_in_the_details_reaches_neither_the_prompt_nor_the_
             return list(catalog.services)
 
     leaky = _request().model_copy(
-        update={"service_description": "Generates electricity. Contact ops@example.com, password=x"}
+        update={
+            "service_description": "Generates electricity. Contact ops@example.com, password=x",
+            "entity_names": ["Example Utility", "owner@example.com"],
+        }
     )
     chat = _Chat(_answer().model_dump(), _answer().model_dump())
     generate_result(chat, _RecordingSearch(), leaky, _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
     sent = json.dumps(chat.prompts) + json.dumps(queries)
-    assert "ops@example.com" not in sent and "password=x" not in sent
+    assert "ops@example.com" not in sent and "password=x" not in sent and "owner@example.com" not in sent
     assert "Generates electricity." in chat.prompts[0]["selected_service"]["service_description"]
+    assert "Example Utility" in chat.prompts[0]["selected_service"]["entity_names"]
     assert queries and all("Generates electricity." in query for query in queries)
 
 
@@ -611,8 +601,31 @@ def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None
     assert set(mappings.timings) == {"catalog_s", "services_s"}  # the run's two activities, timed
 
 
+def test_a_sector_name_with_a_trailing_space_or_shared_by_two_sectors_still_builds_the_catalog() -> None:
+    """Onboarding data the owner cannot change (a name saved with a trailing space, two live top-level sectors
+    named alike in any case) still builds the catalog the picker, Generate and every run read."""
+    services = [{"service_id": 1, "service_name": "Power Generation System"}]
+    energy = {"sector_id": 10, "sector_name": "Energy", "parent_sector_id": None}
+    twin = {"sector_id": 30, "sector_name": "ENERGY", "parent_sector_id": None}
+    links = [{"service_id": 1, "sector_id": 10}]
+    for sectors, summary in (
+        ([energy | {"sector_name": "Energy "}], ["Energy "]),
+        ([energy, twin], ["Energy"]),  # GROUP BY under a case-insensitive collation
+    ):
+        results = {  # what each onboarding procedure returns for these rows
+            StoredProcedure.GET_SECTORS_AND_SUBSECTORS: [[{"SectorName": name} for name in summary]],
+            StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS: [[]],
+            StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS: [services],
+            StoredProcedure.GET_SERVICE_MAPPER_ASSOCIATIONS: [sectors, links, []],
+        }
+        procedures = SimpleNamespace(execute_procedure=results.__getitem__)
+        catalog = build_catalog(ServiceCatalogRepository(procedures).load())  # type: ignore[arg-type]
+        assert [service.service_name for service in catalog.services] == ["Power Generation System"]
+        assert catalog.services[0].sectors[0].sector_name == "Energy"
+
+
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
-    empty = build_catalog(CatalogRows([], [], [], [], [], []))
+    empty = build_catalog(CatalogRows([], [], [], []))
     answer = _answer().model_dump()
     result = reconcile("mapping", 1, _request(), GeneratedAnswer.model_validate(answer), empty, 2, 2)
     assert {item["service_name"] for item in result["dependencies"]} == {
@@ -702,8 +715,6 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
             snapshot = _catalog()
             assert snapshot.services
             return CatalogRows(
-                [{"SectorName": "Energy"}, {"SectorName": "Water"}],
-                [],
                 [{"service_id": 2, "service_name": "Water Treatment Service"}],
                 [
                     {"sector_id": 10, "sector_name": "Energy", "parent_sector_id": None},

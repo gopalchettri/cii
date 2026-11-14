@@ -174,12 +174,10 @@ def update_call_metrics(  # noqa: PLR0913 - one chat call, whole
     seconds: float,
     **usage: Any,
 ) -> None:
-    """The metrics, the usage row and the log line of one chat call that answered. `usage`: the row's
-    call_id (its text's _id), reason and reask."""
+    """The metrics, the usage row (which counts its tokens) and the log line of one chat call that answered.
+    `usage`: the row's call_id (its text's _id), reason and reask."""
     note_ai_usage(task, model, outcome, tokens_in=tokens_in, tokens_out=tokens_out, seconds=seconds, **usage)
     metrics.AI_CALLS.labels(task, model, outcome).inc()
-    metrics.AI_TOKENS.labels(task, model, "in").inc(tokens_in)
-    metrics.AI_TOKENS.labels(task, model, "out").inc(tokens_out)
     metrics.AI_SECONDS.labels(task, model).observe(seconds)
     log.info(
         LogEvent.AI_CALL,

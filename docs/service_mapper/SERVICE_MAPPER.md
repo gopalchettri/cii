@@ -16,9 +16,8 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    mapping per entity** (a unique index): the first Generate makes it; a later one runs it again with the details
    it sends, on the same `mapping_id`.
 2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`): every service
-   with its sectors and subsectors (`tsg_Onboarding_GetSectorsAndSubsectorsList`,
-   `tsg_Onboarding_GetServicesWithSectorDetails`, `tsg_GetServiceMapperAssociations`: TSG's own procedures in
-   `scripts/sql`), and the onboarding platform's `Onboarding_GetSectorServiceMappings`.
+   with its sectors and subsectors (`tsg_Onboarding_GetServicesWithSectorDetails` and
+   `tsg_GetServiceMapperAssociations`: TSG's own procedures in `scripts/sql`).
 3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `app/prompts.toml` `[service_mapper.generate]` and a JSON user
    message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
    maximum each), `already_mapped` (from the second run: the names the mapping holds, by direction; those

@@ -11,6 +11,7 @@ model reserves it the same way and waits for it. A Redis failure is an outage, n
 
 import math
 import random
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -67,21 +68,21 @@ class AiSlots:
             start_thread_without_lease("ai-slot-leases", self._renew_leases_forever)
 
     @contextmanager
-    def hold_slot(self, task: str) -> Iterator[float]:
-        """Holds one slot while the call runs, giving the seconds it waited; Unavailable when its turn does
+    def hold_slot(self, task: str) -> Iterator[None]:
+        """Holds one slot while the call runs; Unavailable when its turn does
         not come within the wait; an answered call raises a 429's limit by 1 /
         limit. LeaseLost before, during and after the wait for a job whose lease was lost (cancelled), so a
         stopped job holds no slot another run needs. `task`: whose refusal tsg_ai_outages_total counts."""
         raise_if_lease_lost()
-        call_id, started = uuid.uuid4().hex, time.monotonic()
+        call_id = uuid.uuid4().hex
         if not self._redis_in_use() or not self._take_slot(call_id, task):
-            yield time.monotonic() - started
+            yield
             return
         self._held.add(call_id)
         answered = False
         try:
             raise_if_lease_lost()
-            yield time.monotonic() - started
+            yield
             answered = True
         finally:
             self._held.discard(call_id)
@@ -209,6 +210,8 @@ class AiRequestRate:
         self._redis, self._model = redis, model
         self._key = AiLimits.REQUEST_RATE_KEY.format(model=f"{scope}:{model}" if scope else model)
         self._pause_key = f"{self._key}:paused"  # a 429's pause end
+        self._line_key = f"{self._key}:chain"  # the id of the line of turns the send time ends
+        self._booked = threading.local()  # .turn: (tokens, line id) this thread reserved last, or None
         self._per_minute, self._tokens_per_minute = per_minute, tokens_per_minute
         limited = bool(per_minute or tokens_per_minute)
         self.wait_seconds = wait_seconds if limited else 0  # no limit: no turn, so no wait for one
@@ -224,53 +227,72 @@ class AiRequestRate:
         """Waits for the send time it reserves for a request of about `tokens`; the seconds waited.
         Unavailable, nothing reserved, when that time is further off than the wait; LeaseLost for a job that
         lost its lease. A Redis error never fails the request: it goes ahead unspaced (_redis_failed)."""
+        self._booked.turn = None
         interval = self._spacing(tokens)
         if interval == 0 or not self._in_use():
             return 0.0
         raise_if_lease_lost()
+        keys = [self._key, self._line_key]
         try:
-            wait = float(self._reserve_send_time(keys=[self._key], args=[interval, self.wait_seconds]))
+            wait, line = self._reserve_send_time(keys=keys, args=[interval, self.wait_seconds])
         except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
             return self._redis_failed()
-        if wait < 0:
+        if (wait := float(wait)) < 0:
             self._refuse(task)
+        self._booked.turn = (tokens, line)
         metrics.AI_REQUEST_RATE_WAIT.labels(self._model).observe(wait)
         sleep_unless_lease_lost(wait)
         return wait
 
     def wait_for_send_time(self, task: str) -> float:
         """Waits, reserving nothing and holding no AI slot, for the model's next send time (a 429's pause or a
-        line of turns); the seconds waited. Unavailable when further off than the wait, LeaseLost as above."""
+        line of turns), re-read each LEASE_CHECK_SECONDS so a give-back meanwhile ends it early, never longer
+        than the first read; the seconds waited. Unavailable when that read is further off than the wait."""
         if not self._in_use():
             return 0.0
         raise_if_lease_lost()
         try:
-            wait = float(self._seconds_to_send_time(keys=[self._key]))
+            wait = longest = float(self._seconds_to_send_time(keys=[self._key]))
         except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
             return self._redis_failed()
         if wait > self.wait_seconds:
             self._refuse(task)
-        sleep_unless_lease_lost(wait)
-        return wait
+        waited = 0.0
+        while wait > 0:
+            step = min(wait, AiLimits.LEASE_CHECK_SECONDS)
+            sleep_unless_lease_lost(step)
+            waited += step
+            try:
+                wait = min(float(self._seconds_to_send_time(keys=[self._key])), longest - waited)
+            except RedisError:
+                self._redis_failed()
+                break
+        return waited
 
     def pause(self, seconds: float) -> float:
         """A 429 from this model: its next send time, on every pod, becomes at least `seconds` away, so the
         calls queued for it wait (wait_for_send_time) instead of each drawing a 429 of its own; `seconds`."""
         if self._in_use():
             try:
-                self._pause_send_time(keys=[self._key, self._pause_key], args=[seconds])
+                self._pause_send_time(keys=[self._key, self._pause_key, self._line_key], args=[seconds])
             except RedisError:  # its own retry still waits; the others may meet a 429 of their own
                 self._redis_failed()
         return seconds
 
-    def give_back(self, booked: int, used: int) -> float:
-        """Moves an answered call's unused booking back on every pod, never before a 429's pause ends: the
-        spacing `booked` tokens reserved less what `used` needs, as LiteLLM counts only what was used."""
+    def give_back(self, used: int) -> float:
+        """Moves back, on every pod, the part of this thread's last turn an answer that `used` tokens did not
+        need (LiteLLM counts only what was used), once; never before a 429's pause ends, nothing when the
+        turn's line is another now or the thread reserved none."""
+        turn, self._booked.turn = getattr(self._booked, "turn", None), None
+        if turn is None:
+            return 0.0
+        booked, line = turn
         unused = self._spacing(booked) - self._spacing(used)
         if unused <= 0 or not self._in_use():
             return 0.0
+        keys = [self._key, self._pause_key, self._line_key]
         try:
-            return float(self._give_back_send_time(keys=[self._key, self._pause_key], args=[unused]))
+            return float(self._give_back_send_time(keys=keys, args=[unused, line]))
         except RedisError:  # the booking stays: later requests only wait longer
             return self._redis_failed()
 

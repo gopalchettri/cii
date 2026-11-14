@@ -853,7 +853,9 @@ def test_a_job_queued_too_long_is_sent_again_whatever_its_queue_holds(
     """Before: a lost job was re-sent only when its queue was empty, so a steady backlog hid it for hours."""
     _records().delete_many({})
     lost = _insert_job(
-        Status.QUEUED, due_at=datetime.now(UTC) - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS + 60)
+        Status.QUEUED,
+        due_at=datetime.now(UTC) - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS + 60),
+        resends=0,  # as new_job writes it
     )
     monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 3)
     reaper.reap_jobs()

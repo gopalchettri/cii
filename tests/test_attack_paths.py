@@ -106,7 +106,7 @@ def test_the_card_enters_through_its_main_kinds_own_systems_with_its_own_impact_
         (321, 322),  # the union, for the evidence search
         categories=(S.TAMPERING, S.DENIAL_OF_SERVICE),
         impact=3,
-        main_place=AttackPlace((321,), (321,), 3, 80.0),
+        main_place=AttackPlace((321,), (321,), 80.0),
     )
     (path,) = build_plan(findings_of(merged), 0)["paths"]
     assert (path["category"], path["systems"], path["impact"], path["confidence"]) == (
@@ -126,7 +126,7 @@ def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_s
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
     (record,) = build_plan(findings, 0)["paths"]  # one card, as its main kind
     assert record["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@system:321").hexdigest()[:16]
-    on_both = replace(wipe, main_place=AttackPlace((322, 321), (321,), 3, 60.0))
+    on_both = replace(wipe, main_place=AttackPlace((322, 321), (321,), 60.0))
     (record_on_both,) = build_plan(findings_of(on_both), 0)["paths"]
     assert record_on_both["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@systems:321,322").hexdigest()[:16]
     (on_asset,) = build_plan(findings_of(replace(wipe, main_place=AttackPlace())), 0)["paths"]
@@ -217,7 +217,7 @@ def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them()
     """The stronger threat gets in through the Historian only, so the SCADA server's first turn goes to the
     weaker one; the ranks follow the turns, and the trace counts each system's turns and each group."""
     via_historian = planned(
-        "lib:1", "Firmware change", (321, 322), impact=3, main_place=AttackPlace((321, 322), (322,), 3, 70.0)
+        "lib:1", "Firmware change", (321, 322), impact=3, main_place=AttackPlace((321, 322), (322,), 70.0)
     )
     on_scada = planned("lib:2", "Log wipe", (321,), impact=1)
     findings = findings_of(via_historian, on_scada)

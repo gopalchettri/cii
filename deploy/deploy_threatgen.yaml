@@ -14,9 +14,9 @@
 # proxy (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
 # One worker per queue: the quota has no room for a second. A worker update stops the old pod first (maxSurge 0):
 # its queue's jobs wait and nothing is lost, and the API stays ready meanwhile (its readiness needs MongoDB only).
-# A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
-# update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
-# once the old pod is gone: rollout status only takes longer.
+# A stopping pod still counts against the quota until it has exited (a worker that asks the AI may take 4-5
+# minutes: its grace below), so during an update a new pod can be refused for a while ("exceeded quota" in
+# the events). OpenShift retries and creates it once the old pod is gone: rollout status only takes longer.
 # A worker is ready once its heartbeat has written /tmp/tsg-worker-alive (startupProbe).
 # The two API pods prefer different nodes, so one node failure never stops the API (preferred only: a pod still
 # starts when no other node fits). A worker on a failed node starts again on another; its jobs wait meanwhile.

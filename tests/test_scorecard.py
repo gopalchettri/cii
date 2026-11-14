@@ -20,8 +20,6 @@ try:
 finally:
     sys.path.remove(str(REPO / "scripts"))
 
-NOT_ESTABLISHED = "no reviewer verdict recorded: correctness not established"
-
 
 def test_the_acting_attacker_is_one_the_plan_listed_for_its_threat() -> None:
     acting = {"id": 4, "role": "acting", "name": "Nation-state"}
@@ -36,12 +34,17 @@ def test_the_acting_attacker_is_one_the_plan_listed_for_its_threat() -> None:
     assert scorecard.actor(other_threat, threats) != ""
 
 
-def test_the_threat_and_risk_are_the_reviewers_verdicts() -> None:
-    """A card stored before the verdicts, or a check not made, has none: correctness is not established."""
-    assert scorecard.threat({"plan_check": {"status": "consistent"}}) == NOT_ESTABLISHED
-    assert scorecard.risk({"plan_check": None}) == NOT_ESTABLISHED
-    judged = {"plan_check": {"same_threat": False, "same_impact": True}}
-    assert (scorecard.threat(judged), scorecard.risk(judged)) == ("the statement tells another threat", "")
+def test_a_card_as_the_app_writes_it_now_passes_every_check() -> None:
+    """The AI reviewer is gone (D64, D75): a card has no plan_check, and no check fails it for that."""
+    plain = {
+        "prompt_version": PromptVersion.SCENARIO_WRITER,
+        "statement": "An attacker stops the pumps.",
+        "risk_statement": "Pumps stop.",
+    }
+    card = {"content": plain}
+    assert {name: check(card) for name, check in scorecard.CHECKS.items()} == dict.fromkeys(
+        scorecard.CHECKS, ""
+    )
 
 
 def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None:

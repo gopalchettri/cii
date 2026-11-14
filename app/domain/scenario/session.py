@@ -1005,7 +1005,7 @@ def build_plan_trace_view(
             threat_key=path["steps"][0],
             kind=path["category"],
             rank=path["rank"],
-            reason=path.get("abandoned_reason") or path.get("last_blocker"),
+            reason=path.get("abandoned_reason"),
             repeats=path.get("repeats"),
             replaced_by=path.get("replaced_by"),
         )

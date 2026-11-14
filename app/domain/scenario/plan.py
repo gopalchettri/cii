@@ -70,7 +70,6 @@ from app.models.scenario.plan import (
     Landscape,
     PlannedActor,
     PlannedThreat,
-    RelevanceVerdict,
     ThreatFindings,
     Verdict,
 )
@@ -209,8 +208,6 @@ def _find_problems_in_threat_answer(
         problems.append(f"{slot}: a threat that does not apply needs its reason")
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
         problems.append(f"{slot}: needs must be a list of names ([] when everything it needs is recorded)")
-    shown = {**item, "systems": systems, "needs": needs, "entry_points": entry_points or []}
-    problems = problems or answer_item_problems(RelevanceVerdict, shown, slot)
     return (named if relevant is True else {}), problems
 
 
@@ -544,7 +541,7 @@ def _keep_threats_the_ai_accepts(
                 candidate,
                 categories=tuple(kept),
                 reasons={category: named[category][1] for category in kept},
-                main_place=AttackPlace(verdict.systems, verdict.entry_points, impacts[0], verdict.confidence),
+                main_place=AttackPlace(verdict.systems, verdict.entry_points, verdict.confidence),
                 systems=verdict.systems,
                 impact=max(impacts),
                 confidence=verdict.confidence,
@@ -701,21 +698,23 @@ def _merge_reworded_threats(
     by_key = {threat.key: threat for threat in threats}
     library = sorted(
         (threat for threat in threats if threat.catalogue_id is not None),
-        key=lambda threat: (-threat.impact * threat.likelihood, -threat.impact, -threat.confidence),
+        key=lambda threat: _build_path_record(threat, {})[0],  # the plan's own rank
     )
-    compared: list[str] = []  # the threats kept so far, each a possible twin of those after it
+    kept_as: dict[str, str] = {}  # each threat compared so far: the key it is kept under (joined: another's)
     for threat in [*library, *(threat for threat in threats if threat.catalogue_id is None)]:
         vector = vectors[labels[threat.key]]
         twin = next(
             (
-                key
-                for key in compared
-                if _is_same_threat(threat, by_key[key], float(vector @ vectors[labels[key]]))
+                into
+                for key, into in kept_as.items()  # a library threat joined meets only AI threats, by its name
+                if (threat.catalogue_id is None or key == into)
+                and _is_same_threat(threat, by_key[into], float(vector @ vectors[labels[key]]))
             ),
             None,
         )
+        if twin is None or threat.catalogue_id is not None:
+            kept_as[threat.key] = twin or threat.key
         if twin is None:
-            compared.append(threat.key)
             continue
         by_key[twin] = _merge_threat_into_another(by_key[twin], by_key.pop(threat.key), context, drops)
         drops.append(Drop(threat.key, threat.name, None, PlanStage.MERGE, PlanLoss.MERGED, f"into {twin}"))

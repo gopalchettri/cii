@@ -342,7 +342,7 @@ never become rows; they are joined by CVE id into the KEV entry's `data`:
    (`None`) for the placeholder a process serves before its first build ends.
 4. `publish_index` saves the snapshot's description in `tsg_external_intelligence_snapshots`: `snapshot_id`,
    `built_at`, `source_versions` (each source's newest version), `counts` (`indexed`, `scores_joined`,
-   `scores_unmatched`, `details_joined`, `details_unmatched`), `checksum`, `parser_version`, `embedding_model` and
+   `scores_unmatched`, `details_joined`, `details_unmatched`), `checksum`, `embedding_model` and
    `rerank_model`. `activate_intel_snapshot` then moves the `_id: "active"` pointer, forward only: never to an
    older build.
 5. A failed build keeps the old index. While no first index has been built, an AI or store outage retries after
@@ -419,7 +419,6 @@ apart, as the entry's `ref`.
     "mitre_attack_ics": "20.0",
     "nist_nvd": "2026-10-18T21:10:00.120"
   },
-  "parser_version": "1",
   "embedding_model": "openai/text-embedding-3-large",
   "rerank_model": "…/bge-reranker-v2-m3",
   …
@@ -1149,8 +1148,8 @@ SYS4 "Incident Detection & Response Platform": {"name": "Incident Detection & Re
    - JSON mode;
    - `max_tokens` the gate's answer room, `CII_ANSWER_TOKENS_RELEVANCE_GATE` (`CHAT_MAX_OUTPUT_TOKENS`; UAT 10,240, a whole batch's answer; the model's 12,288 while its thinking is on);
    - `reasoning_effort` "none" for `openai/Kimi-K2.6`.
-6. **Reply contract** (`[scenario.gate]`, `RelevanceVerdict`): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "likelihood", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
-   - `categories`: the kinds, among the threat's own, that one of its own actions directly causes the loss of (that kind's STRIDE line), the kind it most directly causes first. That first kind is the threat's main kind and its card's category (5.13); the others are shown as "also", at most two (5.10, D69). Each has its own `impact` (HIGH, MEDIUM or LOW) and `reason`: naming systems by name, with any assumption written as "assumes …", it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes that kind's loss, never the attack steps. A kind's reason becomes the writer's `why_it_applies` (section 8.1). A rejected threat's `reason` says why not.
+6. **Reply contract** (`[scenario.gate]`; the code's checks below are its only rule): `{"verdicts": [...]}`, exactly one per slot, each copying back its `threat`. A relevant threat answers `{"slot", "threat", "relevant": true, "categories": [{"name", "impact", "reason"}, …], "systems", "entry_points", "confidence", "needs", "attacker", "attacker_reason", "likelihood", "actions"}`; a rejected one only `{"slot", "threat", "relevant": false, "reason", "needs"}`, so most of a batch's answer is short. Each reason is at most 25 words. The fields mean:
+   - `categories`: the kinds, among the threat's own, that one of its own actions directly causes the loss of (that kind's STRIDE line), the kind it most directly causes first. That first kind is the threat's main kind and its card's category (5.13); the others are shown as "also", every one it names (5.10, D74). Each has its own `impact` (HIGH, MEDIUM or LOW) and `reason`: naming systems by name, with any assumption written as "assumes …", it says why the threat fits the asset (its recorded role, technology, interfaces or data, or the sector's attacker motive) and how its own action causes that kind's loss, never the attack steps. A kind's reason becomes the writer's `why_it_applies` (section 8.1). A rejected threat's `reason` says why not.
    - `systems`: every system the threat involves, judged with the asset and all its systems together; [] means the asset itself. `entry_points`: the systems among them an attacker could really get in through. Both, and `confidence` (0-100), are the threat's, shared by its kinds.
    - `needs`: any component the threat requires that no recorded fact mentions.
    - `attacker` and `attacker_reason`: one name from that slot's own `attackers` list, or null with a reason. A name not on the list, or none, is none fits (5.11, D71).
@@ -1200,7 +1199,6 @@ The five verdicts on lib:281, one per kind it sits in (each batch held 10 candid
    - Each kind's `impact` is HIGH, MEDIUM or LOW; `confidence` is 0-100, unless rejected.
    - Each `reason` is not empty.
    - `needs` is a list of names.
-   - The item then goes through `answer_item_problems(RelevanceVerdict, …)`.
 3. **One follow-up call** asks only the bad slots, in a new small prompt, with the problems each wrong slot had (`[scenario.gate] follow_up`, *"REJECTED: the earlier answer for these slots had these problems"*; at most 20 of at most 200 characters, `AiLimits`); a slot that was only left out is asked with no note. A slot still bad after it is `not_judged`. An answer with no slot answered well is first asked again once in the same conversation (`ChatModel.ask_for_checked_json`, *"Your previous reply was rejected:"*).
 4. **A cut-off answer** (or a prompt too long) halves the batch once. Each half is a first ask of its own: it gets its own follow-up (step 3), and an unusable half retries the job (step 7). A half cut off again is `not_judged`.
 5. **Spread back per kind.** Code turns each relevant verdict into one verdict per kind it names, each with that kind's impact and reason and the threat's shared systems, ways in, confidence, needs and attacker pick, so everything after the gate reads the same per-kind findings as before.
@@ -1337,7 +1335,7 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    - the kept threat's `actions`.
 
    An AI threat with the same normalised name and type id as a library threat is folded into it.
-3. `_merge_reworded_threats` runs only when two threats share a type id. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). The library threats come first, strongest first (risk, impact, confidence), then each AI threat; each is compared with those kept before it of the same type id. An AI threat is folded at cosine ≥ `AI_DUPLICATE_COSINE` (0.98); a library threat of the same asset type at cosine ≥ `LIBRARY_DUPLICATE_COSINE` (0.80), wherever the gate placed each (an attack's IT and OT variants stay apart, D74). Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
+3. `_merge_reworded_threats` runs only when two threats share a type id. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). The library threats come first, in the plan's own rank order (risk, impact, confidence, main kind, id), then each AI threat; a library threat is compared with the library threats kept before it, an AI threat also with those that joined one, and folds into the one they joined. An AI threat is folded at cosine ≥ `AI_DUPLICATE_COSINE` (0.98); a library threat of the same asset type at cosine ≥ `LIBRARY_DUPLICATE_COSINE` (0.80), wherever the gate placed each (an attack's IT and OT variants stay apart, D74). Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
 4. **Re-fit after the merge** (`_keep_on_matching_systems`): each library threat's kinds are checked again with `_fitting`, because an AI twin's kinds may have joined. A kind with no way in its type fits is dropped (`asset_type_mismatch`, stage `merge`, counted as `unfit_after_merge`). `_with_places` recomputes the threat's kinds, systems, impact, confidence and pick from the kinds kept.
 5. **Every kind kept** (`_set_main_category_and_attacker`, D74): the main kind first, then every other the gate named, in STRIDE order, each with its own reason. D69's cut to three is gone: it dropped relevant kinds.
 
@@ -4010,7 +4008,7 @@ stateDiagram-v2
   (`Lease.HUNG_AFTER_SECONDS`) after its lease was lost or it stalled logs `worker.job_hung` (error), and the
   worker stops touching its liveness file, so OpenShift restarts the pod.
 - **Hand-back on shutdown:** a worker told to stop (SIGTERM, a deploy) waits 90 s
-  (`Worker.HAND_BACK_AFTER_SECONDS`; pods get 120 s), then gives back every lease it still holds: a job
+  (`Worker.HAND_BACK_AFTER_SECONDS`; pods get 220 s for threats and scenarios, 280 s for remediation and the service mapper, 120 s for the others), then gives back every lease it still holds: a job
   goes back to `queued`, due now, with the attempt returned, and is sent again under its request id
   (`job.handed_back`); a worker-controls scenario goes back to `queued` with its controls attempt returned,
   one `tsg_map_controls` per run. A stalled or cancelled job is not handed back. The old delivery stops at

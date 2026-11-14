@@ -149,6 +149,18 @@ def test_a_slot_without_a_likelihood_is_asked_once_more_alone_and_the_others_are
     assert sorted(threat.name for threat in findings.threats) == sorted([LOG_WIPE.name, FLOOD.name])
 
 
+def test_a_verdict_the_code_reads_well_is_kept_without_a_re_ask() -> None:
+    """The code's checks are the one rule: a confidence of 72.5, or a relevant verdict's reason null, is
+    read as it is, never asked again."""
+    edit = {LOG_WIPE.name: {"confidence": 72.5}, FLOOD.name: {"reason": None}}
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = _answering(edit, {LOG_WIPE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
+    findings = finder(chat).find_threats(CONTEXT)
+    assert len(chat.asked(AiTask.RELEVANCE_GATE)) == 1
+    confidence = {threat.name: threat.confidence for threat in findings.threats}
+    assert confidence == {LOG_WIPE.name: 72.5, FLOOD.name: 80.0}
+
+
 def test_the_gate_asks_one_likelihood_after_the_attacker_and_never_lets_it_decide_relevance() -> None:
     """Owner, 31 Oct: likelihood counts every listed attacker who could, never decides relevance, and is
     asked after the attacker so the pick is made first. A/B, 31 Oct: adding "a LOW likelihood never makes a

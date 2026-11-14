@@ -6,6 +6,7 @@ import contextvars
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +84,13 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     announced: list[str] = []
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, announced.append)
     return announced
+
+
+@pytest.fixture(autouse=True)
+def worker_not_stopping() -> Iterator[None]:
+    """A hand-back marks its whole process as stopping: each test here starts on a worker that is not."""
+    yield
+    lease_renewal.handing_back.clear()
 
 
 @pytest.fixture
@@ -279,6 +287,38 @@ def test_a_stopping_controls_worker_gives_its_scenarios_back_without_using_an_at
     mapping_run["rerank"] = _ScoresByText({"Backup policy": 70.0})
     assert _deliver(record_id, "next") == 2
     assert [_controls_of(scenario_id)["attempts"] for scenario_id in scenario_ids] == [1, 1]  # the same try
+
+
+def test_a_job_its_stopping_worker_handed_back_is_not_counted_as_a_stall(
+    monkeypatch: pytest.MonkeyPatch, published: list[str]
+) -> None:
+    """Every job handed back at shutdown then logged job.lease_lost, a warning the Stuck jobs panel counts as
+    "taken over (its worker stalled)": each release showed false stalls."""
+    monkeypatch.setattr(lease_renewal, "send_job", lambda *_args, **_options: True)
+    task = SimpleNamespace(name=TaskName.FIND_THREATS, request=SimpleNamespace(id="released"))
+
+    def work_while_the_worker_stops(_lease: JobLease) -> None:
+        _stop_the_worker()
+        raise_if_lease_lost()  # its next AI call
+
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(task, Collection.SESSIONS, _insert_job(), 1, work_while_the_worker_stops)
+    assert [line["event"] for line in logs if line["log_level"] == "warning"] == []
+    events = [line["event"] for line in logs]
+    assert LogEvent.JOB_LEASE_LOST not in events and LogEvent.JOB_STOPPED_HANDED_BACK in events
+
+
+def test_a_job_taken_over_while_its_worker_runs_still_warns(published: list[str]) -> None:
+    task = SimpleNamespace(name=TaskName.FIND_THREATS, request=SimpleNamespace(id="stalled"))
+
+    def taken_over(lease: JobLease) -> None:
+        _records().update_one({"_id": lease.record_id}, {"$set": {"job.task_id": "the-next-delivery"}})
+        lease.update_job({"plan": "late"})  # its next fenced write
+
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(task, Collection.SESSIONS, _insert_job(), 1, taken_over)
+    lost = [line["log_level"] for line in logs if line["event"] == LogEvent.JOB_LEASE_LOST]
+    assert lost == ["warning"]
 
 
 def test_a_worker_told_to_stop_hands_its_jobs_back_before_its_pod_is_killed(

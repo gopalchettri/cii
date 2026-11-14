@@ -1,4 +1,4 @@
-"""The threat plan: gate verdicts, planned threats, planning drops and the planner's AI answer contracts.
+"""The threat plan: gate verdicts, planned threats, planning drops and the gap fill's AI answer contract.
 Frozen, so the parallel gate batches share them safely."""
 
 from dataclasses import dataclass, field
@@ -40,11 +40,10 @@ class Verdict:
 
 @dataclass(frozen=True)
 class AttackPlace:
-    """Where the threat's one attack path goes: its main category's systems, ways in, impact, confidence."""
+    """Where the threat's one attack path goes: its main category's systems, ways in and confidence."""
 
     systems: tuple[int, ...] = ()  # () = the asset itself
     entry_points: tuple[int, ...] = ()  # its ways in among `systems`; () = the asset itself
-    impact: int = 0
     confidence: float = 0.0
 
 
@@ -141,27 +140,6 @@ class ThreatFindings:
     library_threats: int = 0  # library threats looked at
     gate_asked: int = 0  # library threat and own category pairs the gate was asked about
     ai_threats: int = 0  # gap-fill threats proposed and accepted, one per category
-
-
-class RelevanceVerdict(BaseModel):
-    """One item of the relevance gate's answer: one threat, judged for all its own categories."""
-
-    model_config = ConfigDict(extra="forbid")
-    slot: str
-    threat: str  # the candidate's threat, copied back
-    relevant: bool
-    categories: Any = None  # [{name, impact, reason}], the main first; read strictly in code
-    systems: list[str]
-    entry_points: list[str] = Field(default_factory=list)  # among `systems`: where an attacker could get in
-    reason: str = ""  # a rejection's; an applying threat's reasons are its categories'
-    confidence: int | None = Field(default=None, ge=0, le=100)
-    likelihood: Any = None  # HIGH, MEDIUM or LOW when relevant; read strictly in code
-    needs: list[str] = Field(default_factory=list)  # what the threat needs that nothing recorded mentions
-    # The attacker pick and the actions, read leniently in code: a bad one never costs a re-ask (an unlisted
-    # attacker is none fits).
-    attacker: Any = None
-    attacker_reason: Any = None
-    actions: Any = None
 
 
 class GapFillResponse(BaseModel):

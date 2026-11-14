@@ -1,5 +1,5 @@
--- Read-only, normalized associations for the Service Mapper. The three onboarding procedures provide
--- the catalog and descriptive context; their comma-separated fields cannot preserve exact relationships.
+-- Read-only, normalized associations for the Service Mapper. tsg_Onboarding_GetServicesWithSectorDetails
+-- gives each service's descriptive context; its comma-separated fields cannot keep exact relationships.
 -- Keep this procedure separate so existing onboarding result contracts remain unchanged.
 CREATE OR ALTER PROCEDURE dbo.tsg_GetServiceMapperAssociations
 AS

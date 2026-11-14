@@ -5,6 +5,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Callable
+from concurrent import futures
 from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
@@ -31,6 +32,7 @@ from app.core.exceptions import (
     LeaseLost,
     NotFound,
 )
+from app.core.lease_signal import wait_while_leased
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
@@ -275,17 +277,22 @@ class _OneEmbedCall:
 
     def __init__(self, embed: Callable[[], None]) -> None:
         self._embed, self._lock = embed, threading.Lock()
-        self._tried = False
-        self._outage: Exception | None = None
+        self._outcome: futures.Future[Exception | None] | None = None  # the outage the call met, if any
 
     def wait(self) -> None:
-        """Embed on the first call. An outage is every mapping's, as its own search would meet it; any other
-        fault is left to each scenario's own search."""
+        """Embed on the first call; the others wait checking their own lease. An outage is every mapping's,
+        as its own search would meet it; any other fault is left to each scenario's own search."""
         with self._lock:
-            if not self._tried:
-                self._tried, self._outage = True, self._embed_or_outage()
-        if self._outage is not None:
-            raise self._outage
+            first = self._outcome is None
+            outcome = self._outcome = self._outcome or futures.Future()
+        if first:
+            try:
+                outcome.set_result(self._embed_or_outage())
+            except BaseException as exc:  # an interrupt too: no waiter waits for ever
+                outcome.set_exception(exc)
+                raise
+        if (outage := wait_while_leased(outcome)) is not None:
+            raise outage
 
     def _embed_or_outage(self) -> Exception | None:
         """The outage the call met, if any."""

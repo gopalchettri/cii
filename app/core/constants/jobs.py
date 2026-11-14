@@ -84,7 +84,7 @@ class Worker:
     NEW_WORK_PRIORITY: Final = 3  # new work; its list is <queue>\x06\x163, which old pods read too
     BUSY_ENTITY_PRIORITY: Final = 6  # a busy entity's plan, read after new work; the reaper re-sends it at 0
     BUSY_ENTITY_WAITING: Final = 2  # an entity with this many other plans queued or running is busy
-    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (pods get 120 s)
+    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (grace 120-280)
 
 
 class Lease:

@@ -12,7 +12,6 @@ from app.core.constants import (
     EvidenceSearchFailure,
     FeedStatus,
     IntelKind,
-    IntelLimits,
     IntelMessage,
     IntelSource,
     IntelState,
@@ -62,7 +61,6 @@ def test_a_record_stores_as_a_valid_current_version() -> None:
     doc = _record().as_doc(NOW)
     assert doc["state"] == IntelState.VALID
     assert doc["content_hash"] == _record().content_hash
-    assert doc["parser_version"] == IntelLimits.PARSER_VERSION
     rejected = RejectedRecord(IntelSource.FIRST_EPSS, "x", "why", "h").as_doc(NOW)
     assert rejected["state"] == IntelState.QUARANTINED and rejected["current"] is False
 

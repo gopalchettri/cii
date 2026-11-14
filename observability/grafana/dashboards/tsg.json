@@ -6848,7 +6848,7 @@
       "id": 73,
       "type": "table",
       "title": "AI tokens by module and API call",
-      "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens sent (in) and answered (out) by every AI call: writing, embedding and ranking. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

@@ -303,7 +303,7 @@ def test_an_ai_call_s_seconds_leave_out_its_request_rate_and_slot_waits() -> Non
     assert busy.wait(5)
     threading.Timer(0.4, release.set).start()  # the slot frees 0.2 s after the pause ends
     started = time.monotonic()
-    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
+    _, seconds = ai.attempts.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
     holder.join(5)
     assert time.monotonic() - started >= 0.55 and seconds < 0.1
 
@@ -1293,8 +1293,12 @@ def test_an_answered_chat_call_gives_back_what_its_answer_did_not_use(
     given: list[tuple[int, int]] = []
 
     class GivenBack(AiRequestRate):
-        def give_back(self, booked: int, used: int) -> float:
-            given.append((booked, used))
+        def wait_for_turn(self, task: str, tokens: int = 0) -> float:
+            self.booked = tokens
+            return 0.0
+
+        def give_back(self, used: int) -> float:
+            given.append((self.booked, used))
             return 0.0
 
     counted = SimpleNamespace(

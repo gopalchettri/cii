@@ -386,7 +386,7 @@ class ThreatScenarioRepository(MongoRepository):
             changes: Record = {"controls.lease_until": now + timedelta(seconds=Controls.LEASE_SECONDS)}
         elif outcome == Status.DONE:
             changes = {f"controls.{key}": value for key, value in (mapping or {}).items()}
-            changes |= {"controls.status": Status.DONE, "controls.mapped_at": now, "controls.error": None}
+            changes |= {"controls.status": Status.DONE, "controls.error": None}
         else:
             changes = {"controls.status": outcome, "controls.error": error}
             if outcome == Status.QUEUED:

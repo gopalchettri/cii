@@ -167,7 +167,7 @@ def test_a_request_turn_s_redis_failure_lets_the_request_go_ahead_and_leaves_red
 
     def ask() -> str:
         with count_and_convert_ai_errors(TASK, "kimi"):
-            return call_with_retries(lambda: "answer", kimi, UNLIMITED_AI_SLOTS, model="kimi", task=TASK)[0]
+            return call_with_retries(lambda: "answer", kimi, UNLIMITED_AI_SLOTS, model="kimi", task=TASK)
 
     with monkeypatch.context() as broken, capture_logs() as logs:
         broken.setattr(redis, "execute_command", failing)

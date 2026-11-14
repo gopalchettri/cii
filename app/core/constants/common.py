@@ -265,6 +265,7 @@ class LogEvent(StrEnum):
     CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
+    JOB_STOPPED_HANDED_BACK = "job.stopped_handed_back"  # its stopping worker gave it back: not a stall
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"
     JOB_RETRY_SCHEDULED = "job.retry_scheduled"
     JOB_WAITING = "job.waiting"  # given back to look again: another job holds what it needs (not an outage)

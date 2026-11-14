@@ -49,14 +49,14 @@ def without_platform_note(text: str) -> str:
     return _PLATFORM_NOTE.sub("", text)
 
 
-def _redacted(value: Any) -> Any:
+def redacted(value: Any) -> Any:
     """Every text in `value`, at any depth, redacted."""
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, list):
-        return [_redacted(item) for item in value]
+        return [redacted(item) for item in value]
     if isinstance(value, dict):
-        return {key: _redacted(item) for key, item in value.items()}
+        return {key: redacted(item) for key, item in value.items()}
     return value
 
 
@@ -92,5 +92,5 @@ def facts_safe_for_prompt(facts: dict[str, Any]) -> dict[str, Any]:
             value = [item for item in value if _carries_a_fact(item)]
             if not value:
                 continue
-        kept[name] = _redacted(value)
+        kept[name] = redacted(value)
     return kept

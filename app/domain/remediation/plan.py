@@ -71,6 +71,12 @@ _GAPS = (ImplementationStatus.NOT_IMPLEMENTED, ImplementationStatus.PARTIALLY_IM
 _CODE_FACT = re.compile(Remediation.ACTION_PLAN_CLAIM_PATTERN, re.IGNORECASE)
 _EXTENDS = re.compile(Remediation.EXTENDS_PATTERN, re.IGNORECASE)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+#: A library's rows by id, by case-folded code and by name key (None: a name two different controls share).
+_ControlLookup = tuple[dict[int, LibraryControl], dict[str, LibraryControl], dict[str, LibraryControl | None]]
+#: The last library tuple and its lookup: frozen rows never change, so a plan job's two passes over the
+#: register, and the jobs after it on the same library version, scan the library once.
+# ponytail: one slot (one active library per process); two libraries used by turns would rebuild each time.
+_last_lookup: list[tuple[Sequence[LibraryControl], _ControlLookup]] = []
 
 
 def redact_and_shorten_text(text: str | None, limit: int = Remediation.TEXT_MAX_CHARS) -> str | None:
@@ -81,10 +87,11 @@ def redact_and_shorten_text(text: str | None, limit: int = Remediation.TEXT_MAX_
     return cleaned if len(cleaned) <= limit else cleaned[:limit] + Remediation.TRUNCATED_MARK
 
 
-def resolve_control_refs(
-    refs: Sequence[ControlRef], controls: Sequence[LibraryControl]
-) -> tuple[list[LibraryControl], list[tuple[int, ControlRef]]]:
-    """The library rows `refs` name, once each in first-named order; the refs naming none, with positions."""
+def _index_controls(controls: Sequence[LibraryControl]) -> _ControlLookup:
+    """The library by id, by case-folded code and by name; built once per library tuple."""
+    cached = next((lookup for library, lookup in _last_lookup if library is controls), None)
+    if cached is not None:
+        return cached
     by_id = {row.control_id: row for row in controls}
     by_code = {row.code.casefold(): row for row in controls}
     # IT/OT twins (same name and description) go to the lowest id; a name two different controls share
@@ -95,6 +102,17 @@ def resolve_control_refs(
         first = by_name.setdefault(key, control)
         if first is not None and name_match_key(describe_control(first)) != text:
             by_name[key] = None
+    lookup = (by_id, by_code, by_name)
+    if isinstance(controls, tuple):  # a list can change in place: never kept
+        _last_lookup[:] = [(controls, lookup)]
+    return lookup
+
+
+def resolve_control_refs(
+    refs: Sequence[ControlRef], controls: Sequence[LibraryControl]
+) -> tuple[list[LibraryControl], list[tuple[int, ControlRef]]]:
+    """The library rows `refs` name, once each in first-named order; the refs naming none, with positions."""
+    by_id, by_code, by_name = _index_controls(controls)
     found: dict[int, LibraryControl] = {}
     unresolved: list[tuple[int, ControlRef]] = []
     for position, ref in enumerate(refs):
@@ -155,16 +173,11 @@ def assess_controls(
     """Each mapped control with its library details and its status on the affected systems (`categories`:
     each system's IT/OT); a warning for each register or mapped control the library does not have."""
     covered_systems = set(register["supporting_systems_applicable_to_existing_controls"])
-    existing: set[str] = set()  # by name and description, so IT/OT twins are one
-    warnings: list[str] = []
-    for entry in register.get("existing_controls") or []:
-        ref = ControlRef.model_validate(entry)
-        named, unresolved = resolve_control_refs([ref], controls)
-        if unresolved:
-            warnings.append(PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)))
-        else:
-            existing.add(name_match_key(describe_control(named[0])))
-    by_id = {row.control_id: row for row in controls}
+    refs = [ControlRef.model_validate(entry) for entry in register.get("existing_controls") or []]
+    named, unresolved = resolve_control_refs(refs, controls)
+    warnings = [PlanWarning.CONTROL_UNMATCHED.format(reference=describe_ref(ref)) for _, ref in unresolved]
+    existing = {name_match_key(describe_control(row)) for row in named}  # IT/OT twins are one
+    by_id = _index_controls(controls)[0]
     library_mapped = []
     for item in items:
         row = by_id.get(item["control_id"])

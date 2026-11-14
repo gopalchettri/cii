@@ -236,8 +236,8 @@ class PathSaver:
         if not saved or record["status"] == ScenarioStatus.DONE:  # not saved: its scenario was already there
             self._progress.record({path_id: _build_served_state(record["_id"])})
             return
-        # Why this card was rejected stays on the path; only an outage's later set writes it again (same id).
-        state = {"attempts": path["attempts"] + 1, "last_blocker": reason}
+        # Only an outage's later set writes the path again (same id).
+        state = {"attempts": path["attempts"] + 1}
         card_outcome = ScenarioOutcome(record["status"])  # counted with the path's state, by the write taken
         if reason == ErrorCode.UNAVAILABLE and state["attempts"] < Generation.MAX_PATH_ATTEMPTS:
             # an outage passes: a later set writes it

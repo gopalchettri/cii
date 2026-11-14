@@ -457,7 +457,7 @@ def test_the_same_request_after_an_outage_writes_the_plan_again_and_after_anothe
         raced.setattr(plans, "retry_remediation_plan_version", retried_by_another_repeat)
         lost = _post(client, api_key, BODY, key)
     assert (lost.status_code, lost.json()) == (200, replayed)
-    unusable = plan_answer("CII-CID-1", applicable_to_all_subsystems="Maybe")
+    unusable = plan_answer("CII-CID-1", control_validation="x")
     manual["chat"].queue(AiTask.REMEDIATION_PLAN, unusable, unusable)
     deliver(remediation_id)
     failed = _post(client, api_key, BODY, key)

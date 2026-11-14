@@ -80,7 +80,6 @@ class PlanDraft(BaseModel):
     action_plan: Given
     mitigation_owner: Given
     uncovered_risks: list[str] = []  # parts of the risk no checked control reduces
-    applicable_to_all_subsystems: YesNo | None = None  # no longer asked: code sets it from the risk flag
 
 
 class PlanRequested(BaseModel):

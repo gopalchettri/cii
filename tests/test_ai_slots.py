@@ -185,7 +185,8 @@ def test_a_429_pauses_its_model_on_every_pod(monkeypatch: pytest.MonkeyPatch) ->
     pod_a, pod_b = (AiRequestRate(redis, "paused", per_minute=600, wait_seconds=120) for _ in range(2))
     assert pod_a.pause(60) == 60
     pod_b.pause(10)
-    assert pod_b.wait_for_send_time(TASK) == pytest.approx(60, abs=0.5) and slept == [slept[0]]
+    assert pod_b.wait_for_send_time(TASK) == pytest.approx(60, abs=0.5) == sum(slept)
+    assert max(slept) <= AiLimits.LEASE_CHECK_SECONDS  # re-read between steps, never past the first read
     with pytest.raises(Unavailable):
         AiRequestRate(redis, "paused", per_minute=600, wait_seconds=30).wait_for_send_time(TASK)
     unlimited = AiRequestRate(None, "free", per_minute=0, wait_seconds=5)
@@ -201,14 +202,15 @@ def test_an_answer_gives_back_the_booked_tokens_it_did_not_use(monkeypatch: pyte
     redis = get_redis_client()
     sized = AiRequestRate(redis, "give-back", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
     sized.wait_for_turn(TASK, 6000)
-    assert sized.give_back(6000, 1500) == pytest.approx(4.5, abs=0.01)
+    assert sized.give_back(1500) == pytest.approx(4.5, abs=0.01)
+    assert sized.give_back(1500) == 0  # given back once
     sized.wait_for_turn(TASK, 600)
     assert slept[-1] == pytest.approx(1.5, abs=0.1)
-    assert sized.give_back(600, 900) == 0
+    assert sized.give_back(900) == 0
     both = AiRequestRate(redis, "give-back-both", per_minute=20, wait_seconds=30, tokens_per_minute=60_000)
     both.wait_for_turn(TASK, 600)
-    assert both.give_back(600, 100) == 0  # 3 s a request beats 0.6 s of tokens either way
-    assert AiRequestRate(redis, "give-back-none", 20, 30).give_back(6000, 10) == 0
+    assert both.give_back(100) == 0  # 3 s a request beats 0.6 s of tokens either way
+    assert AiRequestRate(redis, "give-back-none", 20, 30).give_back(10) == 0  # it booked none
 
 
 def test_a_give_back_never_ends_a_429_pause_early(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,8 +220,61 @@ def test_a_give_back_never_ends_a_429_pause_early(monkeypatch: pytest.MonkeyPatc
     rate = AiRequestRate(get_redis_client(), "give-back-paused", 0, 120, tokens_per_minute=60_000)
     rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
     rate.pause(20)
-    assert rate.give_back(30_000, 1000) == pytest.approx(10, abs=0.5)  # 29 s unused, 10 s of it before 20 s
+    assert rate.give_back(1000) == pytest.approx(10, abs=0.5)  # 29 s unused, 10 s of it before 20 s
     assert rate.wait_for_send_time(TASK) == pytest.approx(20, abs=0.5)
+
+
+def test_a_call_that_booked_nothing_gives_nothing_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A try asked for its turn while Redis failed: it reserved nothing, so its answer moves nothing back once
+    Redis is in use again, not even an earlier failed try's booking. Mutation: keep a thread's booking from
+    one wait_for_turn to the next."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    monkeypatch.setattr(AiLimits, "REDIS_SKIP_SECONDS", 0)  # the skip window ends before the answer
+    redis = get_redis_client()
+    rate = AiRequestRate(redis, "booked-nothing", 0, 120, tokens_per_minute=60_000)
+    rate.wait_for_turn(TASK, 30_000)  # a try that failed: the next send 30 s away, nothing given back
+    next_send = redis.get(rate._key)
+
+    def refused(*_: object, **__: object) -> None:
+        raise RedisConnectionError("refused")
+
+    with monkeypatch.context() as broken, capture_logs():
+        broken.setattr(rate, "_reserve_send_time", refused)
+        assert rate.wait_for_turn(TASK, 30_000) == 0  # the retry: nothing reserved
+    assert rate.give_back(1000) == 0 and redis.get(rate._key) == next_send
+
+
+def test_a_booking_gives_nothing_back_once_its_line_restarted_or_a_429_moved_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The booking's line of turns ended and a new one started, or a 429's pause moved the line past it: its
+    unused part belongs to no turn there now. Mutation: drop the chain id from RESERVE, PAUSE or GIVE_BACK."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    redis = get_redis_client()
+    rate, other = (AiRequestRate(redis, "chain", 0, 120, tokens_per_minute=600_000) for _ in range(2))
+    rate.wait_for_turn(TASK, 5000)  # 0.5 s booked
+    time.sleep(0.6)  # its line ends
+    other.wait_for_turn(TASK, 60_000)  # a new line: 6 s
+    next_send = redis.get(rate._key)
+    assert rate.give_back(500) == 0 and redis.get(rate._key) == next_send
+    rate.wait_for_turn(TASK, 60_000)  # 6 s after the other's
+    rate.pause(30)  # past the line's end: the pause replaces it
+    other.wait_for_turn(TASK, 60_000)
+    assert rate.give_back(500) == 0
+
+
+def test_a_call_waiting_for_its_model_s_send_time_goes_once_it_moves_earlier() -> None:
+    """A give-back while calls wait for the send time serves them, not only whoever asks next: a waiter
+    re-reads it every LEASE_CHECK_SECONDS. Mutation: sleep the first read's whole wait."""
+    rate = AiRequestRate(get_redis_client(), "wakes-early", 0, 120, tokens_per_minute=60_000)
+    rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
+    waited: list[float] = []
+    waiter = threading.Thread(target=lambda: waited.append(rate.wait_for_send_time(TASK)), daemon=True)
+    waiter.start()
+    time.sleep(0.3)
+    rate.give_back(1000)  # 29 s back: the next send under 1 s away
+    waiter.join(5)
+    assert waited and waited[0] < 3
 
 
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:

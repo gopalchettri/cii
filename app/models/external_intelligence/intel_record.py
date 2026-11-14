@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.core.constants import IntelKind, IntelLimits, IntelSource, IntelState
+from app.core.constants import IntelKind, IntelSource, IntelState
 
 
 def content_hash_of(*parts: Any) -> str:
@@ -37,7 +37,7 @@ class IntelRecord:
         return content_hash_of(self.title, self.text, self.data, self.asset_type, self.modified)
 
     def as_doc(self, fetched_at: datetime) -> dict[str, Any]:
-        """The record as the store writes it: valid, with its hash and parser version."""
+        """The record as the store writes it: valid, with its hash."""
         return {
             "source": self.source,
             "external_id": self.external_id,
@@ -50,7 +50,6 @@ class IntelRecord:
             "modified": self.modified,
             "data": self.data,
             "content_hash": self.content_hash,
-            "parser_version": IntelLimits.PARSER_VERSION,
             "fetched_at": fetched_at,
             "state": IntelState.VALID,
         }
@@ -72,7 +71,6 @@ class RejectedRecord:
             "external_id": self.external_id,
             "content_hash": self.raw_hash,
             "reason": self.reason,
-            "parser_version": IntelLimits.PARSER_VERSION,
             "fetched_at": fetched_at,
             "state": IntelState.QUARANTINED,
             "current": False,

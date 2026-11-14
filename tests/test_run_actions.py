@@ -690,7 +690,7 @@ def test_a_failed_job_never_leaves_the_run_reading_running() -> None:
     )
     unsent = queued_run()
     assert records.resend_or_fail_unsent_job(
-        _sessions().find_one({"_id": unsent}, {"job": 1}), later, counted=False, error=error
+        _sessions().find_one({"_id": unsent}, {"job": 1}), later, error=error
     )
     for record_id in (own, expired, unsent):
         run = _sessions().find_one({"_id": record_id})

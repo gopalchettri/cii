@@ -1365,7 +1365,8 @@ answers it already got.
 ### Updates and node failures
 
 - A worker updates by stopping its old pod first (no extra pod in the quota). Its queue's jobs wait until the new
-  pod answers (usually a minute or two) and nothing is lost. A stopping worker gets 120 s: after 90 s it puts the
+  pod answers (usually a few minutes) and nothing is lost. A stopping worker gets time to finish one AI call
+  (220 s for threats and scenarios, 280 s for remediation and the service mapper, 120 s for the others): after 90 s it puts the
   jobs it is still running back on their queue, without using up a try, so its new pod carries them on (not an
   index build or an import: the next scheduled one does that work). The API stays ready meanwhile: its readiness
   needs MongoDB only.

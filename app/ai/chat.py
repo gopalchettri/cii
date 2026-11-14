@@ -208,11 +208,11 @@ class ChatModel:
 def _call_and_give_back_unused(  # noqa: PLR0913 - call_with_retries' own inputs
     ask: Callable[[], Any], rate: AiRequestRate, slots: AiSlots, model: str, task: AiTask, tokens: int
 ) -> tuple[Any, float]:
-    """call_with_retries, then the answer's unused booking back to `rate`: LiteLLM holds the prompt and the
-    whole answer room while a call runs, and counts only what it used once answered."""
+    """call_with_retries, then the answering try's unused booking back to `rate`: LiteLLM holds the prompt
+    and the whole answer room while a call runs, and counts only what it used once answered."""
     response, seconds = call_with_retries(ask, rate, slots, model=model, task=task, tokens=tokens)
     if used := sum(count_reply_tokens(response)):  # ponytail: a failed try's booking is never given back
-        rate.give_back(tokens, used)
+        rate.give_back(used)
     return response, seconds
 
 

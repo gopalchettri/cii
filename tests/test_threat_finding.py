@@ -374,7 +374,7 @@ def test_one_library_threat_found_under_two_categories_is_one_threat() -> None:
     findings = finder(chat).find_threats(CONTEXT)
     (ransomware,) = findings.threats
     assert ransomware.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and ransomware.systems == (321, 322)
-    assert ransomware.impact == 3 and ransomware.main_place.impact == 1  # the main category is LOW
+    assert ransomware.impact == 3  # its highest, though its main category is LOW
     (path,) = build_plan(findings, 0)["paths"]
     assert (path["category"], path["impact"]) == (S.TAMPERING, 3)  # told as Tampering, ranked as HIGH
 
@@ -420,25 +420,72 @@ def test_a_library_near_copy_is_joined_into_the_stronger_one_wherever_the_gate_p
         "Admin floods the historian": [0.65, 0.0, 0.76],
     }
     embeddings = SimpleNamespace(embed_texts_to_compare=lambda texts: np.array([vectors[t] for t in texts]))
-    stronger = planned("lib:1", "Insider misuses shared accounts", (321,), impact=3, likelihood=3)
-    weaker = planned("lib:2", "Insider abuses stale accounts", (322,), categories=(S.SPOOFING,))
+    # the stronger has the later key: the strongest is kept first, never the first in key order
+    stronger = planned("lib:2", "Insider misuses shared accounts", (321,), impact=3, likelihood=3)
+    weaker = planned("lib:1", "Insider abuses stale accounts", (322,), categories=(S.SPOOFING,))
     other_type = planned("lib:3", "Insider misuses shared accounts", (321, 322), type_id=5)
     other_asset = planned("lib:4", "Insider abuses stale accounts", (321, 322), asset_type="OT")
     other_attack = planned("lib:5", "Admin floods the historian", (321, 322))
     drops: list[Drop] = []
     threats = [stronger, weaker, other_type, other_asset, other_attack]
     kept = plan_module._merge_duplicate_threats(threats, embeddings, CONTEXT, drops)  # type: ignore[arg-type]
-    assert [threat.key for threat in kept] == ["lib:1", "lib:3", "lib:4", "lib:5"]
+    assert [threat.key for threat in kept] == ["lib:2", "lib:3", "lib:4", "lib:5"]
     joined = kept[0]
     assert joined.categories == (S.TAMPERING, S.SPOOFING) and joined.systems == (321, 322)
-    assert drops == [Drop("lib:2", weaker.name, None, PlanStage.MERGE, PlanLoss.MERGED, "into lib:1")]
+    assert drops == [Drop("lib:1", weaker.name, None, PlanStage.MERGE, PlanLoss.MERGED, "into lib:2")]
+
+
+#: Two library near copies' names (0.81 alike), an AI rewording of the second (alike only to it) and a third
+#: library name near the second (0.91) but not the first (0.5).
+_NEAR_COPIES = {
+    "Insider misuses shared accounts": [1.0, 0.0],
+    "Insider abuses stale accounts": [0.81, 0.586],
+    "Insider abuses old stale accounts": [0.81, 0.586],
+    "Insider abuses stale service accounts": [0.5, 0.866],
+}
+_NEAR_COPY_EMBEDDINGS = SimpleNamespace(
+    embed_texts_to_compare=lambda texts: np.array([_NEAR_COPIES[text] for text in texts])
+)
+
+
+def test_an_ai_rewording_of_a_joined_library_copy_folds_into_the_one_it_joined() -> None:
+    """The weaker library copy joined the stronger; an AI threat rewording the weaker (and not the stronger)
+    is that threat too, never a second card. A library threat near only the weaker one never joins through
+    it: library threats meet only those kept."""
+    stronger = planned("lib:1", "Insider misuses shared accounts", impact=3, likelihood=3)
+    weaker = planned("lib:2", "Insider abuses stale accounts", (322,))
+    near_weaker = planned("lib:3", "Insider abuses stale service accounts")
+    reworded = planned("ai:x", "Insider abuses old stale accounts", (322,), categories=(S.SPOOFING,))
+    drops: list[Drop] = []
+    threats = [stronger, weaker, near_weaker, reworded]
+    kept, apart = plan_module._merge_duplicate_threats(threats, _NEAR_COPY_EMBEDDINGS, CONTEXT, drops)  # type: ignore[arg-type]
+    assert (kept.key, apart.key) == ("lib:1", "lib:3") and kept.categories == (S.TAMPERING, S.SPOOFING)
+    assert [(drop.threat_key, drop.detail) for drop in drops] == [
+        ("lib:2", "into lib:1"),
+        ("ai:x", "into lib:1"),
+    ]
+
+
+def test_library_near_copies_tied_on_risk_keep_the_one_the_plan_ranks_first() -> None:
+    """Tied on risk and harm, the copy kept is the one the plan's rank puts first: the higher confidence of
+    its place, then its main category earlier in STRIDE, then the lower library id."""
+    shared, stale = "Insider misuses shared accounts", "Insider abuses stale accounts"
+    surer = planned("lib:2", stale)
+    surer = dataclasses.replace(surer, main_place=dataclasses.replace(surer.main_place, confidence=90.0))
+    for pair, winner in (
+        ((planned("lib:1", shared), surer), "lib:2"),
+        ((planned("lib:1", shared), planned("lib:2", stale, categories=(S.SPOOFING,))), "lib:2"),
+        ((planned("lib:10", shared), planned("lib:9", stale)), "lib:9"),
+    ):
+        kept = plan_module._merge_duplicate_threats(list(pair), _NEAR_COPY_EMBEDDINGS, CONTEXT, [])  # type: ignore[arg-type]
+        assert [threat.key for threat in kept] == [winner], pair
 
 
 def test_a_threat_ranks_by_its_worst_harm_not_its_main_kinds() -> None:
     """Owner, 14 Nov: "Password spray" led with Leaking data MEDIUM and also had Gaining extra rights HIGH:
     its risk is HIGH x MEDIUM likelihood (6), not MEDIUM x MEDIUM (4), so it ranks above a MEDIUM-only threat
     of HIGH likelihood (6, and lower harm), which ranked first by the main kind alone."""
-    medium_first = AttackPlace((321,), (321,), 2, 70.0)
+    medium_first = AttackPlace((321,), (321,), 70.0)
     worst_high = planned("lib:1", "Password spray", impact=3, likelihood=2, main_place=medium_first)
     only_medium = planned(
         "lib:2",

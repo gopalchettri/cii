@@ -340,12 +340,12 @@ class JobRepository:
         return bool(self._records.update_one(unchanged_since_read, update).modified_count)
 
     def resend_or_fail_unsent_job(
-        self, record: dict[str, Any], now: datetime, *, counted: bool, error: dict[str, str] | None = None
+        self, record: dict[str, Any], now: datetime, *, error: dict[str, str] | None = None
     ) -> bool:
-        """Move a queued job's due_at to now, counting the re-send when `counted` (or fail it with `error`),
-        only while it is queued with the due_at the reaper read."""
+        """Move a queued job's due_at to now (or fail it with `error`), only while it is queued with the
+        due_at the reaper read; count_resend counts a re-send the broker took."""
         update = (
-            {"$set": {"job.due_at": now, "updated_at": now}, "$inc": {"job.resends": int(counted)}}
+            {"$set": {"job.due_at": now, "updated_at": now}}
             if error is None
             else {"$set": {**failed_job_fields(self._records.name, error, now), "updated_at": now}}
         )

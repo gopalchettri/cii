@@ -202,12 +202,7 @@ class BatchWriter:
             content = build_card_threat_fields(path, threats.get(steps[0], {}) if steps else {})
             held_id = find_duplicate_scenario_id(content, path_id, own)
             if held_id is not None:  # the plan path keeps which scenario it repeats
-                state = {
-                    "attempts": path["attempts"],
-                    "last_blocker": repeat,
-                    "abandoned": True,
-                    "repeats": held_id,
-                }
+                state = {"attempts": path["attempts"], "abandoned": True, "repeats": held_id}
                 self._progress.abandon(path_id, state, repeat, threats)
                 self._mark_card_as_repeat(path_id, held_id)
                 left.remove(path_id)

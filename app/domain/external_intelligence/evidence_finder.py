@@ -45,8 +45,6 @@ log = structlog.get_logger(__name__)
 _SEARCH_ERRORS: tuple[type[Exception], ...] = (*TEMPORARY_ERRORS, IncompleteAiAnswer, UnusableAiAnswer)
 #: The kinds whose record says which products and versions it concerns.
 _HAS_APPLICABILITY = (IntelKind.VULNERABILITY, IntelKind.ADVISORY)
-#: A candidate's evidence (None when left out) and the row that records the decision.
-Judgement = tuple[Evidence | None, Considered]
 
 
 class EvidenceFinder:
@@ -188,39 +186,41 @@ class EvidenceSelector:
     def _choose(
         self, scored: Sequence[IntelHit], checker: ProductLinkChecker, *, nearest: bool
     ) -> tuple[tuple[Evidence, ...], tuple[Considered, ...]]:
-        """Every candidate judged, the threshold ignored when `nearest`; the usable ones within the limit."""
-        usable: list[Evidence] = []
-        rows: list[Considered | Evidence] = []
+        """Every candidate judged, the threshold ignored when `nearest`; the usable ones within the limit,
+        an entry built only for those kept."""
+        usable: list[IntelHit] = []
+        rows: list[Considered | IntelHit] = []
         for hit in scored:  # best first, so the limit keeps the most relevant
-            evidence, row = self._judge(hit, usable, checker, nearest)
-            if evidence is not None:
-                usable.append(evidence)
-            rows.append(evidence or row)
+            row = self._judge(hit, usable, checker, nearest)
+            if row is None:
+                usable.append(hit)
+            rows.append(row or hit)
         used = choose_within_limit(usable, self._kept)
-        return tuple(used), tuple(self._final_row(row, used) for row in rows)
+        evidence = tuple(self._evidence(hit, nearest) for hit in used)
+        return evidence, tuple(self._final_row(row, used, nearest) for row in rows)
 
     def _judge(
-        self, hit: IntelHit, usable: list[Evidence], checker: ProductLinkChecker, nearest: bool
-    ) -> Judgement:
-        """Leave a candidate out when under the threshold (unless `nearest`), a product record the asset's
-        products cannot tie or that concerns another product or version, or a duplicate; else make it
-        evidence."""
+        self, hit: IntelHit, usable: list[IntelHit], checker: ProductLinkChecker, nearest: bool
+    ) -> Considered | None:
+        """The row of a candidate left out: under the threshold (unless `nearest`), a product record the
+        asset's products cannot tie or that concerns another product or version, or a duplicate; None when
+        it is usable."""
         if hit.score < self._threshold and not nearest:
             return _left_out(hit, EvidenceDecision.BELOW_THRESHOLD, self._below_threshold(hit.score))
-        applicability = None
         if hit.kind in _HAS_APPLICABILITY:
             if checker.has_no_link(hit):
                 return _left_out(hit, EvidenceDecision.NO_PRODUCT_LINK, EvidenceReason.NO_PRODUCT_LINK.value)
             applicability, reason = checker.judge(hit)
             if applicability == Applicability.NOT_APPLICABLE:
                 return _left_out(hit, EvidenceDecision.NOT_APPLICABLE, self._writer.safe_reason(reason))
-        if any(item.ref == hit.external_id for item in usable):
+        if any(item.external_id == hit.external_id for item in usable):
             return _left_out(hit, EvidenceDecision.DUPLICATE, EvidenceReason.DUPLICATE.value)
-        used = Considered(hit.external_id, hit.score, EvidenceDecision.USED)
-        return self._evidence(hit, applicability, nearest), used
+        return None
 
-    def _evidence(self, hit: IntelHit, applicability: Applicability | None, nearest: bool) -> Evidence:
+    def _evidence(self, hit: IntelHit, nearest: bool) -> Evidence:
         """The evidence entry of a used candidate: its plain facts, cleaned title and link, and dates."""
+        # The checker passes a product record only as UNKNOWN: no product version is recorded.
+        applicability = Applicability.UNKNOWN if hit.kind in _HAS_APPLICABILITY else None
         return Evidence(
             hit.external_id,
             hit.kind,
@@ -240,16 +240,16 @@ class EvidenceSelector:
             nearest=nearest,
         )
 
-    def _final_row(self, row: Considered | Evidence, used: list[Evidence]) -> Considered:
+    def _final_row(self, row: Considered | IntelHit, used: list[IntelHit], nearest: bool) -> Considered:
         """A usable record's row: USED when it fit the limit (a nearest one says its score is under the
         threshold), else OVER_LIMIT; other rows stand."""
         if isinstance(row, Considered):
             return row
         if any(row is item for item in used):
-            reason = self._below_threshold(row.score) if row.nearest else ""
-            return Considered(row.ref, row.score, EvidenceDecision.USED, reason)
+            reason = self._below_threshold(row.score) if nearest else ""
+            return Considered(row.external_id, row.score, EvidenceDecision.USED, reason)
         reason = EvidenceReason.OVER_LIMIT.format(limit=self._kept)
-        return Considered(row.ref, row.score, EvidenceDecision.OVER_LIMIT, reason)
+        return Considered(row.external_id, row.score, EvidenceDecision.OVER_LIMIT, reason)
 
     def _below_threshold(self, score: float) -> str:
         """The reason a score under the threshold gives, the score rounded down so it never reads as met."""
@@ -257,7 +257,7 @@ class EvidenceSelector:
         return EvidenceReason.BELOW_THRESHOLD.format(score=shown, threshold=self._threshold)
 
 
-def choose_within_limit(usable: list[Evidence], limit: int) -> list[Evidence]:
+def choose_within_limit(usable: list[IntelHit], limit: int) -> list[IntelHit]:
     """`usable` is best first. The first `limit` are taken; then, best first, every kind still missing takes
     the place of the lowest-scored record whose kind is held more than once. Order and ties are fixed."""
     chosen = list(usable[:limit])
@@ -270,9 +270,9 @@ def choose_within_limit(usable: list[Evidence], limit: int) -> list[Evidence]:
     return sorted(chosen, key=usable.index)
 
 
-def _left_out(hit: IntelHit, decision: EvidenceDecision, reason: str) -> Judgement:
-    """The judgement of a candidate left out, with the decision and its reason."""
-    return None, Considered(hit.external_id, hit.score, decision, reason)
+def _left_out(hit: IntelHit, decision: EvidenceDecision, reason: str) -> Considered:
+    """The row of a candidate left out, with the decision and its reason."""
+    return Considered(hit.external_id, hit.score, decision, reason)
 
 
 def _summary(search: EvidenceIndex, results: list[EvidenceResult], searched: bool) -> EvidenceBatchSummary:

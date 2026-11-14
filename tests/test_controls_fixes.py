@@ -1,6 +1,7 @@
 """The controls job's fixes: every controls change recounts and publishes its run, a delivery keeps its run's
 request id, a message's outage retries are capped, and a failed run's status carries its error."""
 
+import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from structlog.testing import capture_logs
 from app import container
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
+    AiLimits,
     AiOutage,
     Collection,
     Controls,
@@ -24,7 +26,8 @@ from app.core.constants import (
     Step,
 )
 from app.core.database import get_mongodb
-from app.core.exceptions import ControlsNotMapped, JobFailed, Unavailable
+from app.core.exceptions import ControlsNotMapped, JobFailed, LeaseLost, Unavailable
+from app.core.lease_signal import lease_lost_signal
 from app.core.logging import current_request_id
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
 from app.domain.scenario.session import build_scenario_view, build_status_board
@@ -286,3 +289,40 @@ def test_a_failed_runs_status_carries_its_error(
     )  # fmt: skip
     board = build_status_board(stored).model_dump(mode="json")
     assert board["error"] == shown
+
+
+def test_a_mapping_waiting_on_the_turns_embed_stops_once_its_lease_is_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One mapping runs the turn's embed and it hangs (a slot wait); another waits for it under its own
+    lease. Once that lease is lost the waiter ends with LeaseLost at its next check, not when the embed
+    ends."""
+    monkeypatch.setattr(AiLimits, "LEASE_CHECK_SECONDS", 0.02)
+    started, release = threading.Event(), threading.Event()
+
+    def embed() -> None:
+        started.set()
+        release.wait(10)
+
+    call = controls_job._OneEmbedCall(embed)
+    first = threading.Thread(target=call.wait)
+    first.start()
+    assert started.wait(5)
+    ended: list[str] = []
+
+    def wait_under_a_lost_lease() -> None:
+        with lease_lost_signal("scenario-2") as lost:
+            lost.set()
+            try:
+                call.wait()
+                ended.append("returned")
+            except LeaseLost:
+                ended.append("lease lost")
+
+    waiter = threading.Thread(target=wait_under_a_lost_lease)
+    waiter.start()
+    waiter.join(2)
+    release.set()
+    first.join(5)
+    waiter.join(5)
+    assert ended == ["lease lost"]

@@ -120,7 +120,7 @@ def call_with_retries[Answer](
     with one_ask():
         answered: list[float] = []
         noted = _noting_failures(call, task, model, answered)
-        answer, _ = common.call_with_retries(noted, rate, slots, model=model, task=task, tokens=tokens)
+        answer = common.call_with_retries(noted, rate, slots, model=model, task=task, tokens=tokens)
         return answer, answered[-1]
 
 
@@ -196,13 +196,15 @@ def _usage_row(task: str, model: str, outcome: str, measures: dict[str, Any]) ->
 
 
 def _count(row: dict[str, Any]) -> None:
-    """The row in the low-cardinality Prometheus counters (no ids: those stay in tsg_ai_usage)."""
-    module, api = row.get("module", "none"), row.get("api", "none")
-    labels = (module, api, row["bucket"], row["task"], row.get("model", "none"), row["outcome"])
+    """The row in the low-cardinality Prometheus counters (no ids: those stay in tsg_ai_usage); its tokens
+    by module and API call, and by task and model, so both see the same calls."""
+    module, api, model = row.get("module", "none"), row.get("api", "none"), row.get("model", "none")
+    labels = (module, api, row["bucket"], row["task"], model, row["outcome"])
     metrics.AI_USAGE_CALLS.labels(*labels, row.get("reason", "none")).inc()
     for direction in ("in", "out"):
         if tokens := row.get(f"tokens_{direction}"):
             metrics.AI_USAGE_TOKENS.labels(module, api, direction).inc(tokens)
+            metrics.AI_TOKENS.labels(row["task"], model, direction).inc(tokens)
 
 
 def _loggable(row: dict[str, Any]) -> dict[str, Any]:

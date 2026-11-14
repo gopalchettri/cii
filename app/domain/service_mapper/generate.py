@@ -9,10 +9,10 @@ from app.ai.attempts import one_ask
 from app.ai.chat import ChatModel
 from app.core.constants import AiTask, MapperLimits
 from app.core.prompts import PROMPTS
-from app.core.redaction import redact
 from app.domain.service_mapper.answer_checks import answer_problems
 from app.domain.service_mapper.reconcile import reconcile, selected_service_id
 from app.domain.shared.names import as_json, is_same_name, shorten_text
+from app.domain.shared.prompt_redaction import redacted
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer
@@ -118,15 +118,8 @@ def _is_selected(service: CatalogService, request: CreateMappingRequest) -> bool
     )
 
 
-def _redact_request(request: CreateMappingRequest) -> dict[str, Any]:
-    """The request's fields with secrets and personal data taken out of each text, as the AI may see them."""
-    return {
-        key: redact(value) if isinstance(value, str) else value for key, value in request.model_dump().items()
-    }
-
-
 def _queries(request: CreateMappingRequest) -> list[str]:
-    text = _redact_request(request)
+    text = redacted(request.model_dump())
     role = f"{text['service_name']}. {text['service_description']}. {text['sector']} / {text['subsector']}"
     return [
         role,
@@ -143,9 +136,10 @@ def _user_prompt(
     held: Sequence[dict],
 ) -> str:
     already = {"already_mapped": _already_mapped(held)} if held else {}
+    selected = redacted(request.model_dump()) | _selected_known_dependencies(request, catalog)
     return as_json(
         {
-            "selected_service": _redact_request(request) | _selected_known_dependencies(request, catalog),
+            "selected_service": selected,
             "upstream_count": counts[0],
             "downstream_count": counts[1],
             **already,

@@ -307,6 +307,34 @@ def test_search_calls_record_the_tokens_their_gateway_counts(monkeypatch: pytest
     assert found == [("embed", 12, None), ("rerank", 40, 3), ("rerank", 55, None), ("rerank", None, None)]
 
 
+def test_tokens_by_model_count_every_row_s_tokens_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tsg_ai_tokens_total and tsg_ai_usage_tokens_total see the same calls: an embedding's tokens count by
+    model too, a chat call's once. Mutation: count tokens by model in the chat record alone, or in both."""
+
+    def tokens(task: str, model: str, direction: str) -> float:
+        return _counter("tsg_ai_tokens_total", task=task, model=model, direction=direction)
+
+    usage = SimpleNamespace(prompt_tokens=12)
+    monkeypatch.setattr(
+        litellm,
+        "embedding",
+        lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage),
+    )
+    monkeypatch.setattr(litellm, "completion", lambda **_: _answer())
+    profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
+    embed = _EmbeddingProvider(
+        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
+    )
+    gate = AiTask.RELEVANCE_GATE
+    before = [tokens(AiTask.EMBED, "test-embed", "in"), tokens(gate, "test-chat", "in")]
+    before.append(tokens(gate, "test-chat", "out"))
+    embed.embed_batch(["scenario text"])
+    _ask(_chat(), _job())
+    after = [tokens(AiTask.EMBED, "test-embed", "in"), tokens(gate, "test-chat", "in")]
+    after.append(tokens(gate, "test-chat", "out"))
+    assert [now - then for now, then in zip(after, before, strict=True)] == [12, 11, 7]
+
+
 def test_a_shared_threads_calls_are_no_requests_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """A library or evidence index build runs on a thread started from whichever job needed it first: its
     calls are counted as shared, never charged to that job's request. Mutation: drop the shared_work check."""
