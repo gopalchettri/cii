@@ -556,7 +556,7 @@
       "id": 109,
       "type": "stat",
       "title": "Tokens sent to the AI",
-      "description": "Tokens in the questions sent (writing calls only: embedding and ranking report none). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens in the questions sent: writing, embedding and ranking calls. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -621,7 +621,7 @@
       "id": 110,
       "type": "stat",
       "title": "Tokens in the AI's answers",
-      "description": "Tokens in the AI's answers (writing calls only). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens in the AI's answers: writing calls, and ranking calls whose gateway states them (an embedding has none). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1669,7 +1669,7 @@
       "id": 118,
       "type": "table",
       "title": "AI calls and tokens by model (every module)",
-      "description": "One line per model: its AI calls, failed, and the tokens sent and answered (writing calls only). The Module and API call choices at the top do not narrow this table: tokens by model carry no module or API call. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "One line per model: its AI calls, failed, and the tokens sent and answered (writing, embedding and ranking calls). The Module and API call choices at the top do not narrow this table: tokens by model carry no module or API call. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1832,7 +1832,7 @@
       "id": 119,
       "type": "table",
       "title": "Tokens by API call",
-      "description": "Tokens sent and answered for each API call's work (writing calls only). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens sent and answered for each API call's work (writing, embedding and ranking calls). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

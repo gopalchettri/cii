@@ -675,6 +675,8 @@ def _collect_stage_errors(
         messages[str(run.step)] = run.error.get("message") or run.error.get("code") or ""
     if abandoned := run.counts.get("abandoned", 0):
         messages.setdefault(str(Step.SCENARIOS), BoardMessage.ABANDONED.format(abandoned=abandoned))
+    if not_judged := run.counts.get("not_judged", 0):
+        messages.setdefault(str(Step.THREATS), BoardMessage.NOT_JUDGED.format(not_judged=not_judged))
     if controls == StageState.ERROR:
         manual = run.kind == RunKind.MANUAL  # only its plan job maps it, never the background
         unmatched = BoardMessage.CONTROLS_FAILED_MANUAL if manual else BoardMessage.CONTROLS_FAILED
@@ -1003,7 +1005,7 @@ def build_plan_trace_view(
             threat_key=path["steps"][0],
             kind=path["category"],
             rank=path["rank"],
-            reason=path.get("abandoned_reason") or path.get("last_blocker"),
+            reason=path.get("abandoned_reason"),
             repeats=path.get("repeats"),
             replaced_by=path.get("replaced_by"),
         )

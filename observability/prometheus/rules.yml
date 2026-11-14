@@ -103,8 +103,9 @@ groups:
           summary: "{{ $labels.instance }}'s clock is more than 5 s off MongoDB's; the app corrects for it."
           description: "UAT: the cluster admin fixes time sync on its node: oc debug node/<node> -- chroot /host chronyc tracking."
 
-      # Each queue is two Redis lists: <Worker.BROKER_KEY_PREFIX><queue> (a run's next stages), i.e.
-      # tsg:tsg_threats, and the same name + "\x06\x163" (new work, Worker.NEW_WORK_PRIORITY); summed per queue.
+      # Each queue is three Redis lists: <Worker.BROKER_KEY_PREFIX><queue> (a run's next stages), i.e.
+      # tsg:tsg_threats, the same name + "\x06\x163" (new work, Worker.NEW_WORK_PRIORITY) and + "\x06\x166" (a
+      # busy entity's plans, Worker.BUSY_ENTITY_PRIORITY); summed per queue.
       # Every queue but tsg_maintenance, so a new queue is covered without an edit here.
       - alert: QueueBacklog
         expr: sum by (queue) (label_replace(max by (key) (redis_key_size{key=~"tsg:tsg_.*", key!~"tsg:tsg_maintenance.*"}), "queue", "$1", "key", "tsg:([a-z_]+).*")) > 50
@@ -219,7 +220,7 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: More than 10 % of AI calls fail (no answer, or an answer that could not be used).
-          description: Open the TSG dashboard, "Why the AI did not answer"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md.
+          description: Open the TSG dashboard, "Why the AI did not answer"; see deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row.
 
       # By reason, so the alert itself says which outage it is (each has its own cure). The gateway's refusals
       # only: source="limiter" counts TSG's own limiter (no AI slot or request turn free within the wait).
@@ -233,7 +234,7 @@ groups:
             "ai_busy" }}was busy{{ else if eq $labels.reason "ai_unreachable" }}could not be reached{{ else
             }}answered with a server error{{ end }} {{ $value | printf "%.0f" }} times in 10 minutes.
           description: >-
-            Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md).
+            Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row).
             Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and
             the network. Server error: ask the gateway's team.
 
@@ -262,7 +263,7 @@ groups:
           summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
           description: >-
             More work is sent to {{ $labels.model }} than its requests-a-minute setting allows (a module's
-            CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE,
+            CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE,
             CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens:
             CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise
             its setting; the dashboard's 429 panel shows refusals.

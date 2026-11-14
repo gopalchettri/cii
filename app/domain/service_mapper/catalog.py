@@ -1,4 +1,4 @@
-"""Normalize the four verified SQL results without parsing ambiguous comma-separated associations."""
+"""Normalize the verified SQL results without parsing ambiguous comma-separated associations."""
 
 import hashlib
 import json
@@ -26,11 +26,7 @@ def build_catalog(rows: CatalogRows) -> CatalogSnapshot:
 def _build_catalog(rows: CatalogRows) -> CatalogSnapshot:
     sectors = _sectors(rows.sectors)
     top_names = tuple(sorted((name for name, parent in sectors.values() if parent is None), key=str.casefold))
-    reported = tuple(sorted((str(row["SectorName"]) for row in rows.sector_summary), key=str.casefold))
-    if reported != top_names:
-        raise ValueError(MapperMessage.CATALOG_ROW_INVALID)
     source = _services(rows.services)
-    _check_old_mappings(rows.service_mappings, source, sectors)
     sector_links = _sector_links(rows.sector_links, source, sectors)
     entity_links = _entity_links(rows.entity_links, source, sectors)
     services = tuple(
@@ -72,21 +68,6 @@ def _services(rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
             raise ValueError(MapperMessage.CATALOG_ROW_INVALID)
         found[service_id] = row
     return found
-
-
-def _check_old_mappings(
-    mappings: list[dict[str, Any]],
-    services: dict[int, dict[str, Any]],
-    sectors: dict[int, tuple[str, int | None]],
-) -> None:
-    for row in mappings:
-        service_id, sector_id = int(row["service_id"]), int(row["sector_id"])
-        if service_id not in services or sector_id not in sectors:
-            continue  # the onboarding procedure does not filter deleted rows
-        if str(row["service_name"]).strip() != str(services[service_id]["service_name"]).strip():
-            raise ValueError(MapperMessage.CATALOG_ROW_INVALID)
-        if str(row["sector_name"]).strip() != sectors[sector_id][0]:
-            raise ValueError(MapperMessage.CATALOG_ROW_INVALID)
 
 
 def _sector_links(

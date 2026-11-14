@@ -137,7 +137,6 @@ REFRESH_AFTER_HOURS: Final[dict[IntelSource, int]] = {
 
 
 class IntelLimits:
-    PARSER_VERSION: Final = "1"  # bumped when a parser's output changes, so records are re-versioned
     FETCH_TIMEOUT_SECONDS: Final = 60
     FETCH_ATTEMPTS: Final = 3
     FAILURE_REASON_CHARS: Final = 200  # how much of a network error's text a failure keeps

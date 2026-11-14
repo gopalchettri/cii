@@ -22,6 +22,26 @@
     "call": "query",
     "corpus": "threat",
     "texts": [
+     "Phishing crew spoofs control room staff",
+     "Ransomware hits backup",
+     "Ransomware encrypts backup servers",
+     "Attacker gains root on SYS1"
+    ]
+   },
+   {
+    "call": "query",
+    "corpus": "threat_type",
+    "texts": [
+     "Social engineering",
+     "Malware",
+     "Malware",
+     "Root access"
+    ]
+   },
+   {
+    "call": "query",
+    "corpus": "threat",
+    "texts": [
      "Phishing crew spoofs control room staff"
     ]
    },

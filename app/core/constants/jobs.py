@@ -81,8 +81,10 @@ class Worker:
     LIVENESS_FILE: Final = "/tmp/tsg-worker-alive"  # noqa: S108 — touched each beat; probes read it, not Redis
     LIVENESS_MAX_AGE_SECONDS: Final = 180  # the probe fails when the file is older: hung or dead
     NEXT_STAGE_PRIORITY: Final = 0  # next stages, retries, the reaper's re-sends: Redis serves 0 first
-    NEW_WORK_PRIORITY: Final = 3  # every other send; its list is <queue>\x06\x163, which old pods read too
-    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (pods get 120 s)
+    NEW_WORK_PRIORITY: Final = 3  # new work; its list is <queue>\x06\x163, which old pods read too
+    BUSY_ENTITY_PRIORITY: Final = 6  # a busy entity's plan, read after new work; the reaper re-sends it at 0
+    BUSY_ENTITY_WAITING: Final = 2  # an entity with this many other plans queued or running is busy
+    HAND_BACK_AFTER_SECONDS: Final = 90  # a stopping worker queues its unfinished jobs again (grace 120-280)
 
 
 class Lease:
@@ -135,7 +137,7 @@ class JobControlMessage(StrEnum):
 class Generation:
     # paths one write job writes at once, not a scenario limit (CII_SCENARIOS_WRITTEN_AT_ONCE: 6)
     WRITER_BATCH: Final = TUNING.scenarios_written_at_once
-    MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
+    MAX_PATH_ATTEMPTS: Final = 5  # outages this often give a path up; any other failure or block, at once
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 
 
@@ -231,6 +233,10 @@ class BoardMessage(StrEnum):
     """progress.error_message texts the status writes itself (a failed job brings its own message)."""
 
     ABANDONED = "{abandoned} attack path(s) could not be written."
+    NOT_JUDGED = (
+        "{not_judged} threat(s) could not be checked by the AI and were left out "
+        "(counted per STRIDE category)."
+    )
     CONTROLS_FAILED = (
         "Controls could not be matched for {failed} scenario(s); request or regenerate a plan to try again."
     )

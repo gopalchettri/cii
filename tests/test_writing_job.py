@@ -410,7 +410,7 @@ def test_a_blocked_scenario_is_kept_hidden_and_its_path_given_up_at_once(
     assert stored[0]["status"] == ScenarioStatus.BLOCKED and "controls" not in stored[0]
     path = run["plan"]["paths"][0]
     assert (path["attempts"], path["abandoned"], run["counts"]["written"]) == (1, True, 0)
-    assert path["last_blocker"] == path["abandoned_reason"] == "uncited_advisory_id"
+    assert path["abandoned_reason"] == "uncited_advisory_id"
     assert run["status"] == Status.DONE and run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
 

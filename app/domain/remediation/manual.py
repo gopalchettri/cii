@@ -100,7 +100,6 @@ def manual_run_record(
         "context": context.to_record(),
         "status": Status.DONE,
         "step": Step.SCENARIOS,
-        "plan_note": None,
         "last_action": None,
         "counts": {},  # counted from its scenario once saved (scenarios.update_scenario_session_counts)
         "created_at": now,
@@ -140,7 +139,6 @@ def manual_scenario_record(
         # What its plan job completes first; removed once done.
         "pending": {"actors": True, "proposal": threat["status"] is None, "by": by},
         "findings": [],  # the code checks are for AI text only
-        "plan_check": None,
         "controls": controls,
         "created_at": now,
         "updated_at": now,

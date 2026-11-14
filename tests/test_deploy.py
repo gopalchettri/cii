@@ -73,13 +73,9 @@ SECRET_NAMES = {
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
-#: Each AI model and the base URL its calls go to: each module's main and fallback chat model on its own.
+#: Each AI model and the base URL its calls go to: each module's chat model on its own.
 GATEWAYS = (
-    *(
-        (f"CII_{module.upper()}_CHAT_{model}", f"CII_{module.upper()}_CHAT_BASE_URL")
-        for module in ChatModule
-        for model in ("MODEL", "FALLBACK_MODEL")
-    ),
+    *((f"CII_{module.upper()}_CHAT_MODEL", f"CII_{module.upper()}_CHAT_BASE_URL") for module in ChatModule),
     ("CII_EMBEDDING_MODEL", "CII_EMBEDDING_BASE_URL"),
     ("CII_RERANK_MODEL", "CII_RERANK_BASE_URL"),
 )
@@ -735,7 +731,8 @@ def test_monitoring_images_come_from_the_mirror_with_a_pinned_version() -> None:
 
 def test_the_image_gets_only_what_it_runs() -> None:
     """.dockerignore is an allow-list (no .env file can reach a build), the Dockerfile copies exactly what it
-    allows, and the image has no local reranker (torch) and no root user."""
+    allows, and the image has no local reranker (torch) and no root user. Its app code is root's, read-only
+    to group 0 (OpenShift's random user): a code-execution bug cannot plant code for later imports."""
     rules = [
         line
         for line in (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
@@ -746,6 +743,7 @@ def test_the_image_gets_only_what_it_runs() -> None:
     copied = {source for line in re.findall(r"^COPY (.+) \S+$", dockerfile, re.M) for source in line.split()}
     assert rules[0] == "*" and copied == allowed == {"pyproject.toml", "requirements.txt", "app"}
     assert "local" not in re.findall(r"\[(\w+)\]", dockerfile) and "\nUSER 10001\n" in dockerfile
+    assert "chown -R 0:0 /app && chmod -R g=rX /app" in dockerfile and "g=u" not in dockerfile
 
 
 def test_each_ai_module_s_workers_can_fill_its_cap_and_no_one_job_takes_it_all() -> None:

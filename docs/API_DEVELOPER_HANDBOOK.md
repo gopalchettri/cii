@@ -890,7 +890,7 @@ Build this after the original scenario path works with `EXTERNAL_INTELLIGENCE_EN
 ## Stage 12 — Add live updates and implement Service Mapper
 
 1. In `app/realtime/publisher.py`, name per-session/per-plan channels and publish after the persisted status changes. In `app/realtime/event_hub.py`, share one Redis subscription among streams in the API process. A published message tells a stream to **reread MongoDB**; it is not the result itself.
-2. In `scenario.events_router`, add `GET /v1/sessions/{session_id}/events` and `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`. Validate ownership **before** opening the stream; send the current status immediately, then changes; recheck key access while connected; emit a deletion event and close after deletion. See `_status_stream()` in `app/api/routers/scenario.py`.
+2. In `scenario.events_router`, add `GET /v1/sessions/{session_id}/events` and `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`. Validate ownership **before** opening the stream; send the current status immediately, then changes; recheck key access while connected; emit a deletion event and close after deletion. See `status_stream()` in `app/api/status_stream.py`.
 3. Service Mapper: built following **Recipe D1–D16**, with the later owner decisions recorded in [service_mapper/SERVICE_MAPPER.md](service_mapper/SERVICE_MAPPER.md) (one direction per service, names only to the AI, every database service grouped by sector). Its worker consumes only `tsg_servicemapper`.
 4. Register `scenario.events_router` and `service_mapper_router` in `app/main.py`; add their tags/descriptions in `app/api/openapi_docs.py`.
 

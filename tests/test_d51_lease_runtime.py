@@ -6,6 +6,7 @@ import contextvars
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,7 +45,7 @@ from tests.test_control_mapping import (  # noqa: F401 - mapping_run: a fixture 
     _ScoresByText,
     mapping_run,
 )
-from tests.test_deploy import _all_deployments
+from tests.test_deploy import _all_deployments, _settings
 
 #: The queues whose tasks hold a lease keep_lease_alive renews: their workers hand it back when they stop.
 LEASED_QUEUES = {Queue.THREATS, Queue.SCENARIOS, Queue.CONTROLS, Queue.REMEDIATION, Queue.SERVICEMAPPER}
@@ -83,6 +84,13 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     announced: list[str] = []
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.SESSIONS, announced.append)
     return announced
+
+
+@pytest.fixture(autouse=True)
+def worker_not_stopping() -> Iterator[None]:
+    """A hand-back marks its whole process as stopping: each test here starts on a worker that is not."""
+    yield
+    lease_renewal.handing_back.clear()
 
 
 @pytest.fixture
@@ -281,6 +289,38 @@ def test_a_stopping_controls_worker_gives_its_scenarios_back_without_using_an_at
     assert [_controls_of(scenario_id)["attempts"] for scenario_id in scenario_ids] == [1, 1]  # the same try
 
 
+def test_a_job_its_stopping_worker_handed_back_is_not_counted_as_a_stall(
+    monkeypatch: pytest.MonkeyPatch, published: list[str]
+) -> None:
+    """Every job handed back at shutdown then logged job.lease_lost, a warning the Stuck jobs panel counts as
+    "taken over (its worker stalled)": each release showed false stalls."""
+    monkeypatch.setattr(lease_renewal, "send_job", lambda *_args, **_options: True)
+    task = SimpleNamespace(name=TaskName.FIND_THREATS, request=SimpleNamespace(id="released"))
+
+    def work_while_the_worker_stops(_lease: JobLease) -> None:
+        _stop_the_worker()
+        raise_if_lease_lost()  # its next AI call
+
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(task, Collection.SESSIONS, _insert_job(), 1, work_while_the_worker_stops)
+    assert [line["event"] for line in logs if line["log_level"] == "warning"] == []
+    events = [line["event"] for line in logs]
+    assert LogEvent.JOB_LEASE_LOST not in events and LogEvent.JOB_STOPPED_HANDED_BACK in events
+
+
+def test_a_job_taken_over_while_its_worker_runs_still_warns(published: list[str]) -> None:
+    task = SimpleNamespace(name=TaskName.FIND_THREATS, request=SimpleNamespace(id="stalled"))
+
+    def taken_over(lease: JobLease) -> None:
+        _records().update_one({"_id": lease.record_id}, {"$set": {"job.task_id": "the-next-delivery"}})
+        lease.update_job({"plan": "late"})  # its next fenced write
+
+    with capture_logs() as logs, pytest.raises(Ignore):
+        jobs.run_leased_job(task, Collection.SESSIONS, _insert_job(), 1, taken_over)
+    lost = [line["log_level"] for line in logs if line["event"] == LogEvent.JOB_LEASE_LOST]
+    assert lost == ["warning"]
+
+
 def test_a_worker_told_to_stop_hands_its_jobs_back_before_its_pod_is_killed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -294,6 +334,29 @@ def test_a_worker_told_to_stop_hands_its_jobs_back_before_its_pod_is_killed(
         queues = set(command[command.index("-Q") + 1].split(",")) if "-Q" in command else set()
         if queues & LEASED_QUEUES:  # handed back with time left to write and send before the kill
             assert spec["terminationGracePeriodSeconds"] >= Worker.HAND_BACK_AFTER_SECONDS + 20, deployment
+
+
+#: The queues whose jobs ask a chat model, and the module whose timeout bounds one call.
+CHAT_QUEUES = {
+    Queue.THREATS: "SCENARIO",
+    Queue.SCENARIOS: "SCENARIO",
+    Queue.REMEDIATION: "REMEDIATION",
+    Queue.SERVICEMAPPER: "SERVICE_MAPPER",
+}
+
+
+def test_a_worker_that_asks_the_ai_lets_a_call_begun_before_its_hand_back_finish() -> None:
+    """A call begun just before the hand-back may run its module's whole timeout: a shorter grace kills it
+    mid-call and the next delivery asks the AI again (glm-5.3 waits up to 180 s, the grace was 120)."""
+    settings = _settings()
+    for deployment in _all_deployments():
+        spec = deployment["spec"]["template"]["spec"]
+        command = spec["containers"][0].get("command") or []
+        queues = set(command[command.index("-Q") + 1].split(",")) if "-Q" in command else set()
+        for queue in queues & CHAT_QUEUES.keys():
+            timeout = int(settings[f"CII_{CHAT_QUEUES[queue]}_CHAT_TIMEOUT_SECONDS"])
+            needed = Worker.HAND_BACK_AFTER_SECONDS + timeout + 10
+            assert spec["terminationGracePeriodSeconds"] >= needed, (deployment["metadata"]["name"], needed)
 
 
 def test_a_job_waiting_too_long_for_another_job_is_failed(published: list[str]) -> None:

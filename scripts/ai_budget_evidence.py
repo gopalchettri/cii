@@ -106,23 +106,20 @@ def read_logs(paths: list[str]) -> list[dict]:
 
 
 def gateways(env: Mapping[str, str | None]) -> dict[tuple[str, str, str], list[str]]:
-    """Each distinct (gateway, key, model) TSG uses -> who uses it: 'scenario', 'scenario fallback',
-    'embedding', 'rerank'."""
+    """Each distinct (gateway, key, model) TSG uses -> who uses it: 'scenario', 'embedding', 'rerank'."""
     sys.path.insert(0, str(Path.cwd()))  # the project folder, or /app in a pod
     from app.core.constants import ChatModule  # noqa: PLC0415
 
     found: dict[tuple[str, str, str], list[str]] = {}
     for module in ChatModule:
-        base, key, model, fallback = (
+        base, key, model = (
             (env.get(f"CII_{module.upper()}_CHAT_{name}") or "").strip()
-            for name in ("BASE_URL", "API_KEY", "MODEL", "FALLBACK_MODEL")
+            for name in ("BASE_URL", "API_KEY", "MODEL")
         )
         if not (base and key and model):
             print(f"Skipped {module}: its chat URL, key or model is not set.", file=sys.stderr)
             continue
-        for used, user in ((model, str(module)), (fallback, f"{module} fallback")):
-            if used:
-                found.setdefault((base.rstrip("/"), key, used), []).append(user)
+        found.setdefault((base.rstrip("/"), key, model), []).append(str(module))
     for search in SEARCH_MODELS:  # on a gateway they share its limits too; a local model has no base URL
         base, key, model = ((env.get(f"CII_{search.upper()}_{name}") or "").strip()
                             for name in ("BASE_URL", "API_KEY", "MODEL"))  # fmt: skip

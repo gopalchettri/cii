@@ -32,12 +32,14 @@ from app.core.constants import (
     MapperMessage,
     MappingOverall,
     Status,
+    StoredProcedure,
     TaskName,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, JobFailed, Unavailable
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.job_repository import JobLease
+from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
 from app.data_access.service_mapper.mapping_repository import MappingRepository
 from app.domain.service_mapper import generate
 from app.domain.service_mapper.answer_checks import answer_problems
@@ -68,21 +70,6 @@ def _request() -> CreateMappingRequest:
 
 def _catalog_rows() -> CatalogRows:
     return CatalogRows(
-        sector_summary=[{"SectorName": "Energy"}, {"SectorName": "Water"}],
-        service_mappings=[
-            {
-                "service_id": 1,
-                "service_name": "Power Generation System",
-                "sector_id": 10,
-                "sector_name": "Energy",
-            },
-            {
-                "service_id": 2,
-                "service_name": "Water Treatment Service",
-                "sector_id": 20,
-                "sector_name": "Water",
-            },
-        ],
         services=[
             {
                 "service_id": 1,
@@ -334,6 +321,29 @@ def test_the_prompt_sends_names_never_a_catalog_id_and_not_the_selected_service(
         },
         {"sector": "Energy", "subsector": "Power", "services": []},  # empty groups last
     ]
+
+
+def test_an_email_or_a_secret_in_the_details_reaches_neither_the_prompt_nor_the_search() -> None:
+    queries: list[str] = []
+
+    class _RecordingSearch:
+        def candidates(self, catalog, sent_queries):
+            queries.extend(sent_queries)
+            return list(catalog.services)
+
+    leaky = _request().model_copy(
+        update={
+            "service_description": "Generates electricity. Contact ops@example.com, password=x",
+            "entity_names": ["Example Utility", "owner@example.com"],
+        }
+    )
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _RecordingSearch(), leaky, _catalog(), ("mapping", 1), (5, 5))  # type: ignore[arg-type]
+    sent = json.dumps(chat.prompts) + json.dumps(queries)
+    assert "ops@example.com" not in sent and "password=x" not in sent and "owner@example.com" not in sent
+    assert "Generates electricity." in chat.prompts[0]["selected_service"]["service_description"]
+    assert "Example Utility" in chat.prompts[0]["selected_service"]["entity_names"]
+    assert queries and all("Generates electricity." in query for query in queries)
 
 
 def test_the_selected_services_recorded_dependencies_lead_and_a_shared_service_is_described_once() -> None:
@@ -591,8 +601,31 @@ def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None
     assert set(mappings.timings) == {"catalog_s", "services_s"}  # the run's two activities, timed
 
 
+def test_a_sector_name_with_a_trailing_space_or_shared_by_two_sectors_still_builds_the_catalog() -> None:
+    """Onboarding data the owner cannot change (a name saved with a trailing space, two live top-level sectors
+    named alike in any case) still builds the catalog the picker, Generate and every run read."""
+    services = [{"service_id": 1, "service_name": "Power Generation System"}]
+    energy = {"sector_id": 10, "sector_name": "Energy", "parent_sector_id": None}
+    twin = {"sector_id": 30, "sector_name": "ENERGY", "parent_sector_id": None}
+    links = [{"service_id": 1, "sector_id": 10}]
+    for sectors, summary in (
+        ([energy | {"sector_name": "Energy "}], ["Energy "]),
+        ([energy, twin], ["Energy"]),  # GROUP BY under a case-insensitive collation
+    ):
+        results = {  # what each onboarding procedure returns for these rows
+            StoredProcedure.GET_SECTORS_AND_SUBSECTORS: [[{"SectorName": name} for name in summary]],
+            StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS: [[]],
+            StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS: [services],
+            StoredProcedure.GET_SERVICE_MAPPER_ASSOCIATIONS: [sectors, links, []],
+        }
+        procedures = SimpleNamespace(execute_procedure=results.__getitem__)
+        catalog = build_catalog(ServiceCatalogRepository(procedures).load())  # type: ignore[arg-type]
+        assert [service.service_name for service in catalog.services] == ["Power Generation System"]
+        assert catalog.services[0].sectors[0].sector_name == "Energy"
+
+
 def test_empty_catalog_still_keeps_defensible_ai_services() -> None:
-    empty = build_catalog(CatalogRows([], [], [], [], [], []))
+    empty = build_catalog(CatalogRows([], [], [], []))
     answer = _answer().model_dump()
     result = reconcile("mapping", 1, _request(), GeneratedAnswer.model_validate(answer), empty, 2, 2)
     assert {item["service_name"] for item in result["dependencies"]} == {
@@ -682,8 +715,6 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
             snapshot = _catalog()
             assert snapshot.services
             return CatalogRows(
-                [{"SectorName": "Energy"}, {"SectorName": "Water"}],
-                [],
                 [{"service_id": 2, "service_name": "Water Treatment Service"}],
                 [
                     {"sector_id": 10, "sector_name": "Energy", "parent_sector_id": None},
@@ -790,11 +821,24 @@ def _mapper(
         MappingRepository(),
         settings or container.get_settings(),
         lambda *job: sent.append(job),
-        catalog,
+        (lambda: build_catalog(catalog.load())) if catalog is not None else _catalog,
         AuditRepository(),
         published.append if published is not None else lambda _mapping_id: None,
     )
     return mapper, sent
+
+
+def test_the_service_picker_reads_the_sql_catalog_at_most_once_a_minute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /v1/entities/{id}/services ran the 4 catalog procedures on every call, past the 60 s cache the
+    worker already uses: the API's service now reads the catalog through that cache."""
+    loads: list[int] = []
+    monkeypatch.setattr(ServiceCatalogRepository, "load", lambda _self: loads.append(1) or _catalog_rows())
+    service = container.get_service_mapper_service()
+    for _ in range(3):
+        service.list_entity_services(PRINCIPAL, PRINCIPAL.entity_id)
+    assert len(loads) <= 1
 
 
 def _finished_mapping() -> tuple[ServiceMapperService, str, list[dict[str, str]]]:
@@ -806,6 +850,22 @@ def _finished_mapping() -> tuple[ServiceMapperService, str, list[dict[str, str]]
         {"_id": started.mapping_id}, {"$set": {"status": Status.DONE, "result": result}}
     )
     return mapper, started.mapping_id, pending_relationships(result)
+
+
+def test_the_mapping_list_reads_no_runs_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The list shows a few summary fields; it read every mapping whole, each run's dependencies included."""
+    mapper, mapping_id, _ = _finished_mapping()
+    read: list[dict] = []
+    listed = MappingRepository.list
+
+    def spy(self: MappingRepository, *args: Any, **kwargs: Any) -> list[dict]:
+        read.extend(records := listed(self, *args, **kwargs))
+        return records
+
+    monkeypatch.setattr(MappingRepository, "list", spy)
+    page = mapper.list_service_mappings(PRINCIPAL, PRINCIPAL.entity_id, 0, 50)
+    assert [item.mapping_id for item in page.items] == [mapping_id]
+    assert all("dependencies" not in (record.get("result") or {}) for record in read) and read
 
 
 def _decide(mapper: ServiceMapperService, mapping_id: str, relation: dict[str, str], accept: bool = True):
@@ -1107,6 +1167,18 @@ def test_a_running_mapping_starts_no_second_run(empty_test_database: None) -> No
             refused()
         assert running.value.reason == MapperConflict.GENERATION_IN_PROGRESS
         assert running.value.details is not None and running.value.details["mapping_id"] == mapping_id
+    assert sent == [_map(mapping_id, 1)]
+
+
+def test_a_key_sent_while_a_run_goes_on_replays_that_run_after_it_ends(empty_test_database: None) -> None:
+    mapper, sent = _mapper()
+    mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
+    key = uuid4().hex
+    joined, created = mapper.create_service_mapping(PRINCIPAL, _request(), key)  # while run 1 goes on
+    assert (joined.mapping_id, joined.generation, created) == (mapping_id, 1, False)
+    _run(mapping_id, _answer().model_dump())
+    replayed, created = mapper.create_service_mapping(PRINCIPAL, _request(), key)  # its answer was lost
+    assert (replayed.mapping_id, replayed.generation, created) == (mapping_id, 1, False)
     assert sent == [_map(mapping_id, 1)]
 
 

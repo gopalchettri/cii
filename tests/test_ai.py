@@ -5,7 +5,7 @@ import hashlib
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -59,13 +59,9 @@ PLAIN_CHAT = ChatModelProfile(
 )
 
 
-def _chat_model(*models: tuple[str, ChatModelProfile]) -> ai.ChatModel:
-    return ai.ChatModel(
-        list(models) or [("test-chat", JSON_CHAT)],
-        "http://ai.invalid",
-        "key",
-        AiCallRepository(get_mongodb()["test_ai_calls"]),
-    )
+def _chat_model(model: str = "test-chat", profile: ChatModelProfile = JSON_CHAT) -> ai.ChatModel:
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    return ai.ChatModel(model, profile, "http://ai.invalid", "key", records)
 
 
 #: call_with_retries' request rate and slots when a test needs no limit (a worker's: 429s waited out).
@@ -149,7 +145,7 @@ def test_an_unmapped_timed_out_status_is_not_asked_again_and_is_told_as_timed_ou
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Owner 2026-10-10: a call that timed out is not asked again in the call (a 524 is a timeout as much as
-    litellm's Timeout); the fallback model or the job's back-off asks later, told "ai_timed_out"."""
+    litellm's Timeout); the job's back-off asks later, told "ai_timed_out"."""
     _no_waiting(monkeypatch)
     asked: list[int] = []
 
@@ -200,7 +196,7 @@ def test_a_job_takes_the_answers_any_of_its_deliveries_already_got_when_asked_to
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With reuse_earlier_answer, an ask the job (record, epoch, stage) already got an ok answer to is read
-    from tsg_ai_calls (no AI call, no new record), whichever delivery got it: a reaper re-send has a new
+    from tsg_ai_call_texts (no AI call, no new record), whichever delivery got it: a reaper re-send has a new
     Celery task_id. Not when the check rejects that answer (the job retries to get another), nor for another
     epoch or stage, nor outside a leased job (the API)."""
     calls: list[int] = []
@@ -246,53 +242,37 @@ def test_unreadable_answer_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
         _ask(_chat_model(), AiTask.WRITE_SCENARIO)
 
 
-def test_fallback_model_answers_an_outage_with_its_own_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_model_is_asked_with_its_own_profile_s_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its limits and none of the options its profile says it does not accept; the task's temperature."""
     sent: list[dict] = []
-
-    def first_model_busy(**kwargs: object) -> SimpleNamespace:
-        sent.append(kwargs)
-        if kwargs["model"] == "first":
-            raise litellm.RateLimitError(message="busy", llm_provider="openai", model="first")
-        return _json_response('{"ok": true}')
-
-    _no_waiting(monkeypatch)
-    monkeypatch.setattr(litellm, "completion", first_model_busy)
-    answer = _ask(_chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT)), AiTask.RELEVANCE_GATE)
-    *firsts, fallback = sent
-    first = firsts[0]
-    assert answer == {"ok": True}
-    # The first model rate-limited (429): asked again after each of its waits, then the fallback.
-    assert len(firsts) == len(AiLimits.RATE_LIMITED_WAITS_SECONDS) + 1
-    assert first["response_format"] == {"type": "json_object"} and first["reasoning_effort"] == "none"
-    assert first["temperature"] == fallback["temperature"] == 0.0  # R-2: the task's, for either model
-    # The fallback gets ITS limits and none of the options its profile says it does not accept.
-    assert fallback["max_tokens"] == 50 and fallback["timeout"] == 9
-    assert "response_format" not in fallback and "reasoning_effort" not in fallback
+    monkeypatch.setattr(litellm, "completion", lambda **kw: sent.append(kw) or _json_response('{"ok": true}'))
+    for model, profile in (("json", JSON_CHAT), ("plain", PLAIN_CHAT)):
+        assert _ask(_chat_model(model, profile), AiTask.RELEVANCE_GATE) == {"ok": True}
+    json_mode, plain = sent
+    assert json_mode["response_format"] == {"type": "json_object"} and json_mode["reasoning_effort"] == "none"
+    assert json_mode["temperature"] == plain["temperature"] == 0.0  # R-2: the task's, for any model
+    assert plain["max_tokens"] == 50 and plain["timeout"] == 9
+    assert "response_format" not in plain and "reasoning_effort" not in plain
 
 
-def test_a_rate_limited_model_is_asked_again_as_told_before_the_slow_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_rate_limited_model_is_asked_again_as_told(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 429 waits 2, 5, 10, 15 s, or its Retry-After when longer (at most CII_AI_BUSY_MAX_WAIT_SECONDS),
-    +-20%, at most 60 s in all, and asks the same model again: kimi answers in ~5 s, the fallback glm-5.3 in
-    55-99 s."""
+    +-20%, at most 60 s in all, and asks the same model again: kimi answers in ~5 s."""
     waits: list[float] = []
     monkeypatch.setattr(ai.common, "sleep_unless_lease_lost", waits.append)
-    retry_after = iter(["20", "3", "", "", ""])
+    retry_after = iter(["20", "3", "", ""])
     asked: list[str] = []
 
-    def first_model_rate_limited(**kwargs: object) -> SimpleNamespace:
+    def rate_limited_four_times(**kwargs: object) -> SimpleNamespace:
         asked.append(str(kwargs["model"]))
-        if kwargs["model"] == "first":
-            told = httpx.Response(429, headers={"retry-after": next(retry_after)})
-            raise litellm.RateLimitError("busy", llm_provider="openai", model="first", response=told)
+        if (told := next(retry_after, None)) is not None:
+            response = httpx.Response(429, headers={"retry-after": told})
+            raise litellm.RateLimitError("busy", llm_provider="openai", model="first", response=response)
         return _json_response('{"ok": true}')
 
-    monkeypatch.setattr(litellm, "completion", first_model_rate_limited)
-    assert _ask(_chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT)), AiTask.RELEVANCE_GATE) == {
-        "ok": True
-    }
-    assert asked == ["first"] * 5 + ["fallback"]
+    monkeypatch.setattr(litellm, "completion", rate_limited_four_times)
+    assert _ask(_chat_model("first"), AiTask.RELEVANCE_GATE) == {"ok": True}
+    assert asked == ["first"] * 5
     assert 16 <= waits[0] <= 24 and 4 <= waits[1] <= 6 and 8 <= waits[2] <= 12 and 12 <= waits[3] <= 18
     assert sum(waits) <= AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS
 
@@ -323,7 +303,7 @@ def test_an_ai_call_s_seconds_leave_out_its_request_rate_and_slot_waits() -> Non
     assert busy.wait(5)
     threading.Timer(0.4, release.set).start()  # the slot frees 0.2 s after the pause ends
     started = time.monotonic()
-    _, seconds = ai.common.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
+    _, seconds = ai.attempts.call_with_retries(lambda: None, SlowTurn(), slots, model="m", task="t")  # type: ignore[arg-type]
     holder.join(5)
     assert time.monotonic() - started >= 0.55 and seconds < 0.1
 
@@ -335,43 +315,29 @@ def test_a_task_s_answer_cap_applies_under_its_model_s_limit_unless_the_model_th
     def max_tokens(profile: ChatModelProfile, task: AiTask, thinking: bool = False) -> int:
         return ai.chat_messages.build_request_options(profile, task, "m", thinking)["max_tokens"]
 
-    assert max_tokens(large, AiTask.PLAN_CHECK) == CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK] < 12_288
-    assert max_tokens(JSON_CHAT, AiTask.PLAN_CHECK) == 100  # the model's own limit is lower
+    assert max_tokens(large, AiTask.SERVICE_MAPPER) == CHAT_MAX_OUTPUT_TOKENS[AiTask.SERVICE_MAPPER] < 12_288
+    assert max_tokens(JSON_CHAT, AiTask.SERVICE_MAPPER) == 100  # the model's own limit is lower
     assert max_tokens(large, AiTask.GAP_FILL) == CHAT_MAX_OUTPUT_TOKENS[AiTask.GAP_FILL] < 12_288
     assert (
         max_tokens(large, AiTask.REMEDIATION_PLAN) == CHAT_MAX_OUTPUT_TOKENS[AiTask.REMEDIATION_PLAN] < 12_288
     )
-    assert max_tokens(large, AiTask.PLAN_CHECK, thinking=True) == 12_288
+    assert max_tokens(large, AiTask.SERVICE_MAPPER, thinking=True) == 12_288
 
 
 def test_thinking_is_switched_off_per_gateway_model_unless_its_env_line_says_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """UAT probe (2026-10-23): reasoning_effort alone left GLM thinking; its chat template switch stops it.
-    Each model has its own .env line; a non-gateway model (dev Azure) never gets the template switch."""
+    Each module has its own .env line; a non-gateway model (dev Azure) never gets the template switch."""
     sent: list[dict] = []
-
-    def first_model_busy(**kwargs: object) -> SimpleNamespace:
-        sent.append(kwargs)
-        if not str(kwargs["model"]).endswith("fallback"):
-            raise litellm.RateLimitError(message="busy", llm_provider="openai", model="m")
-        return _json_response('{"ok": true}')
-
-    _no_waiting(monkeypatch)
-    monkeypatch.setattr(litellm, "completion", first_model_busy)
+    monkeypatch.setattr(litellm, "completion", lambda **kw: sent.append(kw) or _json_response('{"ok": true}'))
     off = {"chat_template_kwargs": {"thinking": False, "enable_thinking": False}}
-    models = [("litellm_proxy/main", JSON_CHAT), ("litellm_proxy/fallback", JSON_CHAT)]
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    for thinking_on, main_body, fallback_body in (
-        (frozenset(), off, off),  # the default: both off
-        (frozenset({"litellm_proxy/fallback"}), off, None),  # main off, fallback on
-    ):
-        sent.clear()
-        chat = ai.ChatModel(models, "http://ai.invalid", "key", records, thinking_on=thinking_on)
+    records, url = AiCallRepository(get_mongodb()["test_ai_calls"]), "http://ai.invalid"
+    for thinking in (False, True):  # the default: off
+        chat = ai.ChatModel("litellm_proxy/m", JSON_CHAT, url, "key", records, thinking=thinking)
         _ask(chat, AiTask.RELEVANCE_GATE)
-        assert sent[0].get("extra_body") == main_body and sent[-1].get("extra_body") == fallback_body
-    sent.clear()
-    _ask(_chat_model(("litellm_proxy/x", JSON_CHAT), ("openai/fallback", JSON_CHAT)), AiTask.RELEVANCE_GATE)
+    _ask(_chat_model("openai/m"), AiTask.RELEVANCE_GATE)
+    assert [request.get("extra_body") for request in sent] == [off, None, None]
     assert "extra_body" not in sent[-1]  # not a gateway model
 
 
@@ -400,24 +366,21 @@ def busy_provider() -> Iterator[tuple[str, list[str]]]:
     server.shutdown()
 
 
-def test_a_busy_provider_is_retried_by_us_alone_then_the_fallback_then_unavailable(
+def test_a_busy_provider_is_retried_by_us_alone_then_unavailable(
     monkeypatch: pytest.MonkeyPatch, busy_provider: tuple[str, list[str]]
 ) -> None:
     """The real litellm, not a stand-in. Before: litellm's own chat retry needed tenacity (not installed), so
-    an outage became a bare Exception and the fallback model was never tried; and every embedding batch was
-    sent 12 times (litellm read our max_retries=0 as "use the default", 2, under each of our 4 attempts)."""
+    an outage became a bare Exception, never Unavailable; and every embedding batch was sent 12 times
+    (litellm read our max_retries=0 as "use the default", 2, under each of our 4 attempts)."""
     _no_waiting(monkeypatch)
     url, requested = busy_provider
     records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    chat = ai.ChatModel([("openai/first", JSON_CHAT), ("openai/fallback", PLAIN_CHAT)], url, "key", records)
-    models = ("openai/first", "openai/fallback")
-    before = [_ai_calls(AiTask.RELEVANCE_GATE, model, "unavailable") for model in models]
+    chat = ai.ChatModel("openai/first", JSON_CHAT, url, "key", records)
+    before = _ai_calls(AiTask.RELEVANCE_GATE, "openai/first", "unavailable")
     with pytest.raises(Unavailable):
         _ask(chat, AiTask.RELEVANCE_GATE)
-    assert [_ai_calls(AiTask.RELEVANCE_GATE, model, "unavailable") for model in models] == [
-        n + 1 for n in before
-    ]
-    assert len(requested) == 2 * (AiLimits.RETRIES + 1)  # each model: our retries only, then the fallback
+    assert _ai_calls(AiTask.RELEVANCE_GATE, "openai/first", "unavailable") == before + 1
+    assert len(requested) == AiLimits.RETRIES + 1  # our retries only
     requested.clear()
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
     stores = (
@@ -692,13 +655,8 @@ def test_the_key_goes_in_the_gateways_own_header_on_every_call(
     monkeypatch.setattr(
         litellm, "rerank", capture("rerank", SimpleNamespace(results=[{"index": 0, "relevance_score": 1}]))
     )
-    chat = ai.ChatModel(
-        [("test-chat", JSON_CHAT)],
-        "http://ai.invalid",
-        "key",
-        AiCallRepository(get_mongodb()["test_ai_calls"]),
-        key_header,
-    )
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    chat = ai.ChatModel("test-chat", JSON_CHAT, "http://ai.invalid", "key", records, key_header)
     _ask(chat, AiTask.WRITE_SCENARIO, "s", "u")
     _embedding_model(2, key_header).embed_search_queries(
         [f"header {uuid.uuid4().hex}"], EmbeddingCorpus.CONTROL
@@ -976,24 +934,20 @@ def test_the_vector_cache_ignores_a_duplicate_but_not_a_refused_write() -> None:
         VectorRepository(database["test_vectors_refused"]).save_vectors([{"_id": "key", "vector": b"vector"}])
 
 
-def test_a_timed_out_call_goes_to_the_fallback_model_without_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_timed_out_call_is_not_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner, 2026-10-10: a call that timed out (the provider overloaded) is not asked again by us. Before, it
     was sent 3 more times, each waiting the full timeout (90-120 s): a worker held about 8 minutes per model,
     adding load to a provider that was already too slow."""
     requested: list[str] = []
 
-    def first_model_times_out(**kwargs: object) -> SimpleNamespace:
+    def times_out(**kwargs: object) -> SimpleNamespace:
         requested.append(str(kwargs["model"]))
-        if kwargs["model"] == "openai/first":
-            raise litellm.Timeout("no answer in time", model="openai/first", llm_provider="openai")
-        return _json_response('{"relevant": true}')
+        raise litellm.Timeout("no answer in time", model="openai/first", llm_provider="openai")
 
-    monkeypatch.setattr(litellm, "completion", first_model_times_out)
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    models = [("openai/first", JSON_CHAT), ("openai/fallback", PLAIN_CHAT)]
-    chat = ai.ChatModel(models, "http://ai.invalid", "key", records)
-    assert _ask(chat, AiTask.RELEVANCE_GATE) == {"relevant": True}
-    assert requested == ["openai/first", "openai/fallback"]
+    monkeypatch.setattr(litellm, "completion", times_out)
+    with pytest.raises(Unavailable) as raised:
+        _ask(_chat_model("openai/first"), AiTask.RELEVANCE_GATE)
+    assert requested == ["openai/first"] and raised.value.reason == AiOutage.TIMED_OUT
 
 
 def _replies(
@@ -1102,13 +1056,12 @@ def test_a_cut_off_answer_or_a_too_long_prompt_is_truncated(monkeypatch: pytest.
     assert len(sent) == 1  # the too-long prompt was never sent
 
 
-def test_the_prompt_limit_is_the_smaller_models_so_either_can_answer() -> None:
-    """UAT: kimi-k2.5 first, glm-5.3 as fallback, each with the gateway's own input limit (model info,
-    2026-10-29: 114,688 and 262,144 tokens). Before, TSG assumed 262,144 and 1,000,000, so a prompt between
-    the two was sent and refused whole."""
-    uat = [(name, CHAT_MODEL_PROFILES[name]) for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3")]
-    assert _chat_model(*uat).max_prompt_chars == 114_688 * 3
-    assert _chat_model(uat[1]).max_prompt_chars == 262_144 * 3
+def test_the_prompt_limit_is_the_gateway_s_input_limit_for_its_model() -> None:
+    """UAT: kimi-k2.5 and glm-5.3, each with the gateway's own input limit (model info, 2026-10-29: 114,688
+    and 262,144 tokens). Before, TSG assumed 262,144 and 1,000,000: a longer prompt was sent and refused."""
+    kimi, glm = "litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"
+    assert _chat_model(kimi, CHAT_MODEL_PROFILES[kimi]).max_prompt_chars == 114_688 * 3
+    assert _chat_model(glm, CHAT_MODEL_PROFILES[glm]).max_prompt_chars == 262_144 * 3
 
 
 def test_a_prompt_over_the_gateway_s_input_limit_is_refused_before_it_is_sent(
@@ -1117,7 +1070,7 @@ def test_a_prompt_over_the_gateway_s_input_limit_is_refused_before_it_is_sent(
     """A prompt kimi-k2.5's gateway refuses (over 114,688 tokens) is never sent: the caller cuts it."""
     sent: list[object] = []
     monkeypatch.setattr(litellm, "completion", lambda **kwargs: sent.append(kwargs))
-    chat = _chat_model(("litellm_proxy/kimi-k2.5", CHAT_MODEL_PROFILES["litellm_proxy/kimi-k2.5"]))
+    chat = _chat_model("litellm_proxy/kimi-k2.5", CHAT_MODEL_PROFILES["litellm_proxy/kimi-k2.5"])
     too_long = "x" * (114_688 * 3)  # the old limit took it: (262,144 - 12,288) x 3 characters
     with pytest.raises(ai.TruncatedAiAnswer, match="takes at most"):
         _ask(chat, AiTask.RELEVANCE_GATE, user_prompt=too_long)
@@ -1128,21 +1081,21 @@ def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() 
     """LiteLLM reserves each request's answer room against the token budget while it runs. Before, the gate
     asked for 8,192 (largest answer 3,642) and four tasks for the model's whole 12,288, so TSG looked about 3x
     its real use (UAT 2026-10-28 10:20: 19,431 used, 50,274 counted). Each task's room is its own setting."""
-    chat_tasks = set(AiTask) - {AiTask.EMBED, AiTask.RERANK}
+    retired = {AiTask.THREAT_ACTIONS, AiTask.PLAN_CHECK}  # never asked now; old usage rows still name them
+    chat_tasks = set(AiTask) - {AiTask.EMBED, AiTask.RERANK} - retired
     assert set(CHAT_MAX_OUTPUT_TOKENS) == chat_tasks
     assert all(256 <= room < 12_288 for room in CHAT_MAX_OUTPUT_TOKENS.values())
     assert CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE] == TUNING.answer_tokens_relevance_gate
 
 
 #: The largest answer measured per chat task, in tokens (tsg_ai_usage and tsg_ai_calls, 2026-10-30, ~10,000
-#: calls); a set's task (writer, repair, reviewer) by its largest a slot. Gap fill had no call to measure.
+#: calls); a set's task (writer, repair) by its largest a slot. Gap fill had no call to measure.
 LARGEST_ANSWER_TOKENS = {
     AiTask.RELEVANCE_GATE: 8_776,
-    AiTask.THREAT_ACTIONS: 29,
     AiTask.REMEDIATION_PLAN: 2_601,
     AiTask.SERVICE_MAPPER: 1_997,
 }
-LARGEST_SLOT_ANSWER_TOKENS = {AiTask.WRITE_SCENARIO: 778, AiTask.REPAIR_SCENARIO: 680, AiTask.PLAN_CHECK: 359}
+LARGEST_SLOT_ANSWER_TOKENS = {AiTask.WRITE_SCENARIO: 778, AiTask.REPAIR_SCENARIO: 680}
 
 
 def test_each_answer_room_holds_its_largest_answer_and_at_most_three_tenths_more() -> None:
@@ -1210,120 +1163,8 @@ def test_a_job_that_lost_its_lease_never_calls_the_ai(monkeypatch: pytest.Monkey
     assert called == []
 
 
-def test_at_most_cap_fallback_calls_run_at_once_and_the_first_model_is_never_capped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CII_<MODULE>_MAX_CONCURRENT_FALLBACK_CALLS: when kimi fails, glm (~77 s a call) would otherwise take
-    ~230 calls at once at 180 requests a minute."""
-    _no_waiting(monkeypatch)
-    lock, in_flight, most = threading.Lock(), {"first": 0, "fallback": 0}, {"first": 0, "fallback": 0}
-    failing = {"first"}
-
-    def answer(**kwargs: object) -> SimpleNamespace:
-        model = str(kwargs["model"])
-        if model in failing:
-            raise _overloaded()
-        with lock:
-            in_flight[model] += 1
-            most[model] = max(most[model], in_flight[model])
-        time.sleep(0.1)
-        with lock:
-            in_flight[model] -= 1
-        return _json_response('{"ok": true}')
-
-    monkeypatch.setattr(litellm, "completion", answer)
-    key = f"tsg:test_fallback_slots:{uuid.uuid4().hex}"
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
-    capped = AiSlots(get_redis_client(), cap=1, wait_seconds=10, key=key)
-    chat = ai.ChatModel(models, "http://ai.invalid", "key", records, fallback_slots=capped)
-    answers: list[dict] = []
-
-    def ask_four_at_once() -> None:
-        callers = [
-            threading.Thread(target=lambda: answers.append(_ask(chat, AiTask.GAP_FILL))) for _ in range(4)
-        ]
-        for caller in callers:
-            caller.start()
-        for caller in callers:
-            caller.join()
-
-    ask_four_at_once()  # the first model down: the fallback answers, one call at a time
-    failing.clear()
-    ask_four_at_once()  # the first model up again: no cap
-    get_redis_client().delete(key)
-    assert answers == [{"ok": True}] * 8 and most["fallback"] == 1 and most["first"] > 1
-
-
-def _timed_out() -> litellm.Timeout:
-    return litellm.Timeout("no answer in time", model="first", llm_provider="openai")
-
-
 def _overloaded() -> litellm.ServiceUnavailableError:
     return litellm.ServiceUnavailableError(message="overloaded", llm_provider="openai", model="first")
-
-
-@pytest.mark.parametrize(("failure", "cools_down"), [(_timed_out, True), (_busy, True), (_overloaded, False)])
-def test_a_model_that_timed_out_or_stayed_rate_limited_is_asked_last_until_it_answers(
-    monkeypatch: pytest.MonkeyPatch, failure: Callable[[], Exception], cools_down: bool
-) -> None:
-    """Before: every call asked kimi first again, waiting out its timeout (120 s). A 429 left after its waits
-    cools the model down too: the limit is that model's own, and the fallback's is not spent."""
-    _no_waiting(monkeypatch)
-    asked: list[str] = []
-    failing = {"first": failure}
-
-    def answer(**kwargs: object) -> SimpleNamespace:
-        asked.append(str(kwargs["model"]))
-        if fail := failing.get(str(kwargs["model"])):
-            raise fail()
-        return _json_response('{"ok": true}')
-
-    monkeypatch.setattr(litellm, "completion", answer)
-    chat = _chat_model(("first", JSON_CHAT), ("fallback", PLAIN_CHAT))
-    _ask(chat, AiTask.RELEVANCE_GATE)
-    asked.clear()
-    _ask(chat, AiTask.RELEVANCE_GATE)
-    assert asked[0] == ("fallback" if cools_down else "first")
-    failing.clear()
-    failing["fallback"] = _overloaded
-    _ask(chat, AiTask.RELEVANCE_GATE)  # the other one fails: the cooling one is still asked, and answers
-    assert asked[-1] == "first"
-    asked.clear()
-    _ask(chat, AiTask.RELEVANCE_GATE)
-    assert asked == ["first"]  # its answer ended its cool-down
-
-
-def test_a_fallback_asked_first_takes_no_slot_wait_while_the_cooling_model_is_still_to_try(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Before: glm, first while kimi cooled down, waited up to 300 s for a slot; kimi answers in about 5 s."""
-    _no_waiting(monkeypatch)
-    asked: list[str] = []
-    failing = {"first"}
-
-    def answer(**kwargs: object) -> SimpleNamespace:
-        asked.append(str(kwargs["model"]))
-        if str(kwargs["model"]) in failing:
-            raise _timed_out()
-        return _json_response('{"ok": true}')
-
-    monkeypatch.setattr(litellm, "completion", answer)
-    key = f"tsg:test_fallback_slots:{uuid.uuid4().hex}"
-    fallback_slots = AiSlots(get_redis_client(), cap=1, wait_seconds=10, key=key)
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
-    chat = ai.ChatModel(models, "http://ai.invalid", "key", records, fallback_slots=fallback_slots)
-    _ask(chat, AiTask.RELEVANCE_GATE)  # the first model timed out: it cools down
-    failing.clear()
-    asked.clear()
-    started = time.monotonic()
-    try:
-        with fallback_slots.hold_slot(AiTask.RELEVANCE_GATE):  # every fallback slot busy
-            assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
-    finally:
-        get_redis_client().delete(key)
-    assert asked == ["first"] and time.monotonic() - started < 5
 
 
 def test_an_answer_cut_off_at_the_task_s_cap_is_asked_once_more_at_the_model_s_limit(
@@ -1342,13 +1183,13 @@ def test_an_answer_cut_off_at_the_task_s_cap_is_asked_once_more_at_the_model_s_l
 
     monkeypatch.setattr(litellm, "completion", answer)
     large = dataclasses.replace(JSON_CHAT, max_output_tokens=12_288)
-    cap = CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK]
-    truncated = _ai_calls(AiTask.PLAN_CHECK, "test-chat", "truncated")
-    assert _ask(_chat_model(("test-chat", large)), AiTask.PLAN_CHECK) == {"ok": True}
+    cap = CHAT_MAX_OUTPUT_TOKENS[AiTask.SERVICE_MAPPER]
+    truncated = _ai_calls(AiTask.SERVICE_MAPPER, "test-chat", "truncated")
+    assert _ask(_chat_model("test-chat", large), AiTask.SERVICE_MAPPER) == {"ok": True}
     with pytest.raises(ai.TruncatedAiAnswer, match="cut off"):  # cut off at the model's own limit too
-        _ask(_chat_model(("test-chat", large)), AiTask.PLAN_CHECK)
+        _ask(_chat_model("test-chat", large), AiTask.SERVICE_MAPPER)
     assert sent == [cap, 12_288, cap, 12_288]
-    assert _ai_calls(AiTask.PLAN_CHECK, "test-chat", "truncated") == truncated + 3
+    assert _ai_calls(AiTask.SERVICE_MAPPER, "test-chat", "truncated") == truncated + 3
 
 
 def test_the_corrective_re_ask_after_an_answer_cut_off_at_the_cap_goes_at_the_model_s_limit(
@@ -1368,9 +1209,10 @@ def test_the_corrective_re_ask_after_an_answer_cut_off_at_the_cap_goes_at_the_mo
     monkeypatch.setattr(litellm, "completion", answer)
     large = dataclasses.replace(JSON_CHAT, max_output_tokens=12_288)
     problems = iter([["wrong"], []])
-    chat = _chat_model(("test-chat", large))
-    assert chat.ask_for_checked_json(AiTask.PLAN_CHECK, "s", "u", lambda _: next(problems)) == {"ok": True}
-    assert sent == [CHAT_MAX_OUTPUT_TOKENS[AiTask.PLAN_CHECK], 12_288, 12_288]
+    chat = _chat_model("test-chat", large)
+    reply = chat.ask_for_checked_json(AiTask.SERVICE_MAPPER, "s", "u", lambda _: next(problems))
+    assert reply == {"ok": True}
+    assert sent == [CHAT_MAX_OUTPUT_TOKENS[AiTask.SERVICE_MAPPER], 12_288, 12_288]
 
 
 def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
@@ -1406,11 +1248,11 @@ def test_the_api_retries_a_429_as_any_busy_answer_and_a_worker_waits_it_out(
     assert container.ai_request_rate_for("m", 0)._waits_out_rate_limits
 
 
-def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to(
+def test_each_chat_request_try_waits_its_turn_at_its_model_s_limiter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """kimi-k2.5 and glm-5.3 each have their own requests-a-minute limit: a fallback request spends glm's.
-    Every try states its prompt's estimated tokens, for a tokens-a-minute limit."""
+    """Every try, retries included, waits its turn at the model's requests-a-minute limiter and states its
+    prompt's estimated tokens, for a tokens-a-minute limit."""
     _no_waiting(monkeypatch)
     turns: list[str] = []
     sizes: list[int] = []
@@ -1421,49 +1263,77 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
             sizes.append(tokens)
             return 0.0
 
-    def first_model_overloaded(**kwargs: object) -> SimpleNamespace:
-        if kwargs["model"] == "first":
-            raise _overloaded()
-        return _json_response('{"ok": true}')
+    replies = iter([_overloaded()] * AiLimits.RETRIES + [_json_response('{"ok": true}')])
 
-    monkeypatch.setattr(litellm, "completion", first_model_overloaded)
+    def overloaded_then_answers(**_: object) -> SimpleNamespace:
+        if isinstance(reply := next(replies), Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(litellm, "completion", overloaded_then_answers)
     records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    models = [("first", JSON_CHAT), ("fallback", PLAIN_CHAT)]
-    first, fallback = CountedTurns(None, "first", 0, 0), CountedTurns(None, "fallback", 0, 0)
-    chat = ai.ChatModel(
-        models, "http://ai.invalid", "key", records, request_rate=first, fallback_request_rate=fallback
-    )
+    rate = CountedTurns(None, "first", 0, 0)
+    chat = ai.ChatModel("first", JSON_CHAT, "http://ai.invalid", "key", records, request_rate=rate)
     assert _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
-    assert turns == ["first"] * (AiLimits.RETRIES + 1) + ["fallback"]
+    assert turns == ["first"] * (AiLimits.RETRIES + 1)
     prompt = ai.chat_messages.build_conversation("system", "user")
     question = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
-    room = {
-        name: ai.chat_messages.max_answer_tokens(profile, AiTask.RELEVANCE_GATE, False)
-        for name, profile in models
-    }
+    room = ai.chat_messages.max_answer_tokens(JSON_CHAT, AiTask.RELEVANCE_GATE, False)
     # as LiteLLM counts against a token budget: the question and all the answer room asked for
-    assert question > 0 and sizes == [question + room["first"]] * (len(turns) - 1) + [
-        question + room["fallback"]
-    ]
+    assert question > 0 and sizes == [question + room] * len(turns)
+
+
+def test_an_answered_chat_call_gives_back_what_its_answer_did_not_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call books its prompt's estimate plus its whole answer room; once answered, the gateway's own count
+    (prompt + answer tokens) is all it used, and the rest goes back to its model's limiter. A reply that
+    states no usage gives nothing back: its cost is unknown."""
+    _no_waiting(monkeypatch)
+    given: list[tuple[int, int]] = []
+
+    class GivenBack(AiRequestRate):
+        def wait_for_turn(self, task: str, tokens: int = 0) -> float:
+            self.booked = tokens
+            return 0.0
+
+        def give_back(self, used: int) -> float:
+            given.append((self.booked, used))
+            return 0.0
+
+    counted = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
+    )
+    replies = iter([counted, _json_response('{"ok": true}')])
+    monkeypatch.setattr(litellm, "completion", lambda **_: next(replies))
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    chat = ai.ChatModel(
+        "first", JSON_CHAT, "http://ai.invalid", "key", records, request_rate=GivenBack(None, "first", 0, 0)
+    )
+    assert _ask(chat, AiTask.RELEVANCE_GATE) == _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
+    prompt = ai.chat_messages.build_conversation("system", "user")
+    question = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
+    room = ai.chat_messages.max_answer_tokens(JSON_CHAT, AiTask.RELEVANCE_GATE, False)
+    assert given == [(question + room, 18)]
 
 
 def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Before: one limiter for the whole gateway, so embedding, rerank and glm requests spent kimi's."""
+    """Before: one limiter for the whole gateway, so embedding and rerank requests spent kimi's."""
     _with_module_settings(monkeypatch)
     chat = container._chat_model_of(ChatModule.SCENARIO)
     embedding = container.get_embedding_model._build()
     rerank = container.get_rerank_model._build()
     rates = {  # by the model each request goes to
-        **chat._request_rates,
+        chat._model: chat._request_rate,
         embedding._model: embedding._provider._request_rate,
         rerank._model: rerank._request_rate,
     }
     assert all(rate._model == model for model, rate in rates.items())  # its own model's Redis key
     assert {model: (rate._per_minute, rate._tokens_per_minute) for model, rate in rates.items()} == {
-        KIMI: (11, 15),  # a module's tokens a minute pace its main chat model alone
-        GLM: (12, 0),
+        KIMI: (11, 15),
         "litellm_proxy/qwen3-embedding-8b": (13, 0),
         "litellm_proxy/qwen3-reranker-8b": (14, 0),
     }
@@ -1473,8 +1343,8 @@ def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Owner 2026-10-28: each module's CII_<MODULE>_CHAT_... lines alone, the same or a different model per
-    module; no fallback model = no fallback limits. Each module's slots and request turns are its own Redis
-    keys, two modules on one model included, so its 429s and limits never touch another module's."""
+    module. Each module's slots and request turns are its own Redis keys, two modules on one model included,
+    so its 429s and limits never touch another module's."""
     _with_module_settings(monkeypatch)
 
     getters = {
@@ -1485,39 +1355,31 @@ def test_each_module_s_chat_model_has_its_own_model_key_thinking_and_limits(
 
     def shown(module: ChatModule) -> tuple[object, ...]:
         chat = getters[module]._build()
-        turns = {
-            model: (r._per_minute, r._tokens_per_minute, r._key) for model, r in chat._request_rates.items()
-        }
-        connection = (chat._connection["api_base"], chat._connection["api_key"], sorted(chat._thinking_on))
-        slots = [(pool._key, pool._cap) for pool in (chat._slots, chat._fallback_slots)]
-        return [name for name, _ in chat._models], connection, turns, slots
+        rate = chat._request_rate
+        connection = (chat._connection["api_base"], chat._connection["api_key"], chat._thinking)
+        turns = (rate._per_minute, rate._tokens_per_minute, rate._key)
+        return chat._model, connection, turns, (chat._slots._key, chat._slots._cap)
 
     def turn(module: str, model: str) -> str:
         return AiLimits.REQUEST_RATE_KEY.format(model=f"{module}:{model}")
 
-    def slots(module: str, cap: int, fallback_cap: int) -> list[tuple[str, int]]:
-        return [
-            (f"{AiLimits.SLOTS_KEY}:{module}", cap),
-            (f"{AiLimits.FALLBACK_SLOTS_KEY}:{module}", fallback_cap),
-        ]
-
     assert shown(ChatModule.SCENARIO) == (
-        [KIMI, GLM],
-        ("http://shared.invalid", "shared-key", []),
-        {KIMI: (11, 15, turn("scenario", KIMI)), GLM: (12, 0, turn("scenario", GLM))},
-        slots("scenario", 7, 2),
+        KIMI,
+        ("http://shared.invalid", "shared-key", False),
+        (11, 15, turn("scenario", KIMI)),
+        (f"{AiLimits.SLOTS_KEY}:scenario", 7),
     )
-    assert shown(ChatModule.REMEDIATION) == (  # its own key on its own gateway, glm thinking, no fallback
-        [GLM],
-        ("http://own.invalid", "own-key", [GLM]),
-        {GLM: (21, 22, turn("remediation", GLM))},
-        slots("remediation", 3, 0),
+    assert shown(ChatModule.REMEDIATION) == (  # its own key on its own gateway, glm thinking
+        GLM,
+        ("http://own.invalid", "own-key", True),
+        (21, 22, turn("remediation", GLM)),
+        (f"{AiLimits.SLOTS_KEY}:remediation", 3),
     )
     assert shown(ChatModule.SERVICE_MAPPER) == (  # threat scenarios' model and key, its own limits and keys
-        [KIMI],
-        ("http://shared.invalid", "shared-key", []),
-        {KIMI: (31, 0, turn("service_mapper", KIMI))},
-        slots("service_mapper", 6, 0),
+        KIMI,
+        ("http://shared.invalid", "shared-key", False),
+        (31, 0, turn("service_mapper", KIMI)),
+        (f"{AiLimits.SLOTS_KEY}:service_mapper", 6),
     )
 
 
@@ -1545,8 +1407,7 @@ KIMI, GLM = "litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"
 
 def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Threat scenarios and the service mapper on the same model, URL and key, each with its own limits;
-    remediation on another model, URL and key. The service mapper's fallback limit counts for nothing: it has
-    no fallback model."""
+    remediation on another model, URL and key."""
     settings = container.get_settings().model_copy(
         update={
             "embedding_model": "litellm_proxy/qwen3-embedding-8b",
@@ -1561,10 +1422,6 @@ def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
             "scenario_chat_requests_per_minute": 11,
             "scenario_chat_tokens_per_minute": 15,
             "scenario_max_concurrent_ai_calls": 7,
-            "scenario_chat_fallback_model": GLM,
-            "scenario_chat_fallback_model_thinking": False,
-            "scenario_chat_fallback_requests_per_minute": 12,
-            "scenario_max_concurrent_fallback_calls": 2,
             "remediation_chat_base_url": "http://own.invalid",
             "remediation_chat_api_key": SecretStr("own-key"),
             "remediation_chat_model": GLM,
@@ -1572,7 +1429,6 @@ def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
             "remediation_chat_requests_per_minute": 21,
             "remediation_chat_tokens_per_minute": 22,
             "remediation_max_concurrent_ai_calls": 3,
-            "remediation_chat_fallback_model": "",
             "service_mapper_chat_base_url": "http://shared.invalid",
             "service_mapper_chat_api_key": SecretStr("shared-key"),
             "service_mapper_chat_model": KIMI,
@@ -1580,8 +1436,6 @@ def _with_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
             "service_mapper_chat_requests_per_minute": 31,
             "service_mapper_chat_tokens_per_minute": 0,
             "service_mapper_max_concurrent_ai_calls": 6,
-            "service_mapper_chat_fallback_model": "",
-            "service_mapper_max_concurrent_fallback_calls": 5,
         }
     )
     monkeypatch.setattr(container, "get_settings", lambda: settings)
@@ -1613,21 +1467,19 @@ def test_a_batch_another_process_stored_meanwhile_is_not_sent_again(monkeypatch:
 
 
 def test_each_module_s_model_limits_replace_the_model_s_own(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Owner 2026-10-29: CII_<MODULE>_CHAT_MAX_INPUT_TOKENS, _MAX_OUTPUT_TOKENS and _TIMEOUT_SECONDS (and the
-    backup's) set from the ConfigMap; a blank one keeps the model's own (app/ai/profiles.py)."""
+    """Owner 2026-10-29: CII_<MODULE>_CHAT_MAX_INPUT_TOKENS, _MAX_OUTPUT_TOKENS and _TIMEOUT_SECONDS set from
+    the ConfigMap; a blank one keeps the model's own (app/ai/profiles.py)."""
     _with_module_settings(monkeypatch)
     settings = container.get_settings().model_copy(
         update={
             "scenario_chat_max_input_tokens": 50_000,
+            "scenario_chat_max_output_tokens": 2048,
             "scenario_chat_timeout_seconds": 33,
-            "scenario_chat_fallback_max_output_tokens": 2048,
         }
     )
     monkeypatch.setattr(container, "get_settings", lambda: settings)
     scenario = container.get_scenario_chat_model._build()
-    profiles = dict(scenario._models)
-    assert scenario.max_prompt_chars == 50_000 * AiLimits.PROMPT_CHARS_PER_TOKEN  # under glm's own 262,144
-    assert (profiles[KIMI].timeout_seconds, profiles[KIMI].max_output_tokens) == (33, 12_288)
-    assert (profiles[GLM].max_output_tokens, profiles[GLM].timeout_seconds) == (2048, 180)
-    remediation = dict(container.get_remediation_chat_model._build()._models)
-    assert remediation[GLM] == CHAT_MODEL_PROFILES[GLM]  # every line blank: the model's own
+    assert scenario.max_prompt_chars == 50_000 * AiLimits.PROMPT_CHARS_PER_TOKEN  # under kimi's own 114,688
+    assert (scenario._profile.timeout_seconds, scenario._profile.max_output_tokens) == (33, 2048)
+    remediation = container.get_remediation_chat_model._build()
+    assert remediation._profile == CHAT_MODEL_PROFILES[GLM]  # every line blank: the model's own

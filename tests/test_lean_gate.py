@@ -23,7 +23,6 @@ from app.core.exceptions import Unavailable
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import build_plan
 from app.models.library.library import LibraryActor, LibraryThreat
-from app.models.scenario.plan import ActorPick
 from tests.fakes import FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -39,7 +38,6 @@ from tests.planner_samples import (
     gap_filled,
     gate_prompt,
     judged,
-    planned,
     planner_chat,
 )
 
@@ -149,6 +147,18 @@ def test_a_slot_without_a_likelihood_is_asked_once_more_alone_and_the_others_are
     assert len(items_in(whole, "CANDIDATES")) == 6
     assert [item["threat"] for item in items_in(again, "CANDIDATES")] == [LOG_WIPE.name]
     assert sorted(threat.name for threat in findings.threats) == sorted([LOG_WIPE.name, FLOOD.name])
+
+
+def test_a_verdict_the_code_reads_well_is_kept_without_a_re_ask() -> None:
+    """The code's checks are the one rule: a confidence of 72.5, or a relevant verdict's reason null, is
+    read as it is, never asked again."""
+    edit = {LOG_WIPE.name: {"confidence": 72.5}, FLOOD.name: {"reason": None}}
+    chat = planner_chat({})
+    chat.responders[AiTask.RELEVANCE_GATE] = _answering(edit, {LOG_WIPE.name: ["SYS1"], FLOOD.name: ["SYS2"]})
+    findings = finder(chat).find_threats(CONTEXT)
+    assert len(chat.asked(AiTask.RELEVANCE_GATE)) == 1
+    confidence = {threat.name: threat.confidence for threat in findings.threats}
+    assert confidence == {LOG_WIPE.name: 72.5, FLOOD.name: 80.0}
 
 
 def test_the_gate_asks_one_likelihood_after_the_attacker_and_never_lets_it_decide_relevance() -> None:
@@ -296,14 +306,16 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
     assert plan["threats"][0]["category"] == S.DENIAL_OF_SERVICE == card["category"]
 
 
-def test_a_threat_keeps_its_main_category_and_the_two_the_gate_named_next() -> None:
-    """Ransomware filed under five categories, the gate naming all five (D, T, I, R, E): the threat keeps
-    Denial of Service and the two others the gate named next, Tampering and Information Disclosure, in their
-    own order, and its card's path holds those three; phishing, with one, is left as it is."""
+def test_a_threat_keeps_every_category_it_names_whatever_its_rating() -> None:
+    """Owner, 14 Nov: every relevant kind of harm counts, HIGH, MEDIUM or LOW. Ransomware filed under five
+    categories, the gate naming all five (D, T, I, R, E): the threat keeps all five, Denial of Service (the
+    gate's first) leading and the others in STRIDE order, and its card's path holds all five; phishing, with
+    one, is left as it is. Before, only the main and the two the gate named next were kept."""
     d, t, i = S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE
     r, e = S.REPUDIATION, S.ELEVATION_OF_PRIVILEGE
     five, named = (t, r, i, d, e), (d, t, i, r, e)  # the library's (STRIDE) order; the gate's
-    kinds = [{"name": kind, "impact": "HIGH", "reason": f"It hits SYS1 as {kind}."} for kind in named]
+    ratings = dict(zip(named, ("HIGH", "MEDIUM", "MEDIUM", "LOW", "LOW"), strict=True))
+    kinds = [{"name": kind, "impact": ratings[kind], "reason": f"It hits SYS1 as {kind}."} for kind in named]
     chat = planner_chat({})
     relevant = {RANSOMWARE.name: ["SYS1"], PHISHING.name: ["SYS1"]}
     chat.responders[AiTask.RELEVANCE_GATE] = _answering({RANSOMWARE.name: {"categories": kinds}}, relevant)
@@ -311,28 +323,14 @@ def test_a_threat_keeps_its_main_category_and_the_two_the_gate_named_next() -> N
     findings = finder(chat, threats=library).find_threats(CONTEXT)
     by_key = {threat.key: threat for threat in findings.threats}
     ransomware, phishing = by_key["lib:1"], by_key["lib:2"]
-    assert ransomware.categories == (S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE)
+    assert ransomware.categories == (d, t, r, i, e)
+    assert set(ransomware.reasons) == set(five)  # each kind keeps its own reason
     assert ransomware.reasons[S.DENIAL_OF_SERVICE] == "It hits SCADA server as Denial of Service."
     assert phishing.categories == (S.SPOOFING,)
     plan = build_plan(dataclasses.replace(findings, threats=[ransomware]), 0)
     (card,) = plan["paths"]
     assert card["category"] == S.DENIAL_OF_SERVICE
-    assert card["categories"] == [S.DENIAL_OF_SERVICE, S.TAMPERING, S.INFORMATION_DISCLOSURE]
-
-
-def test_a_threat_with_three_categories_or_fewer_is_left_as_it_is() -> None:
-    """The gate's order changes nothing when nothing is cut: the others keep their own order."""
-    gang = LibraryActor(1, "Ransomware gang")
-    three = planned(
-        "lib:1",
-        "Ransomware",
-        categories=(S.TAMPERING, S.SPOOFING, S.REPUDIATION),
-        gate_order=(S.TAMPERING, S.REPUDIATION, S.SPOOFING),
-        actor_pick=ActorPick(gang.name, "It can."),
-        linked_actors=(gang,),
-    )
-    (kept,) = plan_module._set_main_category_and_attacker([three], [])
-    assert kept.categories == three.categories
+    assert card["categories"] == [d, t, r, i, e]
 
 
 def test_the_gates_actions_reach_the_plan_by_system_name_with_no_split_call() -> None:

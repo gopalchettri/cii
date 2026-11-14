@@ -1,7 +1,6 @@
 -- Every live top-level sector with its live sub-sectors as one comma-separated list, one row per sector name.
--- Read-only. TSG's own copy of the onboarding platform's Onboarding_GetSectorsAndSubsectorsList. The Service
--- Mapper reads SectorName (StoredProcedure.GET_SECTORS_AND_SUBSECTORS, app/data_access/service_mapper) and checks
--- it against the top-level sectors of tsg_GetServiceMapperAssociations: the two must list the same sectors.
+-- Read-only. TSG's own copy of the onboarding platform's Onboarding_GetSectorsAndSubsectorsList. Shipped and
+-- granted (StoredProcedure.GET_SECTORS_AND_SUBSECTORS); since 14 Nov 2026 the Service Mapper no longer reads it.
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON

@@ -5,6 +5,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Callable
+from concurrent import futures
 from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
@@ -29,7 +30,9 @@ from app.core.exceptions import (
     ControlsNotMapped,
     JobFailed,
     LeaseLost,
+    NotFound,
 )
+from app.core.lease_signal import wait_while_leased
 from app.data_access.jobs.work_control_repository import WorkControlRepository
 from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
 from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
@@ -70,9 +73,9 @@ class ControlsJob:
             return 0
         if request_id := (claimed.get("job") or {}).get("request_id"):
             structlog.contextvars.bind_contextvars(request_id=request_id)  # a sweep's re-send carries none
-        context, snapshot = claimed.get("context", {}), self._search.snapshot()
+        snapshot = self._search.snapshot()
         return RunControls(
-            record_id, task_id, context, self._sessions, self._scenarios, snapshot, self._mapper
+            record_id, task_id, None, self._sessions, self._scenarios, snapshot, self._mapper
         ).map_all()
 
     def note_controls_outage(
@@ -128,15 +131,17 @@ class RunControls:
         self,
         record_id: str,
         task_id: str,
-        context: dict[str, Any],
+        context: dict[str, Any] | None,
         sessions: ThreatScenarioSessionRepository,
         scenarios: ThreatScenarioRepository,
         snapshot: LibrarySnapshot,
         mapper: ControlMapper,
     ) -> None:
-        """`context`: the run's frozen context, as its delivery claim returned it."""
+        """`context`: the run's frozen context; None reads it when the first scenario is claimed."""
         self._record_id, self._task_id = record_id, task_id
-        self._context = FrozenContext.from_record(context)
+        if context is not None:
+            self._context = FrozenContext.from_record(context)
+        self._context_unread = context is None
         self._sessions, self._scenarios = sessions, scenarios
         self._snapshot, self._mapper = snapshot, mapper
         self._taken_over = False  # another delivery took the run over mid-turn
@@ -181,6 +186,12 @@ class RunControls:
             if scenario is None:
                 break
             claimed.append(scenario)
+        if claimed and self._context_unread:  # one read, and none for a delivery with nothing to map
+            try:
+                context = self._sessions.get_scenario_session_context(self._record_id)
+            except NotFound:  # the run was deleted meanwhile: its scenarios go with it
+                return []
+            self._context, self._context_unread = FrozenContext.from_record(context), False
         return claimed
 
     def _map_and_count(self, scenario: dict[str, Any]) -> int:
@@ -266,17 +277,22 @@ class _OneEmbedCall:
 
     def __init__(self, embed: Callable[[], None]) -> None:
         self._embed, self._lock = embed, threading.Lock()
-        self._tried = False
-        self._outage: Exception | None = None
+        self._outcome: futures.Future[Exception | None] | None = None  # the outage the call met, if any
 
     def wait(self) -> None:
-        """Embed on the first call. An outage is every mapping's, as its own search would meet it; any other
-        fault is left to each scenario's own search."""
+        """Embed on the first call; the others wait checking their own lease. An outage is every mapping's,
+        as its own search would meet it; any other fault is left to each scenario's own search."""
         with self._lock:
-            if not self._tried:
-                self._tried, self._outage = True, self._embed_or_outage()
-        if self._outage is not None:
-            raise self._outage
+            first = self._outcome is None
+            outcome = self._outcome = self._outcome or futures.Future()
+        if first:
+            try:
+                outcome.set_result(self._embed_or_outage())
+            except BaseException as exc:  # an interrupt too: no waiter waits for ever
+                outcome.set_exception(exc)
+                raise
+        if (outage := wait_while_leased(outcome)) is not None:
+            raise outage
 
     def _embed_or_outage(self) -> Exception | None:
         """The outage the call met, if any."""

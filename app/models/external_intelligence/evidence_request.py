@@ -12,14 +12,12 @@ class RecordedProduct:
 
     vendors: tuple[str, ...] = ()  # the vendor names recorded (vendor_name)
     products: tuple[str, ...] = ()  # the technologies and operating systems recorded (technology_used, ...)
-    # every product version recorded beside them (ContextProperties.VERSION_KEYS)
-    versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class RecordedProducts:
-    """The vendors, products and versions the asset and the threat's systems record, one entry per record, so
-    a version is only ever read with the product recorded beside it. Empty: the asset records none."""
+    """The vendors and products the asset and the threat's systems record, one entry per record. Empty: the
+    asset records none."""
 
     rows: tuple[RecordedProduct, ...] = field(default_factory=tuple)
 

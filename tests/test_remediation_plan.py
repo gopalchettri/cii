@@ -223,7 +223,7 @@ def _real_chat(monkeypatch: pytest.MonkeyPatch, *replies: str) -> tuple[ChatMode
 
     monkeypatch.setattr(litellm, "completion", provider)
     records = SimpleNamespace(create=lambda record: None)
-    return ChatModel([("test-chat", _JSON_CHAT)], "http://ai.invalid", "key", records), sent
+    return ChatModel("test-chat", _JSON_CHAT, "http://ai.invalid", "key", records), sent
 
 
 # --- control references and implementation status
@@ -963,7 +963,7 @@ def test_an_interim_action_is_re_asked_only_when_every_control_is_implemented(
 @pytest.mark.parametrize(
     "re_asked",
     [
-        _answer(applicable_to_all_subsystems="Maybe"),
+        _answer(control_validation="x"),
         _answer("CII-CID-5", "CII-CID-6", remediation_action_plan=[]),
     ],
     ids=["misshapen", "no-action"],
@@ -999,7 +999,7 @@ def test_an_answer_without_its_title_is_kept_and_named_by_code() -> None:
 @pytest.mark.parametrize(
     ("answers", "error", "code"),
     [
-        ((_answer(applicable_to_all_subsystems="Maybe"),) * 2, JobFailed, ErrorCode.GENERATION_FAILED),
+        ((_answer(control_validation="x"),) * 2, JobFailed, ErrorCode.GENERATION_FAILED),
         ((truncated(),), JobFailed, ErrorCode.GENERATION_FAILED),
         ((_answer("CII-CID-5", "CII-CID-6", remediation_action_plan=[]),), JobFailed, ErrorCode.INVALID_PLAN),
         ((Unavailable(),), Unavailable, ErrorCode.UNAVAILABLE),

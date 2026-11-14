@@ -415,7 +415,7 @@ tests:
           - exp_labels: { severity: warning }
             exp_annotations:
               summary: "More than 10 % of AI calls fail (no answer, or an answer that could not be used)."
-              description: "Open the TSG dashboard, \"Why the AI did not answer\"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md."
+              description: "Open the TSG dashboard, \"Why the AI did not answer\"; see deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row."
 
   - interval: 1m
     input_series:
@@ -495,7 +495,7 @@ tests:
           - exp_labels: { severity: warning, model: litellm_proxy/kimi-k2.5 }
             exp_annotations:
               summary: "litellm_proxy/kimi-k2.5 requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
-              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens: CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
+              description: "More work is sent to litellm_proxy/kimi-k2.5 than its requests-a-minute setting allows (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens: CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise its setting; the dashboard's 429 panel shows refusals."
 
   # Three AI usage rows MongoDB did not take at 3 minutes (logged for replay): one alert, then quiet once the
   # 15 minutes have passed with none more.
@@ -712,7 +712,7 @@ tests:
           - exp_labels: { severity: warning, reason: ai_timed_out }
             exp_annotations:
               summary: "The AI service timed out 20 times in 10 minutes."
-              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and the network. Server error: ask the gateway's team."
+              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row). Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and the network. Server error: ask the gateway's team."
 
   # TSG's own limiter refusing (no AI slot or request turn free within the wait) is not the gateway not answering.
   - interval: 1m

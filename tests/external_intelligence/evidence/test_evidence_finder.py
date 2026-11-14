@@ -167,20 +167,17 @@ def test_an_asset_that_records_no_product_cannot_be_tied_to_a_vulnerability_or_a
     assert decisions["CVE-1"] == decisions["ICSA-24-001-01"] == EvidenceDecision.NO_PRODUCT_LINK
 
 
-def test_a_technique_has_no_applicability_and_a_known_version_confirms_only_inside_the_range() -> None:
-    entry = {
-        "vendor": "Siemens",
-        "product": "WinCC",
-        "versions": [{"start": "7.0", "end": "7.5", "end_inclusive": True}],
-    }
+def test_a_technique_has_no_applicability_and_a_vulnerability_in_the_assets_product_is_unknown_context() -> (
+    None
+):
+    """The asset data records no product version (owner, 14 Nov), so a weakness in the asset's own product is
+    unknown, never confirmed, and every entry is context."""
+    entry = {"vendor": "Siemens", "product": "WinCC"}
     docs = [vulnerability_doc("CVE-5", "Siemens", "WinCC", affected=[entry]), technique_doc("T1")]
-    result, _ = one(finder_of(docs)[0], request_of(**WINCC, versions=["7.2"]))
+    result, _ = one(finder_of(docs)[0], request_of(**WINCC))
     by_ref = {item.ref: item for item in result.evidence}
-    assert by_ref["T1"].applicability is None and by_ref["CVE-5"].applicability == Applicability.CONFIRMED
-    # G229: only a weakness confirmed in the asset's product is direct evidence; a technique is context.
-    assert (by_ref["CVE-5"].role, by_ref["T1"].role) == (EvidenceRole.DIRECT, EvidenceRole.CONTEXT)
-    outside, _ = one(finder_of(docs)[0], request_of(**WINCC, versions=["8.0"]))
-    assert refs(outside) == {"T1"}
+    assert by_ref["T1"].applicability is None and by_ref["CVE-5"].applicability == Applicability.UNKNOWN
+    assert (by_ref["CVE-5"].role, by_ref["T1"].role) == (EvidenceRole.CONTEXT, EvidenceRole.CONTEXT)
 
 
 def test_no_index_yet_or_no_request_means_no_search_and_no_error() -> None:

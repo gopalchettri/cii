@@ -25,7 +25,7 @@ class ScenarioStatus(StrEnum):
     """tsg_scenarios.status: how writing one path's scenario ended."""
 
     DONE = "done"  # written: served and counted
-    FAILED = "failed"  # the writer's answer stayed unreadable: a visible failure card; the path is retried
+    FAILED = "failed"  # a visible failure card; only an outage's path is written again, by a later set
     BLOCKED = "blocked"  # a blocker was found: kept for audit; the path is given up, a reserve may follow
 
 
@@ -84,7 +84,7 @@ FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
     FindingCode.NEAR_DUPLICATE: FindingSeverity.BLOCKER,
 }
 
-#: A scenario blocked by one of these is final: no new attempt can change it, so its path is given up.
+#: The blocker named first when a scenario has several (any blocked draft gives its path up at once).
 FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({FindingCode.NEAR_DUPLICATE})
 
 
@@ -96,6 +96,8 @@ class Route(StrEnum):
 
 
 class PlanCheckStatus(StrEnum):
+    """plan_check.status as stored on older scenarios; nothing writes it."""
+
     CONSISTENT = "consistent"
     INCONSISTENT = "inconsistent"  # its problems are notes on the scenario
     UNCHECKED = "unchecked"  # not made: an exact check blocks, or its answer stayed unusable (a warning)

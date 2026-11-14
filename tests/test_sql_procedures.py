@@ -111,12 +111,12 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
 def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(
     sql_test_engine: Engine,
 ) -> None:
-    """With technology_used shown (as the procedure's header invites), a value that is not a JSON list on a
-    system the request did not send never stops the asset's runs: it reads as no answer. The shown fact and
-    the bad value are one transaction, rolled back."""
+    """With technology_used shown (as the procedure's header invites, whether or not the file shows it), a
+    value that is not a JSON list on a system the request did not send never stops the asset's runs: it
+    reads as no answer. The shown fact and the bad value are one transaction, rolled back."""
     source = (REPO / "scripts" / "sql" / "tsg_GetAssetContext.sql").read_text(encoding="utf-8")
     shown = source.replace("--, Technology.technology_used", ", Technology.technology_used")
-    assert shown != source
+    assert ", Technology.technology_used" in shown and "--, Technology.technology_used" not in shown
     connection = sql_test_engine.raw_connection()
     driver = connection.driver_connection
     assert driver is not None
@@ -366,8 +366,8 @@ def test_service_mapper_associations_keep_exact_hierarchy_and_filter_deleted_row
 def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(
     procedures: StoredProcedureClient,
 ) -> None:
-    """TSG's own tsg_Onboarding_* procedures return what the catalog reads, without deleted rows, and agree
-    with tsg_GetServiceMapperAssociations on the live top-level sectors (else the catalog is refused)."""
+    """TSG's own tsg_Onboarding_* procedures return their rows without deleted ones, and the catalog builds
+    from tsg_Onboarding_GetServicesWithSectorDetails and tsg_GetServiceMapperAssociations."""
     (summary,) = procedures.execute_procedure(StoredProcedure.GET_SECTORS_AND_SUBSECTORS)
     (services,) = procedures.execute_procedure(StoredProcedure.GET_SERVICES_WITH_SECTOR_DETAILS)
     assert summary == [{"SectorName": "Energy", "SubsectorList": "Electricity"}]
@@ -376,13 +376,7 @@ def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(
     assert transmission["upstream_dependencies"] == "Customer billing"
     assert transmission["downstream_dependencies"] == "Test Entity"
 
-    class _NoOldMappings:  # the platform's own Onboarding_GetSectorServiceMappings is not in this database
-        def execute_procedure(self, procedure: StoredProcedure) -> list[list[dict[str, Any]]]:
-            if procedure is StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS:
-                return [[]]
-            return procedures.execute_procedure(procedure)
-
-    catalog = build_catalog(ServiceCatalogRepository(_NoOldMappings()).load())  # type: ignore[arg-type]
+    catalog = build_catalog(ServiceCatalogRepository(procedures).load())
     assert catalog.sector_names == ("Energy",)
     names = [service.service_name for service in catalog.services]
     assert names == ["Electricity transmission", "Customer billing"]

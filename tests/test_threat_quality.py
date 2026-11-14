@@ -150,11 +150,9 @@ def test_every_categorys_reason_survives_any_fold_order() -> None:
 
 def test_a_fold_keeps_the_kept_threats_path_and_unites_the_systems() -> None:
     spoofing = _judged(S.SPOOFING, SPOOFING_WHY)
-    spoofing = dataclasses.replace(spoofing, main_place=AttackPlace((321,), (321,), 3, 90.0))
+    spoofing = dataclasses.replace(spoofing, main_place=AttackPlace((321,), (321,), 90.0))
     privilege = _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY, "ai:x")
-    privilege = dataclasses.replace(
-        privilege, systems=(322,), main_place=AttackPlace((322,), (322,), 1, 40.0)
-    )
+    privilege = dataclasses.replace(privilege, systems=(322,), main_place=AttackPlace((322,), (322,), 40.0))
     for kept, other in ((spoofing, privilege), (privilege, spoofing)):
         merged = _merge_into(kept, other)
         assert merged.main_place == kept.main_place and merged.systems == (321, 322)
@@ -192,7 +190,7 @@ def test_a_twin_under_two_categories_fits_through_its_main_ways_in_or_not_at_all
     library threat fits only the IT system, so neither category is taken."""
     library = planned("lib:1", "X", (322,), categories=(S.SPOOFING,), asset_type="IT")
     twin = planned("ai:x", "X", (321, 322), categories=(S.TAMPERING, S.DENIAL_OF_SERVICE))
-    twin = dataclasses.replace(twin, main_place=AttackPlace((321,), (321,), 2, 70.0))
+    twin = dataclasses.replace(twin, main_place=AttackPlace((321,), (321,), 70.0))
     drops: list[Drop] = []
     merged = _merge_into(library, twin, drops)
     assert merged.categories == (S.SPOOFING,) and merged.systems == (322,)

@@ -42,14 +42,9 @@ PROFILE = ChatModelProfile(
 TEXTS = "test_ai_call_texts"
 
 
-def _chat(*models: str) -> ai.ChatModel:
-    names = models or ("test-chat",)
-    return ai.ChatModel(
-        [(name, PROFILE) for name in names],
-        "http://ai.invalid",
-        "key",
-        AiCallRepository(get_mongodb()[TEXTS]),
-    )
+def _chat() -> ai.ChatModel:
+    records = AiCallRepository(get_mongodb()[TEXTS])
+    return ai.ChatModel("test-chat", PROFILE, "http://ai.invalid", "key", records)
 
 
 def _job(task: str = TaskName.FIND_THREATS, **extra: Any) -> dict[str, Any]:
@@ -197,24 +192,16 @@ def test_each_failure_is_one_row_with_its_outcome_and_reason(
     assert (row["outcome"], row.get("reason"), row.get("error_type")) == expected
 
 
-def test_a_fallback_answer_is_the_same_ask_as_the_primary_models_failure(
+def test_a_re_asked_answer_is_the_same_ask_as_the_unreadable_first_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mutation: open an ask per model (call_with_retries' own) when an outer one is open."""
-
-    def by_model(model: str, **_: object) -> Any:
-        if model == "primary":
-            raise litellm.Timeout("slow", model=model, llm_provider="openai")
-        return _answer()
-
-    monkeypatch.setattr(litellm, "completion", by_model)
+    """Mutation: open an ask per call (call_with_retries' own) when an outer one is open."""
+    replies = iter([_answer("not json"), _answer()])
+    monkeypatch.setattr(litellm, "completion", lambda **_: next(replies))
     job = _job()
-    _ask(_chat("primary", "backup"), job)
+    _ask(_chat(), job)
     rows = _rows(job["request_id"])
-    assert [(row["model"], row["outcome"], row["try_no"]) for row in rows] == [
-        ("primary", "unavailable", 1),
-        ("backup", "ok", 2),
-    ]
+    assert [(row["outcome"], row["try_no"]) for row in rows] == [("unreadable", 1), ("ok", 2)]
     assert rows[0]["ask_id"] == rows[1]["ask_id"]
 
 
@@ -318,6 +305,34 @@ def test_search_calls_record_the_tokens_their_gateway_counts(monkeypatch: pytest
             rerank.score_relevance("scenario", ["control"])
     found = [(row["task"], row.get("tokens_in"), row.get("tokens_out")) for row in _rows(job["request_id"])]
     assert found == [("embed", 12, None), ("rerank", 40, 3), ("rerank", 55, None), ("rerank", None, None)]
+
+
+def test_tokens_by_model_count_every_row_s_tokens_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tsg_ai_tokens_total and tsg_ai_usage_tokens_total see the same calls: an embedding's tokens count by
+    model too, a chat call's once. Mutation: count tokens by model in the chat record alone, or in both."""
+
+    def tokens(task: str, model: str, direction: str) -> float:
+        return _counter("tsg_ai_tokens_total", task=task, model=model, direction=direction)
+
+    usage = SimpleNamespace(prompt_tokens=12)
+    monkeypatch.setattr(
+        litellm,
+        "embedding",
+        lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage),
+    )
+    monkeypatch.setattr(litellm, "completion", lambda **_: _answer())
+    profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
+    embed = _EmbeddingProvider(
+        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
+    )
+    gate = AiTask.RELEVANCE_GATE
+    before = [tokens(AiTask.EMBED, "test-embed", "in"), tokens(gate, "test-chat", "in")]
+    before.append(tokens(gate, "test-chat", "out"))
+    embed.embed_batch(["scenario text"])
+    _ask(_chat(), _job())
+    after = [tokens(AiTask.EMBED, "test-embed", "in"), tokens(gate, "test-chat", "in")]
+    after.append(tokens(gate, "test-chat", "out"))
+    assert [now - then for now, then in zip(after, before, strict=True)] == [12, 11, 7]
 
 
 def test_a_shared_threads_calls_are_no_requests_own(monkeypatch: pytest.MonkeyPatch) -> None:

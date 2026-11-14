@@ -17,10 +17,3 @@ class ModuleChat:
     requests_per_minute: int
     tokens_per_minute: int
     max_concurrent_ai_calls: int
-    fallback_model: str  # "" = no fallback
-    fallback_model_thinking: bool
-    fallback_max_input_tokens: int | None
-    fallback_max_output_tokens: int | None
-    fallback_timeout_seconds: int | None
-    fallback_requests_per_minute: int
-    max_concurrent_fallback_calls: int

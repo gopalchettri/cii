@@ -70,7 +70,6 @@ from app.models.scenario.plan import (
     Landscape,
     PlannedActor,
     PlannedThreat,
-    RelevanceVerdict,
     ThreatFindings,
     Verdict,
 )
@@ -209,8 +208,6 @@ def _find_problems_in_threat_answer(
         problems.append(f"{slot}: a threat that does not apply needs its reason")
     if not isinstance(needs, list) or any(not isinstance(need, str) for need in needs):
         problems.append(f"{slot}: needs must be a list of names ([] when everything it needs is recorded)")
-    shown = {**item, "systems": systems, "needs": needs, "entry_points": entry_points or []}
-    problems = problems or answer_item_problems(RelevanceVerdict, shown, slot)
     return (named if relevant is True else {}), problems
 
 
@@ -543,9 +540,8 @@ def _keep_threats_the_ai_accepts(
             dataclasses.replace(
                 candidate,
                 categories=tuple(kept),
-                gate_order=tuple(kept),
                 reasons={category: named[category][1] for category in kept},
-                main_place=AttackPlace(verdict.systems, verdict.entry_points, impacts[0], verdict.confidence),
+                main_place=AttackPlace(verdict.systems, verdict.entry_points, verdict.confidence),
                 systems=verdict.systems,
                 impact=max(impacts),
                 confidence=verdict.confidence,
@@ -596,6 +592,9 @@ def _add_ai_threats_for_empty_categories(
     proposals = (
         calls.ask_ai_reusing_earlier_answer(AiTask.GAP_FILL, prompt, read, list(map(str, categories))) or {}
     )
+    applying = [found for found in map(proposals.get, categories) if found and found["applies"]]
+    threats, types = [found["threat"] for found in applying], [found["threat_type"] for found in applying]
+    calls.snapshot.embed_gap_fill_queries(threats, types)  # each category's search reads its stored vector
     candidates: list[tuple[PlannedThreat, _GateQuestion]] = []
     for category in categories:
         proposal = proposals.get(category)
@@ -679,16 +678,16 @@ def _merge_duplicate_threats(
             twin = by_key.pop(key)
             by_key[library_key] = _merge_threat_into_another(by_key[library_key], twin, context, drops)
             drops.append(Drop(key, twin.name, None, PlanStage.MERGE, PlanLoss.MERGED, f"into {library_key}"))
-    return _merge_reworded_ai_threats([by_key[key] for key in sorted(by_key)], embeddings, context, drops)
+    return _merge_reworded_threats([by_key[key] for key in sorted(by_key)], embeddings, context, drops)
 
 
-def _merge_reworded_ai_threats(
+def _merge_reworded_threats(
     threats: list[PlannedThreat], embeddings: EmbeddingModel, context: FrozenContext, drops: list[Drop]
 ) -> list[PlannedThreat]:
-    """Merges each AI threat meaning what an earlier threat of its type means into it: one embedding call."""
-    ai_threats = [threat for threat in threats if threat.catalogue_id is None]
-    if not ai_threats:
-        return threats
+    """Merges each threat telling what a kept threat of its type tells into it, the strongest library threats
+    kept first, then each AI one: one embedding call."""
+    if len({threat.type_id for threat in threats}) == len(threats):
+        return threats  # no two threats of one type: nothing to compare
     asset = context.asset["name"]
     labels = {
         threat.key: remove_asset_name(threat_name_without_code(threat.name), asset) or threat.name
@@ -697,24 +696,38 @@ def _merge_reworded_ai_threats(
     texts = list(dict.fromkeys(labels.values()))
     vectors = dict(zip(texts, embeddings.embed_texts_to_compare(texts), strict=True))
     by_key = {threat.key: threat for threat in threats}
-    compared = [threat.key for threat in threats if threat.catalogue_id is not None]  # then each AI one kept
-    for threat in ai_threats:
+    library = sorted(
+        (threat for threat in threats if threat.catalogue_id is not None),
+        key=lambda threat: _build_path_record(threat, {})[0],  # the plan's own rank
+    )
+    kept_as: dict[str, str] = {}  # each threat compared so far: the key it is kept under (joined: another's)
+    for threat in [*library, *(threat for threat in threats if threat.catalogue_id is None)]:
         vector = vectors[labels[threat.key]]
         twin = next(
             (
-                key
-                for key in compared
-                if by_key[key].type_id == threat.type_id
-                and float(vector @ vectors[labels[key]]) >= ThreatFinding.AI_DUPLICATE_COSINE
+                into
+                for key, into in kept_as.items()  # a library threat joined meets only AI threats, by its name
+                if (threat.catalogue_id is None or key == into)
+                and _is_same_threat(threat, by_key[into], float(vector @ vectors[labels[key]]))
             ),
             None,
         )
+        if twin is None or threat.catalogue_id is not None:
+            kept_as[threat.key] = twin or threat.key
         if twin is None:
-            compared.append(threat.key)
             continue
         by_key[twin] = _merge_threat_into_another(by_key[twin], by_key.pop(threat.key), context, drops)
         drops.append(Drop(threat.key, threat.name, None, PlanStage.MERGE, PlanLoss.MERGED, f"into {twin}"))
     return [by_key[threat.key] for threat in threats if threat.key in by_key]
+
+
+def _is_same_threat(threat: PlannedThreat, kept: PlannedThreat, cosine: float) -> bool:
+    """Whether `threat` tells what `kept` tells: of its type, an AI rewording, or a library near copy for the
+    same asset type (the library's IT and OT variants of one attack stay apart), wherever each was placed."""
+    if threat.catalogue_id is None:
+        return threat.type_id == kept.type_id and cosine >= ThreatFinding.AI_DUPLICATE_COSINE
+    same_kind = (threat.type_id, threat.asset_type) == (kept.type_id, kept.asset_type)
+    return same_kind and cosine >= ThreatFinding.LIBRARY_DUPLICATE_COSINE
 
 
 def _merge_threat_into_another(
@@ -752,15 +765,10 @@ def _merge_threat_into_another(
 
 
 def _set_main_category_and_attacker(threats: list[PlannedThreat], drops: list[Drop]) -> list[PlannedThreat]:
-    """Each threat's main category and at most two others, with the gate's linked attacker; else dropped."""
+    """Each threat's main category then every other it names, and the gate's linked attacker, else dropped."""
     picked_threats = []
     for threat in threats:
         main, *others = threat.categories
-        rank = {category: position for position, category in enumerate(threat.gate_order)}
-        chosen = sorted(
-            others, key=lambda category: (rank.get(category, len(rank)), _STRIDE_ORDER.index(category))
-        )
-        chosen = chosen[: ThreatFinding.MAX_CATEGORIES_PER_THREAT - 1]
         pick = threat.actor_pick or ActorPick(None, "")
         acting = next((actor for actor in threat.linked_actors if actor.name == pick.name), None)
         if acting is None:  # no listed attacker fits
@@ -771,7 +779,7 @@ def _set_main_category_and_attacker(threats: list[PlannedThreat], drops: list[Dr
         picked_threats.append(
             dataclasses.replace(
                 threat,
-                categories=(main, *(category for category in _STRIDE_ORDER if category in chosen)),
+                categories=(main, *(category for category in _STRIDE_ORDER if category in others)),
                 actors=(PlannedActor(acting.actor_id, acting.name, ActorRole.ACTING),),
                 attacker_check=AttackerCheck.CHOSEN,
                 attacker_check_reason=pick.reason,
@@ -905,16 +913,16 @@ def _build_path_record(
         "systems": list(systems),
         "entry_points": list(main_place.entry_points),
         "entry_system": None,  # set when dealt: the system its turn gets in through; None: the asset
-        "impact": main_place.impact,
+        "impact": threat.impact,  # its worst harm
         "confidence": main_place.confidence,
         "also_applies": [],  # stored field: two threats never share a path
     }
     name_digest = hashlib.sha256(" ".join(threat.name.lower().split()).encode()).hexdigest()
     library_id = _NO_LIBRARY_ID if threat.catalogue_id is None else threat.catalogue_id
-    risk = main_place.impact * threat.likelihood
+    risk = threat.impact * threat.likelihood  # its worst harm, never only its main kind's
     strength = (
         -risk,
-        -main_place.impact,
+        -threat.impact,
         -main_place.confidence,
         _STRIDE_ORDER.index(category),
         threat.catalogue_id is None,
