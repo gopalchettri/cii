@@ -108,6 +108,7 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
     """The audit copy of one chat call, with the job, the delivery and the request it served (from the log
     context), and whether the model's thinking was on (threat finding's reuse across runs matches it)."""
     context = structlog.contextvars.get_contextvars()
+    tokens_in, tokens_out = count_reply_tokens(response)
     return {
         "created_at": utc_now(),
         "task": task,
@@ -120,10 +121,16 @@ def build_call_record(  # noqa: PLR0913 — one chat call, whole
         "request_id": context.get("request_id"),
         "prompt": _without_system_prompt_text(messages),
         "response": response.choices[0].message.content or "",
-        "tokens_in": getattr(response.usage, "prompt_tokens", 0) or 0,
-        "tokens_out": getattr(response.usage, "completion_tokens", 0) or 0,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
         "seconds": seconds,
     }
+
+
+def count_reply_tokens(response: Any) -> tuple[int, int]:
+    """(prompt tokens, answer tokens) as the gateway counted them; 0 for each it does not state."""
+    usage = getattr(response, "usage", None)
+    return getattr(usage, "prompt_tokens", 0) or 0, getattr(usage, "completion_tokens", 0) or 0
 
 
 def _job_of(context: dict[str, Any]) -> dict[str, Any]:

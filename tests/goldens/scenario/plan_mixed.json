@@ -52,15 +52,6 @@
     "texts": [
      "Privilege misuse"
     ]
-   },
-   {
-    "call": "compare",
-    "texts": [
-     "Contractor escalates rights on SCADA server HMI",
-     "Ransomware encrypts backup servers",
-     "Phishing steals operator credentials",
-     "Flood of requests overwhelms the historian"
-    ]
    }
   ],
   "reranks": [

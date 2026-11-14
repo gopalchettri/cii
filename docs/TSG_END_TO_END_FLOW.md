@@ -1019,7 +1019,7 @@ flowchart TB
     I --> J
     J --> K["Choose each threat's attacker"]
     K --> L["One path per threat<br/>its main kind, the others also"]
-    L --> N["Rank: risk (impact x likelihood), impact, then confidence"]
+    L --> N["Rank: risk (highest impact x likelihood), highest impact, then confidence"]
     N --> O["Deal the ranked paths in turns<br/>over the systems: entry_system"]
     O --> P["Select up to TOTAL_SCENARIO_COUNT"]
     P --> Q["Freeze the plan and its trace"]
@@ -1339,13 +1339,13 @@ lib:282 was slot R46 in the same Tampering batch. The gate said `relevant: false
    - the kept threat's `actions`.
 
    An AI threat with the same normalised name and type id as a library threat is folded into it.
-3. `merge_reworded_threats` runs only when AI threats exist. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). Each AI threat is compared with the library threats, then with the AI threats kept before it, of the same type id. At cosine ≥ `AI_DUPLICATE_COSINE` (0.98) it is folded. Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
+3. `_merge_reworded_threats` runs only when two threats share a type id. It makes one embedding call over the names, with the asset's name removed (`embed_texts_to_compare`: plain, both sides alike, never with a query instruction). The library threats come first, strongest first (risk, impact, confidence), then each AI threat; each is compared with those kept before it of the same type id. An AI threat is folded at cosine ≥ `AI_DUPLICATE_COSINE` (0.98); a library threat of the same asset type at cosine ≥ `LIBRARY_DUPLICATE_COSINE` (0.80), wherever the gate placed each (an attack's IT and OT variants stay apart, D74). Each fold is traced as `merged`, stage `merge`, detail `into <key>`.
 4. **Re-fit after the merge** (`_keep_on_matching_systems`): each library threat's kinds are checked again with `_fitting`, because an AI twin's kinds may have joined. A kind with no way in its type fits is dropped (`asset_type_mismatch`, stage `merge`, counted as `unfit_after_merge`). `_with_places` recomputes the threat's kinds, systems, impact, confidence and pick from the kinds kept.
-5. **At most three kinds** (`_main_and_two_others`, D69): a threat with more keeps its main kind and the two others the gate named earliest (a kind it did not order, from a folded AI twin, last), in their own order. Only `categories` changes (so `reasons` lists only those); systems, impact, confidence and the places stay. It runs after gap fill, so it never empties a kind there. Why: the AI sometimes names every kind a threat lists for nearly a whole call (31 of 108 recorded answers), and cards showed those as "also".
+5. **Every kind kept** (`_set_main_category_and_attacker`, D74): the main kind first, then every other the gate named, in STRIDE order, each with its own reason. D69's cut to three is gone: it dropped relevant kinds.
 
 **In the example.**
 - The 114 accepted pairs became **41 threats**; `merged` 0 and `unfit_after_merge` 0.
-- lib:281's four accepted kinds became one plan threat (since D69 it keeps three: Tampering and the two others the gate named first): `"category": "Tampering"`, `"categories": ["Tampering", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]`, `"systems": [1449, 1450]`, `"impact": 3`, `"confidence": 75.0`.
+- lib:281's four accepted kinds became one plan threat (it keeps all four, D74): `"category": "Tampering"`, `"categories": ["Tampering", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]`, `"systems": [1449, 1450]`, `"impact": 3`, `"confidence": 75.0`.
 - It keeps a separate reason for each kind in `reasons`.
 
 ### 5.11 Choosing the attacker
@@ -1404,7 +1404,7 @@ None of lib:281's four paths was held.
 2. **Scope:** `"{kind}@asset"` when there are no systems, `"{kind}@system:<id>"` for one, and `"{kind}@systems:<id>,<id>"` for several, sorted.
 3. **`path_id`** (`attack_path_id`) is `sha256("|".join(step keys) + "@" + scope)`, first 16 hex characters. The same input always gives the same id.
 4. **Rank key** (`_path_strength`), in this order:
-   - −risk: impact x likelihood, 1-9 (D73; HIGH 3, MEDIUM 2, LOW 1), so HIGH x MEDIUM (6) and MEDIUM x HIGH (6) come before HIGH x LOW (3);
+   - −risk: the threat's highest impact x likelihood, 1-9 (D73, D74; HIGH 3, MEDIUM 2, LOW 1), so HIGH x MEDIUM (6) and MEDIUM x HIGH (6) come before HIGH x LOW (3);
    - −impact;
    - −confidence;
    - the kind's STRIDE position;

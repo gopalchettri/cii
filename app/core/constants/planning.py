@@ -201,6 +201,9 @@ class ThreatFinding:
     GAP_FILL_MAX_CHARS: Final = 3_500  # a gap-fill proposal's type + threat
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
+    # A library threat this close to a kept one of its type and asset type is a near copy, wherever each was
+    # placed (laptop library, 2026-11-14: its closest pair, 0.81, is one attack's IT and OT variants).
+    LIBRARY_DUPLICATE_COSINE: Final = 0.80
     AI_BATCHES_AT_ONCE: Final = TUNING.threat_questions_at_once  # gate batches at once
     THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
     REASON_MAX_CHARS: Final = 500
@@ -210,7 +213,6 @@ class ThreatFinding:
     RECORD_SLOT: Final = "R"  # R1 ... in the relevance gate
     NEEDS_MAX_ITEMS: Final = 5  # what a verdict says a threat needs that nothing recorded mentions ...
     NEED_MAX_CHARS: Final = 80  # ... each cut to this
-    MAX_CATEGORIES_PER_THREAT: Final = 3  # a threat's main category and at most two others, as its card shows
 
 
 class ActorRole(StrEnum):

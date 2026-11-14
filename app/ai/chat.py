@@ -16,6 +16,7 @@ from app.ai.chat_messages import (
     build_conversation,
     build_request_options,
     count_prompt_chars,
+    count_reply_tokens,
     find_earlier_answer,
     max_answer_tokens,
     parse_json_object,
@@ -236,10 +237,21 @@ class ChatModel:
         rate, tokens = self._request_rates[model], _estimated_tokens(messages) + options["max_tokens"]
         try:
             with count_and_convert_ai_errors(task, model, AI_REFUSED_REPLY_ERRORS):
-                return call_with_retries(ask, rate, self._slots, model=model, task=task, tokens=tokens)
+                return _call_and_give_back_unused(ask, rate, self._slots, model, task, tokens)
         except AI_REFUSED_REPLY_ERRORS as exc:  # an answer, if a refusal: no other model is asked
             refused = ErrorMessage.AI_ANSWER_REFUSED.format(task=task, error=type(exc).__name__)
             raise UnreadableAiAnswer(refused) from exc
+
+
+def _call_and_give_back_unused(  # noqa: PLR0913 - call_with_retries' own inputs
+    ask: Callable[[], Any], rate: AiRequestRate, slots: AiSlots, model: str, task: AiTask, tokens: int
+) -> tuple[Any, float]:
+    """call_with_retries, then the answer's unused booking back to `rate`: LiteLLM holds the prompt and the
+    whole answer room while a call runs, and counts only what it used once answered."""
+    response, seconds = call_with_retries(ask, rate, slots, model=model, task=task, tokens=tokens)
+    if used := sum(count_reply_tokens(response)):  # ponytail: a failed try's booking is never given back
+        rate.give_back(tokens, used)
+    return response, seconds
 
 
 def _with_correction_turn(

@@ -208,6 +208,7 @@ class AiRequestRate:
     ) -> None:
         self._redis, self._model = redis, model
         self._key = AiLimits.REQUEST_RATE_KEY.format(model=f"{scope}:{model}" if scope else model)
+        self._pause_key = f"{self._key}:paused"  # a 429's pause end
         self._per_minute, self._tokens_per_minute = per_minute, tokens_per_minute
         limited = bool(per_minute or tokens_per_minute)
         self.wait_seconds = wait_seconds if limited else 0  # no limit: no turn, so no wait for one
@@ -217,15 +218,13 @@ class AiRequestRate:
             self._reserve_send_time = redis.register_script(limiter_scripts.RESERVE_SEND_TIME_SCRIPT)
             self._seconds_to_send_time = redis.register_script(limiter_scripts.SECONDS_TO_SEND_TIME_SCRIPT)
             self._pause_send_time = redis.register_script(limiter_scripts.PAUSE_SEND_TIME_SCRIPT)
+            self._give_back_send_time = redis.register_script(limiter_scripts.GIVE_BACK_SEND_TIME_SCRIPT)
 
     def wait_for_turn(self, task: str, tokens: int = 0) -> float:
         """Waits for the send time it reserves for a request of about `tokens`; the seconds waited.
         Unavailable, nothing reserved, when that time is further off than the wait; LeaseLost for a job that
         lost its lease. A Redis error never fails the request: it goes ahead unspaced (_redis_failed)."""
-        interval = max(
-            60 / self._per_minute if self._per_minute else 0.0,
-            tokens * 60 / self._tokens_per_minute if self._tokens_per_minute else 0.0,
-        )
+        interval = self._spacing(tokens)
         if interval == 0 or not self._in_use():
             return 0.0
         raise_if_lease_lost()
@@ -259,10 +258,28 @@ class AiRequestRate:
         calls queued for it wait (wait_for_send_time) instead of each drawing a 429 of its own; `seconds`."""
         if self._in_use():
             try:
-                self._pause_send_time(keys=[self._key], args=[seconds])
+                self._pause_send_time(keys=[self._key, self._pause_key], args=[seconds])
             except RedisError:  # its own retry still waits; the others may meet a 429 of their own
                 self._redis_failed()
         return seconds
+
+    def give_back(self, booked: int, used: int) -> float:
+        """Moves an answered call's unused booking back on every pod, never before a 429's pause ends: the
+        spacing `booked` tokens reserved less what `used` needs, as LiteLLM counts only what was used."""
+        unused = self._spacing(booked) - self._spacing(used)
+        if unused <= 0 or not self._in_use():
+            return 0.0
+        try:
+            return float(self._give_back_send_time(keys=[self._key, self._pause_key], args=[unused]))
+        except RedisError:  # the booking stays: later requests only wait longer
+            return self._redis_failed()
+
+    def _spacing(self, tokens: int) -> float:
+        """The seconds a request of about `tokens` holds the next one off: the longer of the two limits."""
+        return max(
+            60 / self._per_minute if self._per_minute else 0.0,
+            tokens * 60 / self._tokens_per_minute if self._tokens_per_minute else 0.0,
+        )
 
     def _in_use(self) -> bool:
         """A Redis client and a limit, and no Redis failure in the last REDIS_SKIP_SECONDS."""

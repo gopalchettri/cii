@@ -1447,6 +1447,41 @@ def test_each_chat_request_waits_its_turn_at_the_limiter_of_the_model_it_goes_to
     ]
 
 
+def test_an_answered_chat_call_gives_back_what_its_answer_did_not_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call books its prompt's estimate plus its whole answer room; once answered, the gateway's own count
+    (prompt + answer tokens) is all it used, and the rest goes back to its model's limiter. A reply that
+    states no usage gives nothing back: its cost is unknown."""
+    _no_waiting(monkeypatch)
+    given: list[tuple[int, int]] = []
+
+    class GivenBack(AiRequestRate):
+        def give_back(self, booked: int, used: int) -> float:
+            given.append((booked, used))
+            return 0.0
+
+    counted = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+        usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
+    )
+    replies = iter([counted, _json_response('{"ok": true}')])
+    monkeypatch.setattr(litellm, "completion", lambda **_: next(replies))
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    chat = ai.ChatModel(
+        [("first", JSON_CHAT)],
+        "http://ai.invalid",
+        "key",
+        records,
+        request_rate=GivenBack(None, "first", 0, 0),
+    )
+    assert _ask(chat, AiTask.RELEVANCE_GATE) == _ask(chat, AiTask.RELEVANCE_GATE) == {"ok": True}
+    prompt = ai.chat_messages.build_conversation("system", "user")
+    question = ai.chat_messages.count_prompt_chars(prompt) // AiLimits.PROMPT_CHARS_PER_TOKEN
+    room = ai.chat_messages.max_answer_tokens(JSON_CHAT, AiTask.RELEVANCE_GATE, False)
+    assert given == [(question + room, 18)]
+
+
 def test_each_ai_gateway_is_paced_by_its_own_model_s_requests_a_minute(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

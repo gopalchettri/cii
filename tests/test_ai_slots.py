@@ -192,6 +192,36 @@ def test_a_429_pauses_its_model_on_every_pod(monkeypatch: pytest.MonkeyPatch) ->
     assert unlimited.pause(60) == 60 and unlimited.wait_for_send_time(TASK) == 0
 
 
+def test_an_answer_gives_back_the_booked_tokens_it_did_not_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LiteLLM counts what an answered call used: at 60,000 a minute a 6,000-token booking answered with 1,500
+    used gives 4.5 s back, so the next request waits 1.5 s, not 6. Nothing comes back when more was used than
+    booked, under the requests-a-minute spacing, or with no tokens limit."""
+    slept: list[float] = []
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    redis = get_redis_client()
+    sized = AiRequestRate(redis, "give-back", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
+    sized.wait_for_turn(TASK, 6000)
+    assert sized.give_back(6000, 1500) == pytest.approx(4.5, abs=0.01)
+    sized.wait_for_turn(TASK, 600)
+    assert slept[-1] == pytest.approx(1.5, abs=0.1)
+    assert sized.give_back(600, 900) == 0
+    both = AiRequestRate(redis, "give-back-both", per_minute=20, wait_seconds=30, tokens_per_minute=60_000)
+    both.wait_for_turn(TASK, 600)
+    assert both.give_back(600, 100) == 0  # 3 s a request beats 0.6 s of tokens either way
+    assert AiRequestRate(redis, "give-back-none", 20, 30).give_back(6000, 10) == 0
+
+
+def test_a_give_back_never_ends_a_429_pause_early(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 says the gateway is full: an answer's give-back moves the next send time back, never before the
+    pause ends, also when the pause was shorter than the turns already booked."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    rate = AiRequestRate(get_redis_client(), "give-back-paused", 0, 120, tokens_per_minute=60_000)
+    rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
+    rate.pause(20)
+    assert rate.give_back(30_000, 1000) == pytest.approx(10, abs=0.5)  # 29 s unused, 10 s of it before 20 s
+    assert rate.wait_for_send_time(TASK) == pytest.approx(20, abs=0.5)
+
+
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
     limiter = AiSlots(get_redis_client(), cap=4, wait_seconds=5)
     with limiter.hold_slot(TASK), limiter.hold_slot(TASK):

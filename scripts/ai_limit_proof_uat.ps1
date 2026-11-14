@@ -4,20 +4,31 @@
     requests when several users send them at once.
 
 .DESCRIPTION
-    One file: it carries two scripts inside it and runs both in the UAT api pod, with TSG's own scenario key
-    (the key is never copied; only its last 4 characters are shown).
+    One file: it carries two scripts inside it and runs both, with TSG's own scenario key (the key is never
+    printed; only its last 4 characters are shown).
     1. tsg_scenario_request.py picks the biggest request a Create scenario sent the AI today and rebuilds it
        exactly as TSG sent it, from TSG's stored copy (checked against the fingerprint TSG stored with it).
     2. ai_limit_proof.py reads the key's tokens-a-minute limit from the gateway's answer, sends that request
        5 times at the same moment (as 5 users clicking Create scenario at once), waits a minute, sends it once
        alone, and shows every request and response word for word.
+    Where it runs:
+    - by default in the OpenShift api pod (log in first: oc login), reading that pod's database;
+    - with -Local on this machine, with the TSG codebase this file sits in (its scripts folder): that
+      codebase's .venv Python, its .env (database, gateway address and key) and its own code.
+    Run a Create scenario first, today, on the TSG whose database is read: the screen names that database.
     Each answered request is real work on the shared budget: run it when nobody else is using UAT.
-    Run a Create scenario in UAT first, today. Log in first: oc login.
     Shows the screen and saves it to ai_limit_proof_<time>.txt in the current folder.
+
+.PARAMETER Local
+    Run on this machine with this codebase's .env, instead of in the OpenShift api pod.
+
+.EXAMPLE
+    .\ai_limit_proof_uat.ps1 -Local
 
 .EXAMPLE
     .\ai_limit_proof_uat.ps1
 #>
+param([switch]$Local)
 
 $Namespace = 'ai-threatgen'
 $Gateway = 'https://llmapi.govai.ae'
@@ -440,25 +451,93 @@ if __name__ == "__main__":
     sys.exit(main())
 '@
 
-$Pod = oc get pods -n $Namespace --field-selector=status.phase=Running -o name |
-    Where-Object { $_ -like 'pod/api-*' } | Select-Object -First 1
-if (-not $Pod) {
-    "No running api pod: check 'oc login' and that 'oc get pods -n $Namespace' lists one."
+# The deployed TSG code (30-31 Oct) names the writer's prompt writer_system_prompt, a newer checkout
+# build_writer_system_prompt: the request script takes whichever the code it runs with has.
+$Request = $Request.Replace('.write").build_writer_system_prompt()',
+    '.write").__dict__.get("build_writer_system_prompt", importlib.import_module(' +
+    'f"{scenario_code.__name__}.write").__dict__.get("writer_system_prompt"))()')
+
+function Get-Database([string]$Url, [string]$Name) {
+    # 'MongoDB <host>, database <name>': never the user name or password in the address.
+    $HostName = if ($Url -match '^[^:]+://(?:[^@/]*@)?([^/:?,]+)') { $Matches[1] } else { '(unknown host)' }
+    if (-not $Name) { $Name = 'cii_tsg' }
+    "MongoDB $HostName, database $Name"
+}
+
+$Failed = $false
+$Code = 0
+$About = @()
+$Screen = @()
+if ($Local) {
+    $Root = Split-Path $PSScriptRoot -Parent
+    $EnvFile = Join-Path $Root '.env'
+    if (-not (Test-Path $EnvFile)) {
+        "No .env in $Root. With -Local, run this file from the scripts folder of the TSG codebase that ran the Create scenario."
+        exit 1
+    }
+    $Settings = @{}
+    foreach ($Line in Get-Content $EnvFile) {
+        if ($Line -match '^\s*(CII_SCENARIO_CHAT_BASE_URL|CII_SCENARIO_CHAT_API_KEY|CII_MONGO_URL|CII_MONGO_DB)\s*=\s*(.*?)\s*$') {
+            $Settings[$Matches[1]] = $Matches[2].Trim('"', "'")
+        }
+    }
+    foreach ($Name in 'CII_SCENARIO_CHAT_BASE_URL', 'CII_SCENARIO_CHAT_API_KEY', 'CII_MONGO_URL') {
+        if (-not $Settings[$Name]) {
+            "$Name is not set in $EnvFile."
+            exit 1
+        }
+    }
+    $Database = (Get-Database $Settings['CII_MONGO_URL'] $Settings['CII_MONGO_DB']) + " (named in this machine's $EnvFile)"
+    $Python = Join-Path $Root '.venv\Scripts\python.exe'
+    if (-not (Test-Path $Python)) { $Python = 'python' }
+    $Body = Join-Path $env:TEMP "tsg_request_$(Get-Date -Format yyyyMMdd_HHmmss).json"
+    $KeyBefore, $IoBefore, $ConsoleBefore = $env:CII_SCENARIO_CHAT_API_KEY, $env:PYTHONIOENCODING, [Console]::OutputEncoding
+    $env:PYTHONIOENCODING = 'utf-8'  # an answer in any language prints on Windows too
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    Push-Location $Root  # the request script reads this codebase's .env and code from here
+    try {
+        $About = $Request | & $Python - --out $Body
+        $Failed = $LASTEXITCODE -ne 0
+        if (-not $Failed) {
+            $env:CII_SCENARIO_CHAT_API_KEY = $Settings['CII_SCENARIO_CHAT_API_KEY']
+            $Screen = $Proof | & $Python - --base-url $Settings['CII_SCENARIO_CHAT_BASE_URL'] --body $Body `
+                --key-env CII_SCENARIO_CHAT_API_KEY
+            $Code = $LASTEXITCODE
+        }
+    } finally {
+        Pop-Location
+        Remove-Item $Body -ErrorAction SilentlyContinue
+        $env:CII_SCENARIO_CHAT_API_KEY = $KeyBefore
+        $env:PYTHONIOENCODING = $IoBefore
+        [Console]::OutputEncoding = $ConsoleBefore
+    }
+} else {
+    $Pod = oc get pods -n $Namespace --field-selector=status.phase=Running -o name |
+        Where-Object { $_ -like 'pod/api-*' } | Select-Object -First 1
+    if (-not $Pod) {
+        "No running api pod: check 'oc login' and that 'oc get pods -n $Namespace' lists one."
+        exit 1
+    }
+    $Database = (Get-Database (oc exec -n $Namespace $Pod -- printenv CII_MONGO_URL) `
+        (oc exec -n $Namespace $Pod -- printenv CII_MONGO_DB)) + " (the OpenShift api pod's)"
+    $About = $Request | oc exec -i -n $Namespace $Pod -- sh -c "cd /app && python - --out $Body"
+    $Failed = $LASTEXITCODE -ne 0
+    if (-not $Failed) {
+        $Screen = $Proof | oc exec -i -n $Namespace $Pod -- python - --base-url $Gateway --body $Body `
+            --key-env CII_SCENARIO_CHAT_API_KEY
+        $Code = $LASTEXITCODE
+        oc exec -n $Namespace $Pod -- rm -f $Body | Out-Null
+    }
+}
+if ($Failed) {
+    "TSG's Create scenario request could not be read from $Database. The reason is above."
+    "Run a Create scenario first, today, on the TSG that uses this database."
     exit 1
 }
-$About = $Request | oc exec -i -n $Namespace $Pod -- sh -c "cd /app && python - --out $Body"
-if ($LASTEXITCODE -ne 0) {
-    "TSG's Create scenario request could not be read (the reason is above). Run a Create scenario first, today."
-    exit 1
-}
-$Screen = $Proof | oc exec -i -n $Namespace $Pod -- python - --base-url $Gateway --body $Body `
-    --key-env CII_SCENARIO_CHAT_API_KEY
-$Code = $LASTEXITCODE
-oc exec -n $Namespace $Pod -- rm -f $Body | Out-Null
 if ($Code -gt 2 -or -not $Screen) {
     $Screen = @($Screen) + "(the proof did not run: the reason is above)"
 }
-$Screen = @('=' * 100) + @($About) + @($Screen)
+$Screen = @(('=' * 100), " TSG's database: $Database") + @($About) + @($Screen)
 $File = "ai_limit_proof_$(Get-Date -Format yyyyMMdd_HHmmss).txt"
 $Screen | Out-File $File -Encoding utf8
 $Screen

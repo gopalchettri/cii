@@ -92,6 +92,21 @@ $ProgramEnv = @{
     service_mapper = @{ CII_WORKER_METRICS_PORT = '9103' }
     reaper = @{ CII_WORKER_METRICS_PORT = '9104' }
 }
+# A click inside a console window starts QuickEdit's text selection ("Select" in its title), and Windows then
+# holds every line the program writes: the program stops at its next log line until Esc. Each window turns
+# QuickEdit off for itself (clears ENABLE_QUICK_EDIT_MODE 0x40, sets ENABLE_EXTENDED_FLAGS 0x80), leaving the
+# user's own console setting alone; Edit > Mark still selects text, on purpose.
+$QuickEditOff = @'
+Add-Type -Namespace Tsg -Name ConsoleInput -MemberDefinition @"
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
+"@
+$consoleInput = [Tsg.ConsoleInput]::GetStdHandle(-10); $mode = [uint32]0
+if ([Tsg.ConsoleInput]::GetConsoleMode($consoleInput, [ref]$mode)) {
+    [void][Tsg.ConsoleInput]::SetConsoleMode($consoleInput, [uint32](($mode -bor 0x80) -band 0xFFBF))
+}
+'@
 
 # PowerShell also takes the typographic apostrophes as quotes: each is doubled, or a folder such as
 # "Gopal's" typed with a curly apostrophe would break the window's command.
@@ -208,8 +223,8 @@ function Start-Window([string]$Name) {
     if ($ProgramEnv.Contains($Name)) {
         foreach ($entry in $ProgramEnv[$Name].GetEnumerator()) { $settings += "`$env:$($entry.Key) = $(Quote $entry.Value); " }
     }
-    $inner = "`$Host.UI.RawUI.WindowTitle = 'TSG $Name'; Set-Location -LiteralPath $(Quote $Root); $settings" +
-             "& $(Quote $Python) $arguments"
+    $inner = "$QuickEditOff`n`$Host.UI.RawUI.WindowTitle = 'TSG $Name'; Set-Location -LiteralPath $(Quote $Root); " +
+             "$settings& $(Quote $Python) $arguments"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
     return Start-Process powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-EncodedCommand', $encoded `
         -WorkingDirectory $Root -PassThru

@@ -8,6 +8,7 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from app.ai import UnreadableAiAnswer
@@ -29,7 +30,15 @@ from app.domain.shared.names import replace_codes_with_names
 from app.domain.shared.parallel import run_in_parallel
 from app.models.library.library import LibraryActor, ThreatLibrary
 from app.models.scenario.asset_context import FrozenContext
-from app.models.scenario.plan import ActorPick, Drop, PlannedActor, PlannedThreat, Verdict
+from app.models.scenario.plan import (
+    ActorPick,
+    AttackPlace,
+    Drop,
+    PlannedActor,
+    PlannedThreat,
+    ThreatFindings,
+    Verdict,
+)
 from app.search.service import LibrarySearch
 from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -350,7 +359,8 @@ def test_a_proposal_repeating_a_library_threat_is_dropped_at_the_threat_threshol
 
 
 def test_one_library_threat_found_under_two_categories_is_one_threat() -> None:
-    """One verdict for all its own categories: one record, its highest impact, its main category's path."""
+    """One verdict for all its own categories: one record on its main category's path, ranked by its highest
+    impact (owner, 14 Nov: its worst harm, not its main category's)."""
     tampering_low = {"name": "Tampering", "impact": "LOW", "reason": "It encrypts SYS1."}
     denial_high = {"name": "Denial of Service", "impact": "HIGH", "reason": "It stops SYS2."}
     gate = judged({RANSOMWARE.name: ["SYS1", "SYS2"]})
@@ -361,9 +371,12 @@ def test_one_library_threat_found_under_two_categories_is_one_threat() -> None:
             for verdict in gate(user)["verdicts"]
         ]
     }
-    (ransomware,) = finder(chat).find_threats(CONTEXT).threats
+    findings = finder(chat).find_threats(CONTEXT)
+    (ransomware,) = findings.threats
     assert ransomware.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and ransomware.systems == (321, 322)
-    assert ransomware.impact == 3 and ransomware.main_place.impact == 1  # the path is its main category's
+    assert ransomware.impact == 3 and ransomware.main_place.impact == 1  # the main category is LOW
+    (path,) = build_plan(findings, 0)["paths"]
+    assert (path["category"], path["impact"]) == (S.TAMPERING, 3)  # told as Tampering, ranked as HIGH
 
 
 def test_an_ai_threat_named_like_a_library_threat_of_its_type_is_that_library_threat() -> None:
@@ -392,6 +405,51 @@ def test_an_ai_rewording_of_the_same_type_is_folded_by_meaning() -> None:
     kept = plan_module._merge_duplicate_threats(threats, embeddings, CONTEXT, [])  # type: ignore[arg-type]
     assert [threat.key for threat in kept] == ["ai:b", "ai:c", "lib:1"] and kept[2].systems == (321, 322)
     assert embeddings.calls == ["compare"]  # both sides alike, never as search queries
+
+
+def test_a_library_near_copy_is_joined_into_the_stronger_one_wherever_the_gate_placed_each() -> None:
+    """Owner, 14 Nov: no duplicate scenarios. Two library threats of one type that mean the same are one
+    threat, whichever systems the gate gave each (asset 1166's near copies shared no system in 22 of 142
+    stored runs): the weaker joins the stronger, which keeps its main category and place and gains the other's
+    categories and systems. Of another type, for another asset type (the library's OT variant of the attack,
+    as asset 1166's closest pair), or meaning another attack, both stay. The names are as alike as that pair
+    (0.81) and the next closest (0.65)."""
+    vectors = {
+        "Insider misuses shared accounts": [1.0, 0.0, 0.0],
+        "Insider abuses stale accounts": [0.81, 0.586, 0.0],
+        "Admin floods the historian": [0.65, 0.0, 0.76],
+    }
+    embeddings = SimpleNamespace(embed_texts_to_compare=lambda texts: np.array([vectors[t] for t in texts]))
+    stronger = planned("lib:1", "Insider misuses shared accounts", (321,), impact=3, likelihood=3)
+    weaker = planned("lib:2", "Insider abuses stale accounts", (322,), categories=(S.SPOOFING,))
+    other_type = planned("lib:3", "Insider misuses shared accounts", (321, 322), type_id=5)
+    other_asset = planned("lib:4", "Insider abuses stale accounts", (321, 322), asset_type="OT")
+    other_attack = planned("lib:5", "Admin floods the historian", (321, 322))
+    drops: list[Drop] = []
+    threats = [stronger, weaker, other_type, other_asset, other_attack]
+    kept = plan_module._merge_duplicate_threats(threats, embeddings, CONTEXT, drops)  # type: ignore[arg-type]
+    assert [threat.key for threat in kept] == ["lib:1", "lib:3", "lib:4", "lib:5"]
+    joined = kept[0]
+    assert joined.categories == (S.TAMPERING, S.SPOOFING) and joined.systems == (321, 322)
+    assert drops == [Drop("lib:2", weaker.name, None, PlanStage.MERGE, PlanLoss.MERGED, "into lib:1")]
+
+
+def test_a_threat_ranks_by_its_worst_harm_not_its_main_kinds() -> None:
+    """Owner, 14 Nov: "Password spray" led with Leaking data MEDIUM and also had Gaining extra rights HIGH:
+    its risk is HIGH x MEDIUM likelihood (6), not MEDIUM x MEDIUM (4), so it ranks above a MEDIUM-only threat
+    of HIGH likelihood (6, and lower harm), which ranked first by the main kind alone."""
+    medium_first = AttackPlace((321,), (321,), 2, 70.0)
+    worst_high = planned("lib:1", "Password spray", impact=3, likelihood=2, main_place=medium_first)
+    only_medium = planned(
+        "lib:2",
+        "Phishing",
+        impact=2,
+        likelihood=3,
+        main_place=dataclasses.replace(medium_first, confidence=90.0),
+    )
+    plan = build_plan(ThreatFindings([only_medium, worst_high], landscape=_LANDSCAPE), 0)
+    ranked = sorted(plan["paths"], key=lambda path: path["rank"])
+    assert [(path["steps"][0], path["impact"]) for path in ranked] == [("lib:1", 3), ("lib:2", 2)]
 
 
 def test_attackers_are_chosen_only_for_threats_left_after_the_merges(monkeypatch: pytest.MonkeyPatch) -> None:

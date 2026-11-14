@@ -209,5 +209,4 @@ def planned(key: str, name: str, systems: tuple[int, ...] = (321,), **fields: An
     } | fields
     values.setdefault("reasons", dict.fromkeys(values["categories"], reason))
     values.setdefault("main_place", AttackPlace(systems, systems, values["impact"], values["confidence"]))
-    values.setdefault("gate_order", values["categories"])
     return PlannedThreat(key, catalogue_id, name=name, systems=systems, **values)

@@ -70,10 +70,9 @@ class PlannedThreat:
     reasons: dict[StrideCategory, str] = field(default_factory=dict)  # the gate's reason per category
     main_place: AttackPlace = AttackPlace()  # where its main category's attack path goes
     systems: tuple[int, ...] = ()  # every system it involves
-    impact: int = 0  # the highest of its categories
+    impact: int = 0  # the highest of its categories: what ranks it
     confidence: float = 0.0
     likelihood: int = 0  # how likely a listed attacker would attempt it; the higher on a merge
-    gate_order: tuple[StrideCategory, ...] = ()  # the categories the gate accepted, in its order
     actor_pick: ActorPick | None = None  # the gate's pick, until code decides
     actions: tuple[str, ...] = ()  # the acts its name states, systems by name: the plan's threats[].actions
     linked_actors: tuple[LibraryActor, ...] = ()  # those the library links to it (an AI threat: to its type)

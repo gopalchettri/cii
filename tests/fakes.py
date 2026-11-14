@@ -206,8 +206,17 @@ class FakeEmbeddings:
         return self._vectors(texts)
 
     def embed_texts_to_compare(self, texts: list[str]) -> np.ndarray:
+        """Shared known words make texts close; each distinct text also gets a faint direction of its own, so
+        two texts sharing no known word are never the same."""
         self.calls.append("compare")
-        return self._vectors(texts)
+        own = {text: column for column, text in enumerate(dict.fromkeys(texts))}
+        rows = [
+            [1.0 if word in text.casefold() else 0.0 for word in self.words]
+            + [0.01 if own[text] == column else 0.0 for column in range(len(own))]
+            for text in texts
+        ]
+        matrix = np.array(rows, dtype=np.float32).reshape(len(texts), len(self.words) + len(own))
+        return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
 
     def _vectors(self, texts: list[str]) -> np.ndarray:
         rows = [[1.0 if word in text.casefold() else 0.0 for word in self.words] + [0.01] for text in texts]

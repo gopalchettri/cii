@@ -145,7 +145,7 @@ DOCUMENT_EMBEDDERS = {
     "search/external_intelligence/evidence_index.py:build_index",
 }
 #: The only function that compares texts of one kind with each other (both sides plain).
-TEXT_COMPARERS = {"domain/scenario/plan.py:_merge_reworded_ai_threats"}
+TEXT_COMPARERS = {"domain/scenario/plan.py:_merge_reworded_threats"}
 
 
 def _functions() -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
