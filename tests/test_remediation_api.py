@@ -252,7 +252,7 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     elsewhere = plan_url(first, "status").replace(run, "another-run")
     assert client.get(elsewhere, headers=_identity(api_key)).status_code == 404
     empty = remediation_plan_service(
-        library=fake_library(()), send_job=lambda *args: world["sent"].append(args)
+        library=fake_library(()), send_job=lambda *args: world["sent"].append(args[:3])
     )
     client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: empty  # type: ignore[attr-defined]
     refused = _request(client, api_key, generated(_scenario()))

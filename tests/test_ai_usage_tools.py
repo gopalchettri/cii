@@ -116,15 +116,6 @@ def test_the_previous_releases_call_texts_are_carried_over_once() -> None:
     assert kept.collection.find_one({"_id": 0})["response"] == "kept"
 
 
-def test_a_job_re_sent_across_the_rollout_finds_its_answer_in_the_previous_collection() -> None:
-    """Review 2026-10-29: a job whose first delivery ran on an old pod kept its answers in tsg_ai_calls; its
-    re-send on a new pod asked the AI again. Mutation: read only tsg_ai_call_texts."""
-    job = {"record_id": uuid.uuid4().hex, "epoch": 1, "job_task": "tsg_find_threats"}
-    previous = {**job, "prompt_hash": "h", "outcome": "ok", "response": '{"n": 1}', "model": "kimi"}
-    get_mongodb()["tsg_ai_calls"].insert_one({**previous, "created_at": utc_now()})
-    assert AiCallRepository().find_ok_response(job, "h") == ('{"n": 1}', "kimi")
-
-
 def test_a_busy_add_up_is_one_line_for_the_operator_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

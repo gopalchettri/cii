@@ -4,6 +4,7 @@ work_control_repository.py)."""
 
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any
 
 from pymongo import ReturnDocument
@@ -20,6 +21,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, LeaseLost
 from app.core.logging import current_job_origin, current_request_id
+from app.data_access.base import build_index
 
 _CLOCK_SKEW = timedelta(seconds=Lease.CLOCK_SKEW_SECONDS)
 #: What a claim reads of every job: its lease carries them, with the task's own fields.
@@ -170,10 +172,13 @@ class JobRepository:
     def create_indexes(self) -> None:
         """The reaper's two scans and its failed-jobs count, each one index read, and GET /v1/admin/jobs's
         newest-first list."""
-        self._records.create_index([("status", 1), ("job.lease_until", 1)])
-        self._records.create_index([("updated_at", -1)])
-        self._records.create_index([("status", 1), ("job.due_at", 1)])
-        self._records.create_index([("status", 1), ("finished_at", 1)])
+        for keys in (
+            [("status", 1), ("job.lease_until", 1)],
+            [("updated_at", -1)],
+            [("status", 1), ("job.due_at", 1)],
+            [("status", 1), ("finished_at", 1)],
+        ):
+            build_index(self._records, keys, partial(self._records.create_index, keys))
 
     def claim_job(
         self,

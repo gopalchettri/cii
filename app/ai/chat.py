@@ -1,5 +1,5 @@
 """Chat gateway: JSON answers from the module's model, one corrective re-ask for a task that checks its
-answer, and one record per call (metrics, log line, audit copy in tsg_ai_calls)."""
+answer, and one record per call (metrics, log line, audit copy in tsg_ai_call_texts)."""
 
 import dataclasses
 from collections.abc import Callable

@@ -207,6 +207,33 @@ def test_the_delivery_claim_returns_the_runs_request_id_and_the_delivery_runs_un
     assert run["published"] == [(record_id, "req-run")]
 
 
+def test_a_delivery_with_nothing_left_to_map_reads_no_context(
+    run: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redundant delivery read the run's whole frozen asset context with its lease claim before finding
+    nothing to map; the context is read once, when a scenario is claimed."""
+    record_id, contexts = run["record_id"], []
+
+    def spy(method: Any) -> Any:
+        def read(self: ThreatScenarioSessionRepository, *args: Any, **kwargs: Any) -> Any:
+            found = method(self, *args, **kwargs)
+            if isinstance(found, dict) and "context" in found:
+                contexts.append(method.__name__)
+            return found
+
+        return read
+
+    sessions = ThreatScenarioSessionRepository
+    for name in ("get", "claim_controls_delivery"):
+        monkeypatch.setattr(sessions, name, spy(getattr(sessions, name)))
+    assert _deliver(record_id) == 1
+    assert contexts == ["get"]  # one read, once a scenario was claimed
+    assert "Control system" in _controls(record_id)["query"]  # the run's own context: its asset type
+    contexts.clear()
+    assert _deliver(record_id) == 0  # the run's mapping is done: nothing waits
+    assert contexts == []
+
+
 @pytest.mark.parametrize(
     ("retries", "retried"), [(Controls.MAX_MESSAGE_RETRIES - 1, True), (Controls.MAX_MESSAGE_RETRIES, False)]
 )

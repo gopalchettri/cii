@@ -553,12 +553,20 @@ def _rewrite_failed_scenarios(
 def _ask_writer(
     chat: ChatModel, task: AiTask, slots: list[tuple[str, WriterBrief, str]]
 ) -> dict[str, dict[str, Any]]:
-    """Returns each slot's answer item, from one call or the halves the size check makes."""
+    """Returns each slot's answer item; a cut-off half's slots stay unanswered, a cut-off whole set raises."""
     items: dict[str, dict[str, Any]] = {}
     build_prompt = functools.partial(build_writer_prompt, system_prompt=build_writer_system_prompt())
-    for part in within_call_limit(slots, build_prompt, task) if slots else ():
+    parts = within_call_limit(slots, build_prompt, task) if slots else []
+    for part in parts:
         read_answer = functools.partial(_read_writer_answer, asked={label for label, _, _ in part})
-        items |= ask_ai_and_check(chat, task, build_prompt(part), read_answer, reuse_earlier_answer=True)
+        try:
+            items |= ask_ai_and_check(chat, task, build_prompt(part), read_answer, reuse_earlier_answer=True)
+        except TruncatedAiAnswer as error:
+            if len(parts) == 1:
+                raise
+            log.warning(
+                LogEvent.WRITER_PATH_FAILED, ai_task=task, message=str(error), error_type=type(error).__name__
+            )
     return items
 
 

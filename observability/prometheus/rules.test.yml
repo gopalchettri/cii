@@ -415,7 +415,7 @@ tests:
           - exp_labels: { severity: warning }
             exp_annotations:
               summary: "More than 10 % of AI calls fail (no answer, or an answer that could not be used)."
-              description: "Open the TSG dashboard, \"Why the AI did not answer\"; see docs/UAT_LLM_TIMEOUT_RUNBOOK.md."
+              description: "Open the TSG dashboard, \"Why the AI did not answer\"; see deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row."
 
   - interval: 1m
     input_series:
@@ -712,7 +712,7 @@ tests:
           - exp_labels: { severity: warning, reason: ai_timed_out }
             exp_annotations:
               summary: "The AI service timed out 20 times in 10 minutes."
-              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (docs/UAT_LLM_TIMEOUT_RUNBOOK.md). Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and the network. Server error: ask the gateway's team."
+              description: "Jobs wait and try again. Timed out or busy: the AI gateway is overloaded (deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row). Cannot be reached: check the model's base URL (a module's CII_<MODULE>_CHAT_BASE_URL), the proxy and the network. Server error: ask the gateway's team."
 
   # TSG's own limiter refusing (no AI slot or request turn free within the wait) is not the gateway not answering.
   - interval: 1m

@@ -20,14 +20,13 @@ from app.core.constants import (
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Conflict, DuplicateRecord, Forbidden, NotFound
 from app.data_access.admin.audit_repository import AuditRepository
 from app.data_access.jobs.job_repository import new_job
-from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
 from app.data_access.service_mapper.mapping_repository import MappingRepository, request_key
-from app.domain.service_mapper.catalog import build_catalog
 from app.domain.service_mapper.views import mapping_list_item, mapping_status, mapping_view
 from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
 from app.domain.shared.idempotency import duplicate_request
 from app.domain.shared.names import name_match_key
 from app.models.admin.api_clients import Principal
+from app.models.service_mapper.catalog import CatalogSnapshot
 from app.models.service_mapper.contract import (
     CreateMappingRequest,
     DecisionFailure,
@@ -45,13 +44,25 @@ _GENERATING = (Status.QUEUED, Status.RUNNING)
 _TRIES = 3  # reads of a mapping another call changed at the same moment
 
 
+#: What a mapping list item shows (mapping_list_item): never a run's dependencies.
+_LIST_FIELDS = (
+    "status",
+    "job.epoch",
+    "generations_done",
+    "result.selected_service",
+    "request",
+    "created_at",
+    "updated_at",
+)
+
+
 class ServiceMapperService:
     def __init__(
         self,
         mappings: MappingRepository,
         settings: Settings,
         send_job: Callable[[TaskName, str, int], bool],
-        catalog: ServiceCatalogRepository,
+        catalog: Callable[[], CatalogSnapshot],  # the catalog, through the 60 s cache the worker uses
         audit: AuditRepository,
         publish: Callable[[str], None],
     ) -> None:
@@ -97,6 +108,8 @@ class ServiceMapperService:
             if record["status"] in _GENERATING:
                 if record["input_hash"] != input_hash:
                     raise _still_generating(record)
+                claim = request_key(key_hash, record["job"]["epoch"], input_hash, utc_now())
+                self._mappings.add_request_key(record["_id"], claim)  # so a retry of this key replays it
                 return _accepted(record), False  # the same Generate again while it runs: no second job
             if started := self._run_again(principal, record, request, input_hash, key_hash):
                 return started
@@ -144,7 +157,7 @@ class ServiceMapperService:
     def list_entity_services(self, principal: Principal, entity_id: int) -> EntityServices:
         if entity_id != principal.entity_id:
             raise Forbidden(MapperMessage.NOT_YOUR_ENTITY)
-        catalog = build_catalog(self._catalog.load())
+        catalog = self._catalog()
         services = []
         for service in catalog.services:
             if any(link.entity_id == entity_id for link in service.entities):
@@ -169,6 +182,7 @@ class ServiceMapperService:
         if entity_id is not None and entity_id != principal.entity_id:
             raise Forbidden(MapperMessage.NOT_YOUR_ENTITY)
         records = self._mappings.list(
+            fields=_LIST_FIELDS,
             sort="-created_at",
             skip=offset,
             limit=limit,
@@ -245,8 +259,7 @@ class ServiceMapperService:
             and record.get("last_run_found") == 0
             and record["input_hash"] == input_hash
             and record.get("limits") == self._limits()
-            and (record.get("result") or {}).get("catalog_version")
-            == build_catalog(self._catalog.load()).version
+            and (record.get("result") or {}).get("catalog_version") == self._catalog().version
         )
 
     def _keyed(self, principal: Principal, key_hash: str) -> dict | None:

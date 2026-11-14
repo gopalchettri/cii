@@ -619,3 +619,46 @@ def test_an_ai_threats_key_and_path_come_from_its_raw_name_while_its_name_says_t
     (path,) = [path for path in build_plan(findings, 0)["paths"] if path["steps"] == [ai_threat.key]]
     seed = f"{ai_threat.key}@{S.ELEVATION_OF_PRIVILEGE}@system:321"
     assert path["path_id"] == hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+
+class _StoringEmbeddings(FakeEmbeddings):
+    """As the embedding gateway: a search query's vector is stored, so only a call with a text not stored yet
+    asks the model; `model_calls` is (corpus, new texts) per such call."""
+
+    def __init__(self) -> None:
+        super().__init__(WORDS)
+        self.stored: set[tuple[str, str]] = set()
+        self.model_calls: list[tuple[str, int]] = []
+
+    def embed_search_queries(self, texts: list[str], corpus: str) -> np.ndarray:
+        new = {(corpus, text) for text in texts} - self.stored
+        if new:
+            self.model_calls.append((corpus, len(new)))
+            self.stored |= new
+        return super().embed_search_queries(texts, corpus)
+
+
+def test_gap_fill_embeds_every_proposal_s_threat_and_type_in_one_call_each() -> None:
+    """The Start path: three categories the AI filled made three threat and three type embedding calls, one
+    category at a time; each search now reads the vectors embedded ahead of the loop."""
+    proposals = {
+        S.ELEVATION_OF_PRIVILEGE: _PROPOSAL,
+        S.SPOOFING: _PROPOSAL | {"threat_type": "Social engineering", "threat": "Badge cloning at the door"},
+        S.REPUDIATION: _PROPOSAL | {"threat_type": "Insider misuse", "threat": "Operator denies a command"},
+    }
+    chat = planner_chat({proposal["threat"]: ["SYS1"] for proposal in proposals.values()})
+    chat.responders[AiTask.GAP_FILL] = gap_fill(proposals)
+    names = ("Privilege misuse", "Social engineering", "Insider misuse")
+    rerank = FakeRerankModel({(name, name): 90.0 for name in names})
+    library = SimpleNamespace(threat_library=ThreatLibrary(THREATS, ACTORS), control_library=(), stamp=())
+    embeddings = _StoringEmbeddings()
+    search = LibrarySearch(SimpleNamespace(get_loaded_libraries=lambda: library), embeddings)  # type: ignore[arg-type]
+    findings = ThreatFinder(chat, search, rerank, embeddings).find_threats(CONTEXT)  # type: ignore[arg-type]
+    matched = {threat.key: threat.type_id for threat in findings.threats if threat.catalogue_id is None}
+    assert matched == {  # as before: each proposal planned under its own library type
+        "ai:engineering workstation takeover": 5,
+        "ai:badge cloning at the door": 2,
+        "ai:operator denies a command": 3,
+    }
+    searched = [call for call in embeddings.model_calls if call[0] in ("threat", "threat_type")]
+    assert searched == [("threat", 3), ("threat_type", 3)]

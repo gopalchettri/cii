@@ -18,7 +18,7 @@ class AiUsageCollection(StrEnum):
 
 
 #: Where the previous release kept the AI call texts (expired after 14 days): copied in by the ai_usage_tools
-#: copy-texts command, and read for the answers of jobs re-sent across the rollout.
+#: copy-texts command (the rollback path in deploy/DEPLOYMENT_GUIDE.md).
 PREVIOUS_AI_CALL_TEXTS: Final = "tsg_ai_calls"
 
 

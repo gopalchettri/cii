@@ -362,7 +362,8 @@ notepad deploy\configmap.yaml
 `CII_CORS_ORIGINS` already holds UAT's UI address, `https://threatgen-api.apps.dda-desc-az1-01.desccii.local`.
 Change it only if the platform UI's address changes: https, the host name (and `:port` if it has one), no path
 and no `/` at the end. The app compares it letter for letter with the browser's address. Several addresses:
-separate them with commas. Never `*`: the app refuses to start with it.
+separate them with commas. Never `*`: any web site could then call the API from a browser (the app refuses it
+only when `CII_ENV` is `prod`; UAT's is `uat`).
 
 Alert email (optional): leave the `CHANGE_ME_` words in the `alertmanager.yml` part as they are, and no email is
 sent; alerts still show in Grafana and at `/alertmanager`, and Alertmanager logs a failed send for each. To send
@@ -370,6 +371,15 @@ email: in the `alertmanager.yml` part, the line `receiver:` under `route:` picks
 (the company mail relay) or `gmail`. In that sender's lines, replace each `CHANGE_ME_` word: the relay's
 `host:port` (company-smtp only), the sender address and login, and the recipients (comma-separated). A
 relay that does not offer STARTTLS needs the line `require_tls: false` added under its `smarthost:` line.
+
+If you set up email, check that one really arrives (after step 13, once Alertmanager runs). Send a test alert:
+
+```text
+oc -n ai-common exec deploy/alertmanager -- amtool --alertmanager.url=http://localhost:9093/alertmanager alert add TsgTestAlert severity=warning --annotation=summary="Test: TSG alert email works"
+```
+
+**You should see:** the email within a few minutes. None: read `oc -n ai-common logs deploy/alertmanager` for the
+failed send (the relay's address, login or the network rule to it).
 Make the same change in `observability\alertmanager\alertmanager.yml` (the tests fail when the two differ). Mail does not go
 through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common` (Part 1).
 Save and close Notepad, then:
@@ -1139,6 +1149,20 @@ oc -n ai-common get deployment -l part-of=tsg-monitoring -o name | ForEach-Objec
 oc -n ai-threatgen rollout restart deployment -l app=monitoring-proxy
 oc -n ai-threatgen get deployment -l app=monitoring-proxy -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
 ```
+
+### Back up and restore MongoDB (the DBA's)
+
+Every run, scenario, plan, service mapping, AI usage row and the audit live only in MongoDB (`CII_MONGO_DB`, UAT
+`cii_uat`); SQL Server holds the libraries and the asset data. Nothing else keeps a copy of them.
+
+- **Back up** every day with the DBA's own tooling, for example a scheduled
+  `mongodump --db cii_uat --gzip --archive=<file>` or the platform's volume snapshots, and keep the copies off the
+  MongoDB server.
+- **Test a restore** once a release: restore the newest copy into a scratch database
+  (`mongorestore --gzip --archive=<file> --nsFrom='cii_uat.*' --nsTo='cii_uat_restore.*'`) and check that its
+  `tsg_sessions` holds that day's runs.
+- After a restore into the live database, restart the API and the workers. The reaper takes over any job a
+  restored record shows as queued or running once its lease has run out.
 
 ### Roll back to the previous release
 

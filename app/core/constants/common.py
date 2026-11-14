@@ -217,6 +217,8 @@ class LogEvent(StrEnum):
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     # collMod refused while the stored rule requires fields the code no longer writes: every insert fails
     MONGODB_VALIDATOR_STALE = "mongodb.validator_stale"
+    # a start-up index build outlasted the socket timeout: the server goes on building it, start-up goes on
+    MONGODB_INDEX_STILL_BUILDING = "mongodb.index_still_building"
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused

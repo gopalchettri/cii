@@ -196,7 +196,7 @@ def test_a_job_takes_the_answers_any_of_its_deliveries_already_got_when_asked_to
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With reuse_earlier_answer, an ask the job (record, epoch, stage) already got an ok answer to is read
-    from tsg_ai_calls (no AI call, no new record), whichever delivery got it: a reaper re-send has a new
+    from tsg_ai_call_texts (no AI call, no new record), whichever delivery got it: a reaper re-send has a new
     Celery task_id. Not when the check rejects that answer (the job retries to get another), nor for another
     epoch or stage, nor outside a leased job (the API)."""
     calls: list[int] = []

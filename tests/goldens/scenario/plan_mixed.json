@@ -22,6 +22,24 @@
     "call": "query",
     "corpus": "threat",
     "texts": [
+     "Insider erases audit trail on SYS1",
+     "Ransomware exfiltrates historian records",
+     "Contractor escalates rights on SYS1 HMI"
+    ]
+   },
+   {
+    "call": "query",
+    "corpus": "threat_type",
+    "texts": [
+     "Insider misuse",
+     "Data theft",
+     "Privilege misuse"
+    ]
+   },
+   {
+    "call": "query",
+    "corpus": "threat",
+    "texts": [
      "Insider erases audit trail on SYS1"
     ]
    },

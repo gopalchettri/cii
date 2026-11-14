@@ -85,6 +85,10 @@ _SCENARIO_INDEXES = (
         "keys": [(field, ASCENDING) for field in ("session_id", *_COUNTED_FIELDS)],
         "name": "run_counts",
     },
+    {  # count_current_scenarios of an entity reads this index only; decision second: its filter is one range
+        "keys": [(field, ASCENDING) for field in ("entity_id", "decision", "status", "superseded_by")],
+        "name": "entity_counts",
+    },
 )
 
 
@@ -271,6 +275,18 @@ class ThreatScenarioRepository(MongoRepository):
         pipeline = [{"$match": match}, {"$project": fields}, {"$group": group}]
         found = next(self.collection.aggregate(pipeline), None)
         return {key: int((found or {}).get(key, 0)) for key in group if key != "_id"}
+
+    def count_current_scenarios(self, **where: Any) -> int:
+        """Served current versions matching `where`, counted over entity_counts or run_counts alone."""
+        newest = {"$eq": [{"$ifNull": ["$superseded_by", None]}, None]}
+        current = {"$or": [newest, {"$ne": ["$decision", Decision.PENDING]}]}
+        # count(current=True) would read each document: an index never answers its superseded_by null test
+        match = self.filter({**where, "served": True})
+        fields = {"_id": 0, "status": 1, "superseded_by": 1, "decision": 1}
+        group = {"_id": None, "total": _count(current)}
+        pipeline = [{"$match": match}, {"$project": fields}, {"$group": group}]
+        found = next(self.collection.aggregate(pipeline), None)
+        return int((found or {}).get("total", 0))
 
     def list_scenarios_for_duplicate_check(self, session_id: str) -> list[Record]:
         """The scenario session's finished scenarios (each attack path's newest version and an older accepted

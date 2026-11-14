@@ -52,7 +52,7 @@ class PlanJob:
             plan["paths"], get_settings().initial_set_size
         )  # [] when none
         trace = build_plan_trace(findings, plan, len(asked))
-        changes = _plan_changes(plan, len(selected), time.perf_counter() - started) | {"plan_trace": trace}
+        changes = _plan_changes(plan, trace, len(selected), time.perf_counter() - started)
         if asked:
             hand_over(lease, TaskName.WRITE_SCENARIOS, changes | {"job.batch": batch, "job.set": asked})
         else:
@@ -61,13 +61,17 @@ class PlanJob:
         log.info(LogEvent.PLANNER_FUNNEL, **trace["counts"], landscape_cut=trace["landscape_cut"])
 
 
-def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:
-    """The plan and what the run shows from it: the counts."""
+def _plan_changes(
+    plan: dict[str, Any], trace: dict[str, Any], selected: int, seconds: float
+) -> dict[str, Any]:
+    """The plan, its trace and what the run shows from them: the counts."""
     return {
         "plan": plan,
+        "plan_trace": trace,
         "step": Step.SCENARIOS,
         "counts.planned": selected,
         "counts.remaining": selected,
+        "counts.not_judged": trace["counts"]["not_judged"],
         "timings.threats_s": round(seconds, 1),
     }
 

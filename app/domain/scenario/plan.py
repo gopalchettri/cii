@@ -595,6 +595,9 @@ def _add_ai_threats_for_empty_categories(
     proposals = (
         calls.ask_ai_reusing_earlier_answer(AiTask.GAP_FILL, prompt, read, list(map(str, categories))) or {}
     )
+    applying = [found for found in map(proposals.get, categories) if found and found["applies"]]
+    threats, types = [found["threat"] for found in applying], [found["threat_type"] for found in applying]
+    calls.snapshot.embed_gap_fill_queries(threats, types)  # each category's search reads its stored vector
     candidates: list[tuple[PlannedThreat, _GateQuestion]] = []
     for category in categories:
         proposal = proposals.get(category)

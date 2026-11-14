@@ -6,13 +6,14 @@ from collections.abc import Iterator
 
 import pytest
 from pymongo import InsertOne
-from pymongo.errors import OperationFailure, WriteError
+from pymongo.errors import ExecutionTimeout, NetworkTimeout, OperationFailure, WriteError
 from structlog.testing import capture_logs
 
 from app.core.constants import Collection, LogEvent
 from app.core.database import get_mongodb
 from app.core.exceptions import DuplicateRecord
 from app.data_access.base import SCHEMA_VERSION_FIELD, MongoRepository
+from app.data_access.jobs.job_repository import JobRepository
 
 SCRATCH = "tsg_test_base_repository"
 
@@ -259,3 +260,43 @@ def test_a_validator_that_cannot_be_read_is_a_warning_and_start_up_goes_on() -> 
         (LogEvent.MONGODB_VALIDATOR_NOT_APPLIED, "warning")
     ]
     assert server.commands == []
+
+
+class _SlowIndexServer:
+    """A collection whose first index build outlasts the client's socket timeout (a new index on a large
+    collection) or the server's time limit; `error` is what that build raises."""
+
+    name = "tsg_ai_usage"
+
+    def __init__(self, error: Exception) -> None:
+        self.error, self.asked = error, []
+
+    def create_index(self, keys: object, **_: object) -> str:
+        self.asked.append(keys)
+        if len(self.asked) == 1:
+            raise self.error
+        return str(keys)
+
+
+@pytest.mark.parametrize("error", [NetworkTimeout("timed out"), ExecutionTimeout("exceeded time limit")])
+def test_an_index_still_building_at_the_timeout_never_stops_start_up(error: Exception) -> None:
+    """Every pod built its indexes at start under the 30 s socket timeout: a new index on tsg_ai_usage took
+    minutes, so every pod timed out, restarted, joined the same build and timed out again."""
+    server = _SlowIndexServer(error)
+    indexes = [{"keys": "slow"}, {"keys": "fast"}]
+    repository = MongoRepository(server, indexes=indexes, ttl=[("expires_at", 60)])  # type: ignore[arg-type]
+    with capture_logs() as logs:
+        repository.create_indexes()
+    assert server.asked == ["slow", "fast", "expires_at"]
+    assert [(line["event"], line["log_level"], line["collection"]) for line in logs] == [
+        (LogEvent.MONGODB_INDEX_STILL_BUILDING, "warning", "tsg_ai_usage")
+    ]
+    jobs = _SlowIndexServer(error)
+    JobRepository(jobs).create_indexes()  # type: ignore[arg-type]
+    assert len(jobs.asked) == 4  # the reaper's indexes after the slow one are still asked for
+
+
+def test_any_other_index_build_failure_still_stops_start_up() -> None:
+    server = _SlowIndexServer(OperationFailure("Index build failed", code=86))
+    with pytest.raises(OperationFailure):
+        MongoRepository(server, indexes=[{"keys": "slow"}]).create_indexes()  # type: ignore[arg-type]

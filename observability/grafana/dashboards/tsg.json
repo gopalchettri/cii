@@ -4785,7 +4785,7 @@
       "id": 21,
       "type": "table",
       "title": "Slowest AI steps",
-      "description": "How long 95 % of the AI calls of each step took, slowest first. Above a minute: the AI gateway is slow (see docs/UAT_LLM_TIMEOUT_RUNBOOK.md).",
+      "description": "How long 95 % of the AI calls of each step took, slowest first. Above a minute: the AI gateway is slow (see deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

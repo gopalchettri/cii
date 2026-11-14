@@ -44,7 +44,7 @@ from tests.test_control_mapping import (  # noqa: F401 - mapping_run: a fixture 
     _ScoresByText,
     mapping_run,
 )
-from tests.test_deploy import _all_deployments
+from tests.test_deploy import _all_deployments, _settings
 
 #: The queues whose tasks hold a lease keep_lease_alive renews: their workers hand it back when they stop.
 LEASED_QUEUES = {Queue.THREATS, Queue.SCENARIOS, Queue.CONTROLS, Queue.REMEDIATION, Queue.SERVICEMAPPER}
@@ -294,6 +294,29 @@ def test_a_worker_told_to_stop_hands_its_jobs_back_before_its_pod_is_killed(
         queues = set(command[command.index("-Q") + 1].split(",")) if "-Q" in command else set()
         if queues & LEASED_QUEUES:  # handed back with time left to write and send before the kill
             assert spec["terminationGracePeriodSeconds"] >= Worker.HAND_BACK_AFTER_SECONDS + 20, deployment
+
+
+#: The queues whose jobs ask a chat model, and the module whose timeout bounds one call.
+CHAT_QUEUES = {
+    Queue.THREATS: "SCENARIO",
+    Queue.SCENARIOS: "SCENARIO",
+    Queue.REMEDIATION: "REMEDIATION",
+    Queue.SERVICEMAPPER: "SERVICE_MAPPER",
+}
+
+
+def test_a_worker_that_asks_the_ai_lets_a_call_begun_before_its_hand_back_finish() -> None:
+    """A call begun just before the hand-back may run its module's whole timeout: a shorter grace kills it
+    mid-call and the next delivery asks the AI again (glm-5.3 waits up to 180 s, the grace was 120)."""
+    settings = _settings()
+    for deployment in _all_deployments():
+        spec = deployment["spec"]["template"]["spec"]
+        command = spec["containers"][0].get("command") or []
+        queues = set(command[command.index("-Q") + 1].split(",")) if "-Q" in command else set()
+        for queue in queues & CHAT_QUEUES.keys():
+            timeout = int(settings[f"CII_{CHAT_QUEUES[queue]}_CHAT_TIMEOUT_SECONDS"])
+            needed = Worker.HAND_BACK_AFTER_SECONDS + timeout + 10
+            assert spec["terminationGracePeriodSeconds"] >= needed, (deployment["metadata"]["name"], needed)
 
 
 def test_a_job_waiting_too_long_for_another_job_is_failed(published: list[str]) -> None:

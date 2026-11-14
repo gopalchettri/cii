@@ -1,5 +1,9 @@
 # UAT: fixing the LLM time-outs, step by step
 
+> **Historical (14 Nov 2026).** This records the one-time proxy fix of October 2026; its projects, deploy file
+> and limiter key are out of date. For a slow or refusing AI gateway today, see deploy/DEPLOYMENT_GUIDE.md
+> Part 5, the 429 row and "The budget a 429 names".
+
 ## What is wrong, in one paragraph
 
 In UAT every AI call times out. The pods send all outside traffic to the company proxy

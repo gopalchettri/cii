@@ -80,7 +80,7 @@ def _manual_service(
     return remediation_plan_service(
         library=fake_library(controls),
         assets=AssetRepository(StoredProcedureClient(engine)),
-        send_job=lambda *args: world["sent"].append(args),
+        send_job=lambda *args: world["sent"].append(args[:3]),  # its priority: test_remediation_busy_entity
         publish_remediation_status=world["published"].append,
     )
 

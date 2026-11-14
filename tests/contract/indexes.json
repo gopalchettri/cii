@@ -648,6 +648,26 @@
      ]
     ]
    },
+   "entity_counts": {
+    "key": [
+     [
+      "entity_id",
+      1
+     ],
+     [
+      "decision",
+      1
+     ],
+     [
+      "status",
+      1
+     ],
+     [
+      "superseded_by",
+      1
+     ]
+    ]
+   },
    "entity_id_1_created_at_-1": {
     "key": [
      [

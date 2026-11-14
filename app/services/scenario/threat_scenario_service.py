@@ -318,7 +318,7 @@ class ThreatScenarioService:
         records = self._scenarios.list(fields="shown", sort=sort, skip=offset, limit=limit, **shown)
         if (records or offset == 0) and len(records) < limit:
             return records, offset + len(records)
-        return records, self._scenarios.count(**shown)
+        return records, self._scenarios.count_current_scenarios(**where)
 
     def _other_versions(self, records: list[dict[str, Any]], with_replaced: bool) -> list[dict[str, Any]]:
         """In one tsg_scenarios read for a page: the accepted versions of its attack paths and,

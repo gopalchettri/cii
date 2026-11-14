@@ -4015,9 +4015,12 @@ stateDiagram-v2
   (`job.handed_back`); a worker-controls scenario goes back to `queued` with its controls attempt returned,
   one `tsg_map_controls` per run. A stalled or cancelled job is not handed back. The old delivery stops at
   its next AI call or wait. Celery itself never puts a job back (`task_reject_on_worker_lost` is off).
-- **Queue order:** each queue is two Redis lists, served in priority order. A run's next stage (`hand_over`), a
-  retry and a reaper re-send go first (`Worker.NEXT_STAGE_PRIORITY`, 0); every other send waits behind them
-  (`Worker.NEW_WORK_PRIORITY`, 3). So a run already started finishes before new runs take the workers.
+- **Queue order:** each queue is three Redis lists, served in priority order. A run's next stage (`hand_over`), a
+  retry and a reaper re-send go first (`Worker.NEXT_STAGE_PRIORITY`, 0); new work waits behind them
+  (`Worker.NEW_WORK_PRIORITY`, 3). So a run already started finishes before new runs take the workers. A
+  remediation plan or version of an entity with 2 or more others queued or running goes last
+  (`Worker.BUSY_ENTITY_PRIORITY`, 6), so one entity's burst never holds another entity's plan back; the reaper's
+  re-send after 15 minutes still goes first.
   `tsg_job_queue_wait_seconds{task, module}` records how long each claimed job waited after it was due; a
   takeover of an expired lease counts from when that lease ran out.
 - **Retries:** temporary errors (AI outage, MongoDB or Redis down, Redis read-only after a failover

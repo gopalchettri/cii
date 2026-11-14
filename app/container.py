@@ -359,7 +359,7 @@ def get_service_mapper_service() -> ServiceMapperService:
         get_mapping_repository(),
         get_settings(),
         send_job,
-        get_service_catalog_repository(),
+        get_service_catalog_provider().snapshot,
         get_audit_repository(),
         publish_mapping_status,
     )

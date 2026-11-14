@@ -119,6 +119,12 @@ class LibrarySnapshot:
         """Embed control queries in one call ahead of their searches, which then read the stored vectors."""
         self._embeddings.embed_search_queries(list(queries), EmbeddingCorpus.CONTROL)
 
+    def embed_gap_fill_queries(self, threats: Sequence[str], threat_types: Sequence[str]) -> None:
+        """Embed gap-fill threats and types in one call each ahead of their per-category searches."""
+        if threats:
+            self._embeddings.embed_search_queries(list(threats), EmbeddingCorpus.THREAT)
+            self._embeddings.embed_search_queries(list(threat_types), EmbeddingCorpus.THREAT_TYPE)
+
     def find_actors(
         self, queries: Sequence[str], top_k: int, allowed_ids: Sequence[Collection[int] | None] | None = None
     ) -> list[list[tuple[LibraryActor, float]]]:

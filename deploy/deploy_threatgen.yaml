@@ -122,7 +122,7 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 220         # a stopping worker finishes its AI call: 90 s hand-back + one kimi call (120 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
@@ -184,7 +184,7 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 220         # a stopping worker finishes its AI call: 90 s hand-back + one kimi call (120 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
@@ -308,7 +308,7 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 280         # a stopping worker finishes its AI call: 90 s hand-back + one glm call (180 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
@@ -370,7 +370,7 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 280         # a stopping worker finishes its AI call: 90 s hand-back + one glm call (180 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
