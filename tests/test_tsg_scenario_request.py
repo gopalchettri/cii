@@ -90,7 +90,7 @@ def _run(
 
 def test_the_biggest_first_ask_is_rebuilt_as_tsg_sent_it(monkeypatch, tmp_path, capsys) -> None:
     """A relevance check of 5,000 input tokens asks for 15,240 with its 10,240 answer cap: more than a writer
-    call of 9,000 and its 6,144. Mutation: calls ranked by input alone, a re-ask, the fallback model's call or
+    call of 9,000 and its 6,144. Mutation: calls ranked by input alone, a re-ask, another model's call or
     one whose system prompt is not found taken, the fingerprint not checked, TSG's options not sent, litellm's
     own options left in the body, not today's Create scenario rows read."""
     unknown = "A system prompt TSG no longer has."

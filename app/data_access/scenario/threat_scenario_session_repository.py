@@ -11,7 +11,6 @@ from app.core.clock import utc_now
 from app.core.constants import (
     Collection,
     Controls,
-    PlanMessage,
     RunActionKind,
     RunActionOutcome,
     RunClash,
@@ -197,17 +196,12 @@ class ThreatScenarioSessionRepository(MongoRepository):
         plan_figures: dict[str, int],
         also: dict[str, Any] | None = None,
     ) -> None:
-        """Save attack path states, plan figures, scenario counts and plan note on tsg_sessions in ONE write
-        fenced on the job lease; counts newer-wins: after a newer count the plan is written without counts.
+        """Save attack path states, plan figures and scenario counts on tsg_sessions in ONE write fenced on
+        the job lease; counts newer-wins: after a newer count the plan is written without counts.
         LeaseLost when the delivery no longer owns the job."""
         counted_at = utc_now()  # taken before the aggregate: a later count always counts as newer
         scenario_counts = self._scenarios.count_scenarios_of_session(lease.record_id)
-        note = PlanMessage.PLAN_NOTE.format(
-            planned=plan_figures["planned"],
-            written=scenario_counts["written"],
-            remaining=plan_figures["remaining"],
-        )
-        plan = dict(also or {}) | {"plan_note": note, "updated_at": counted_at}
+        plan = dict(also or {}) | {"updated_at": counted_at}
         plan |= {f"counts.{key}": value for key, value in plan_figures.items()}
         for number, state in enumerate(attack_path_states.values()):
             plan |= {f"plan.paths.$[p{number}].{key}": value for key, value in state.items()}

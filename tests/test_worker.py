@@ -178,7 +178,7 @@ def test_a_delivery_that_takes_over_a_job_reuses_the_ai_answers_the_job_already_
     a new epoch of the record asks again."""
     model = "litellm_proxy/kimi-k2.5"
     records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    chat = ai.ChatModel([(model, CHAT_MODEL_PROFILES[model])], "http://ai.invalid", "key", records)
+    chat = ai.ChatModel(model, CHAT_MODEL_PROFILES[model], "http://ai.invalid", "key", records)
     calls: list[int] = []
     reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))], usage=None)
     monkeypatch.setattr(litellm, "completion", lambda **_: calls.append(1) or reply)

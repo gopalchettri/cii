@@ -94,10 +94,8 @@ def test_a_search_record_stores_as_plain_json() -> None:
 
 
 def test_recorded_products_hold_plain_strings() -> None:
-    products = RecordedProducts(
-        (RecordedProduct(vendors=("Acme",), products=("Acme Gateway",), versions=("1.2",)),)
-    )
-    assert products.rows[0].versions == ("1.2",)
+    products = RecordedProducts((RecordedProduct(vendors=("Acme",), products=("Acme Gateway",)),))
+    assert products.rows[0].products == ("Acme Gateway",)
 
 
 def test_the_runtime_switch_can_only_turn_intelligence_off() -> None:

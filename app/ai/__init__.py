@@ -1,7 +1,7 @@
 """AI model gateways via litellm — the only door to AI models. One module per kind of model:
 chat (JSON answers), embeddings (cached vectors) and rerank (relevance scores); `common` holds what they
 share.
-Retries, fallback, timeouts, metrics and call records live here and nowhere else."""
+Retries, timeouts, metrics and call records live here and nowhere else."""
 
 import logging
 import os

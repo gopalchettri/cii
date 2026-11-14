@@ -64,7 +64,7 @@ def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
 
     monkeypatch.setattr(litellm, "completion", complete)
     calls = AiCallRepository(get_mongodb()["test_ai_calls"])
-    model = ai.ChatModel([("test-chat", _ROOMY_CHAT)], "http://ai.invalid", "key", calls)
+    model = ai.ChatModel("test-chat", _ROOMY_CHAT, "http://ai.invalid", "key", calls)
     threats = [_plan_threat(), _plan_threat(key="lib:298", name="Historian wipe")]
     briefs = [(f"SC{place}", _brief_of(threat)) for place, threat in enumerate(threats, start=1)]
     job = {"record_id": uuid.uuid4().hex, "epoch": 1, "task": TaskName.WRITE_SCENARIOS}

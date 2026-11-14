@@ -223,7 +223,7 @@ def _real_chat(monkeypatch: pytest.MonkeyPatch, *replies: str) -> tuple[ChatMode
 
     monkeypatch.setattr(litellm, "completion", provider)
     records = SimpleNamespace(create=lambda record: None)
-    return ChatModel([("test-chat", _JSON_CHAT)], "http://ai.invalid", "key", records), sent
+    return ChatModel("test-chat", _JSON_CHAT, "http://ai.invalid", "key", records), sent
 
 
 # --- control references and implementation status

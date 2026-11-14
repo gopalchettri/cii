@@ -335,7 +335,6 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     assert sorted(threat["name"] for threat in plan["threats"]) == sorted([LOG_WIPE.name, ADMIN_ABUSE.name])
     best = min(plan["paths"], key=lambda path: path["rank"])["path_id"]
     assert run["job"]["set"] == [best] and run["job"]["batch"] == [{"path_id": best, "replaces": None}]
-    assert run["plan_note"] == PlanMessage.PLAN_NOTE.format(planned=2, written=0, remaining=2)
     assert run["counts"]["planned"] == 2 and sent == [(TaskName.WRITE_SCENARIOS, record_id, 1)]
     # What made the plan, so a later reviewer can tell why this plan and not another.
     assert set(plan["made_with"]) == {"chat_models", "embedding_model", "rerank_model", "library"}
@@ -369,9 +368,7 @@ def test_a_plan_with_no_path_ends_the_run_at_once(
         False,
         RunActionOutcome.COMPLETE,
     )
-    assert run["plan"]["paths"] == [] and run["plan_note"] == PlanMessage.PLAN_NOTE.format(
-        planned=0, written=0, remaining=0
-    )
+    assert run["plan"]["paths"] == []
     assert sent == []
 
 

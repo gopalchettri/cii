@@ -137,8 +137,8 @@ def _gateways(settings: Settings) -> set[tuple[str, str]]:
     """(LITELLM_MODEL_PREFIX or "", host) of every AI model's base URL: which hosts the AI calls go to."""
     models = [(settings.embedding_model, settings.embedding_base_url)]
     models += [(settings.rerank_model, settings.rerank_base_url)]
-    for chat in (module_chat(settings, module) for module in ChatModule):  # each module's main and fallback
-        models += [(chat.model, chat.base_url), (chat.fallback_model, chat.base_url)]
+    chats = [module_chat(settings, module) for module in ChatModule]
+    models += [(chat.model, chat.base_url) for chat in chats]
     return {
         (LITELLM_MODEL_PREFIX if model.startswith(LITELLM_MODEL_PREFIX) else "", host)
         for model, url in models

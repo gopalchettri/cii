@@ -135,7 +135,7 @@ class JobControlMessage(StrEnum):
 class Generation:
     # paths one write job writes at once, not a scenario limit (CII_SCENARIOS_WRITTEN_AT_ONCE: 6)
     WRITER_BATCH: Final = TUNING.scenarios_written_at_once
-    MAX_PATH_ATTEMPTS: Final = 5  # failed or blocked this often, a path is abandoned and never served
+    MAX_PATH_ATTEMPTS: Final = 5  # outages this often give a path up; any other failure or block, at once
     MAX_SUPPORTING_SYSTEMS: Final = 0  # supporting systems a run takes; 0 = unlimited
 
 

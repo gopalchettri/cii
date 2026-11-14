@@ -42,7 +42,6 @@ from app.core.constants import (
     LibraryStatus,
     LogEvent,
     PathProblem,
-    PlanCheckStatus,
     Precedent,
     PromptVersion,
     Route,
@@ -743,13 +742,6 @@ def build_scenario_card(
         "title_key": name_match_key(draft.title),
         "content": content,
         "findings": [finding.build_record() for finding in written.findings],
-        "plan_check": {  # stored field: always unchecked; code builds the cited sentence
-            "status": PlanCheckStatus.UNCHECKED,
-            "problems": [],
-            "unsupported": [],
-            "same_threat": None,
-            "same_impact": None,
-        },
         "rewritten": False,
     }
     if status == ScenarioStatus.DONE:

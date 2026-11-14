@@ -73,13 +73,9 @@ SECRET_NAMES = {
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
 STORES = ("CII_REDIS_URL", "CII_REDIS_CELERY_BROKER_URL", "CII_MONGO_URL", "CII_DB_DSN")
 DEFAULT_PORTS = {"redis": "6379", "rediss": "6379", "mongodb": "27017", "mssql+pyodbc": "1433"}
-#: Each AI model and the base URL its calls go to: each module's main and fallback chat model on its own.
+#: Each AI model and the base URL its calls go to: each module's chat model on its own.
 GATEWAYS = (
-    *(
-        (f"CII_{module.upper()}_CHAT_{model}", f"CII_{module.upper()}_CHAT_BASE_URL")
-        for module in ChatModule
-        for model in ("MODEL", "FALLBACK_MODEL")
-    ),
+    *((f"CII_{module.upper()}_CHAT_MODEL", f"CII_{module.upper()}_CHAT_BASE_URL") for module in ChatModule),
     ("CII_EMBEDDING_MODEL", "CII_EMBEDDING_BASE_URL"),
     ("CII_RERANK_MODEL", "CII_RERANK_BASE_URL"),
 )

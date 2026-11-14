@@ -13,7 +13,6 @@ from app.core.constants import (
     ChatModule,
     Lease,
     LogEvent,
-    PlanMessage,
     RunActionOutcome,
     Status,
     Step,
@@ -63,10 +62,9 @@ class PlanJob:
 
 
 def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:
-    """The plan and what the run shows from it: the counts and the plan note."""
+    """The plan and what the run shows from it: the counts."""
     return {
         "plan": plan,
-        "plan_note": PlanMessage.PLAN_NOTE.format(planned=selected, written=0, remaining=selected),
         "step": Step.SCENARIOS,
         "counts.planned": selected,
         "counts.remaining": selected,
@@ -77,10 +75,8 @@ def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[s
 def _made_with(library_stamp: dict[str, str | None]) -> dict[str, Any]:
     """The models and library version the plan was made with, frozen on the plan for the reviewer."""
     settings = get_settings()
-    chat = module_chat(settings, ChatModule.SCENARIO)
-    chat_models = [chat.model] + ([chat.fallback_model] if chat.fallback_model else [])
     return {
-        "chat_models": chat_models,
+        "chat_models": [module_chat(settings, ChatModule.SCENARIO).model],
         "embedding_model": settings.embedding_model,
         "rerank_model": settings.rerank_model,
         "library": library_stamp,

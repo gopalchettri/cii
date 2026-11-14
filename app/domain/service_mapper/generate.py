@@ -65,7 +65,7 @@ def generate_answer(
     def dropped_items(answer: dict[str, Any]) -> list[str]:
         return answer_problems(request, GeneratedAnswer.model_validate(answer), catalog)
 
-    with one_ask():  # every attempt of it (retries, the fallback model, a re-ask): one ask in tsg_ai_usage
+    with one_ask():  # every attempt of it (retries, a re-ask): one ask in tsg_ai_usage
         answer = chat.ask_for_checked_json(  # a retry of this generation takes the answers it already got
             AiTask.SERVICE_MAPPER, _SYSTEM, prompt, check, dropped_items, reuse_earlier_answer=True
         )

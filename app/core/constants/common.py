@@ -150,8 +150,6 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
-    AiTask.THREAT_ACTIONS: 0.0,
-    AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
     AiTask.REPAIR_SCENARIO: None,
@@ -165,10 +163,8 @@ REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
 CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.RELEVANCE_GATE: TUNING.answer_tokens_relevance_gate,
     AiTask.GAP_FILL: TUNING.answer_tokens_gap_fill,
-    AiTask.THREAT_ACTIONS: TUNING.answer_tokens_threat_actions,
     AiTask.WRITE_SCENARIO: TUNING.answer_tokens_write_scenario,
     AiTask.REPAIR_SCENARIO: TUNING.answer_tokens_repair_scenario,
-    AiTask.PLAN_CHECK: TUNING.answer_tokens_plan_check,
     AiTask.REMEDIATION_PLAN: TUNING.answer_tokens_remediation_plan,
     AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
 }

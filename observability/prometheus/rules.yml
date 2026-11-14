@@ -262,7 +262,7 @@ groups:
           summary: "{{ $labels.model }} requests have waited more than 30 s for their turn (95 %) for 10 minutes; jobs slow down."
           description: >-
             More work is sent to {{ $labels.model }} than its requests-a-minute setting allows (a module's
-            CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE,
+            CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE,
             CII_EMBEDDING_REQUESTS_PER_MINUTE or CII_RERANK_REQUESTS_PER_MINUTE; a module's tokens:
             CII_<MODULE>_CHAT_TOKENS_PER_MINUTE). Ask the gateway admin whether that model takes more, then raise
             its setting; the dashboard's 429 panel shows refusals.

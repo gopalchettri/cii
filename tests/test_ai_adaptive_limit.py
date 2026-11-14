@@ -20,7 +20,7 @@ from structlog.testing import capture_logs
 
 from app import ai, container
 from app.ai import slots as slots_module
-from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS, AiRequestRate, AiSlots
+from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, AiRequestRate, AiSlots
 from app.core.constants import (
     AiLimits,
     AiOutage,
@@ -46,13 +46,6 @@ FIRST = ChatModelProfile(
     supports_json_mode=True,
     reasoning_effort="none",
     context_tokens=20_100,
-)
-FALLBACK = ChatModelProfile(
-    max_output_tokens=50,
-    timeout_seconds=9,
-    supports_json_mode=False,
-    reasoning_effort=None,
-    context_tokens=20_050,
 )
 
 
@@ -321,7 +314,7 @@ def test_each_ai_gateway_frees_its_slot_while_it_waits_out_a_429(
     )
     calls = {
         "chat": lambda: ai.ChatModel(
-            [("first", FIRST)], "http://ai.invalid", "key", AiCallRepository(records), slots=one_slot
+            "first", FIRST, "http://ai.invalid", "key", AiCallRepository(records), slots=one_slot
         ).ask_for_checked_json(TASK, "system", "user", lambda _answer: []),
         "rerank": lambda: ai.RerankModel(
             "m", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key", slots=one_slot
@@ -442,23 +435,19 @@ def test_four_calls_waiting_out_429s_never_stop_the_other_calls(monkeypatch: pyt
     assert len(during_the_wait) == 8, answered  # every other call answered while the four waited
 
 
-def test_a_429_from_the_fallback_model_limits_every_ai_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A module's main and fallback model share its slots: a 429 from either sets the one limit on them. A
-    request no model answered never raises it."""
+def test_a_429_from_the_chat_model_limits_every_ai_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 from a module's chat model sets the one limit on its slots. A request no try answered never
+    raises it."""
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (0, 0, 0, 0))
     monkeypatch.setattr(AiLimits, "RETRY_FIRST_WAIT_SECONDS", 0)
 
-    def answer(**kwargs: object) -> None:
-        if kwargs["model"] == "first":
-            raise litellm.Timeout("no answer in time", model="first", llm_provider="openai")
-        raise litellm.RateLimitError("busy", llm_provider="openai", model="fallback")
+    def answer(**_: object) -> None:
+        raise litellm.RateLimitError("busy", llm_provider="openai", model="first")
 
     monkeypatch.setattr(litellm, "completion", answer)
     slots = _limited()
     records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    chat = ai.ChatModel(
-        [("first", FIRST), ("fallback", FALLBACK)], "http://ai.invalid", "key", records, slots=slots
-    )
+    chat = ai.ChatModel("first", FIRST, "http://ai.invalid", "key", records, slots=slots)
     with pytest.raises(Unavailable):
         chat.ask_for_checked_json(TASK, "system", "user", lambda _answer: [])
     assert get_redis_client().hget(AiLimits.SLOTS_LIMIT_KEY, "limit") == str(AiLimits.ADAPTIVE_LIMIT_FLOOR)
@@ -503,7 +492,7 @@ def test_the_dashboard_shows_the_limit_in_force_and_every_call_in_flight(
     pair per pool: the search calls' and each module's, each on its own."""
     search, scenario = _limited(), AiSlots(get_redis_client(), 0, 30, f"{AiLimits.SLOTS_KEY}:scenario")
     _provide("get_ai_slots", search, monkeypatch)
-    _provide("get_module_ai_slots", {ChatModule.SCENARIO: (scenario, UNLIMITED_AI_SLOTS)}, monkeypatch)
+    _provide("get_module_ai_slots", {ChatModule.SCENARIO: scenario}, monkeypatch)
     for kept in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # set_up_worker changes them
         monkeypatch.setattr(container, kept, getattr(container, kept))
     for builder in ("create_all_indexes", "build_ai_gateways"):
@@ -552,7 +541,7 @@ def test_a_429_in_one_module_never_slows_another_module_or_the_search_calls(
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_JITTER", 0)
     kimi = "litellm_proxy/kimi-k2.5"
     lines = {"chat_model": kimi, "chat_requests_per_minute": 600, "chat_tokens_per_minute": 0}
-    lines |= {"chat_fallback_model": "", "max_concurrent_ai_calls": 0}
+    lines |= {"max_concurrent_ai_calls": 0}
     update = {f"{module}_{name}": value for module in ChatModule for name, value in lines.items()}
     settings = container.get_settings().model_copy(update=update)
     monkeypatch.setattr(container, "get_settings", lambda: settings)

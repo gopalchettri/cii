@@ -98,7 +98,8 @@ def test_a_waiter_that_stopped_asking_leaves_the_line_and_a_refused_one_leaves_a
     cancelled, patient = (AiSlots(redis, cap=1, wait_seconds=5) for _ in range(2))  # in arrival order
     with ExitStack() as held:
         held.enter_context(patient.hold_slot(TASK))
-        with pytest.raises(Unavailable), patient.hold_slot(TASK, waits=False):
+        refused = AiSlots(redis, cap=1, wait_seconds=0)  # no wait at all
+        with pytest.raises(Unavailable), refused.hold_slot(TASK):
             pass
         assert redis.zcard(f"{own_slots_key}:line") == 0
         with lease_lost_signal("cancelled-run") as lost:

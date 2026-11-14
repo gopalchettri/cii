@@ -244,7 +244,6 @@ class PlanMessage(StrEnum):
         "No threat type in the library links an active threat actor, so no scenario can name its attacker. "
         "Link at least one active threat actor to a threat type and start the run again."
     )
-    PLAN_NOTE = "{planned} attack paths selected; {written} written, {remaining} still to write, set by set."
     AI_COULD_NOT_ANSWER = "The AI could not answer. Start a new session later."
     OTHER_KINDS = "It applies as {kinds} only."  # a category the gate left out of a threat that applies
 

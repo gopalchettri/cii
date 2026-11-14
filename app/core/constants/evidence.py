@@ -10,13 +10,15 @@ from app.core.constants.scenario import FindingSeverity
 class Applicability(StrEnum):
     """Whether a vulnerability applies to the asset; a CVE alone never makes it confirmed."""
 
-    CONFIRMED = "confirmed"  # the asset's vendor, product and version match the record
-    UNKNOWN = "unknown"  # the asset's product or version is not recorded, or the record names none
+    CONFIRMED = (
+        "confirmed"  # older stored evidence only: no product version is recorded, so none is confirmed
+    )
+    UNKNOWN = "unknown"  # the asset's product matches, is not recorded, or the record names none
     NOT_APPLICABLE = "not_applicable"  # the asset's vendor or product differs
 
 
 class EvidenceRole(StrEnum):
-    """What an evidence entry proves: only a weakness confirmed in the asset's own product is direct."""
+    """What an evidence entry proves: every entry is context now; direct is kept for older stored evidence."""
 
     DIRECT = "direct"
     CONTEXT = "context"
@@ -87,7 +89,6 @@ class TextCleaning:
     DECODED_TEXT_RUN: Final = 10  # ... or one with this many printable bytes in a row
     ADJACENT_SCRIPTS: Final = ("CJK ", "HIRAGANA ", "KATAKANA ", "HANGUL ")  # written beside Latin, no space
     UNIT_LETTERS: Final = "\N{GREEK SMALL LETTER MU}\N{GREEK CAPITAL LETTER OMEGA}"  # micro and ohm
-    VERSION_CHARS: Final = 64  # a product version longer than this is not compared
 
 
 class FactWordLimits:
@@ -278,11 +279,10 @@ class StoryFindingMessage(StrEnum):
 
 
 class RecordedFields:
-    """The asset and system facts naming a vendor, product or version, read to tie evidence to the asset."""
+    """The asset and system facts naming a vendor or product, read to tie evidence to the asset."""
 
     VENDOR_KEYS: Final = ("vendor_name",)
     PRODUCT_KEYS: Final = ("technology_used", "operating_system")
-    VERSION_KEYS: Final = ("product_version", "firmware_version", "software_version")
 
 
 #: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on: the date and the threshold found there

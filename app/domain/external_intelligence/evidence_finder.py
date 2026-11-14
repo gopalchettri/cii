@@ -234,8 +234,7 @@ class EvidenceSelector:
             published=hit.data.get("published") or hit.data.get("date_added") or None,
             modified=hit.modified,
             fetched_at=hit.fetched_at,
-            # Direct only when the weakness is confirmed in the asset's own product; else context.
-            role=EvidenceRole.DIRECT if applicability == Applicability.CONFIRMED else EvidenceRole.CONTEXT,
+            role=EvidenceRole.CONTEXT,  # no product version is recorded, so nothing is confirmed in the asset
             mitigations=self._writer.safe_mitigations(hit),  # the control search reads them
             joined=hit.joined,
             nearest=nearest,

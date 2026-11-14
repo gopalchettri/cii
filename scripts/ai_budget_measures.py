@@ -44,6 +44,7 @@ APP_TIMES = {
     "controls_s": "tsg_map_controls",
 }
 REFUSED_ERROR = "RateLimitError"  # a 429's error_type on its usage row
+SEARCH_TASKS = ("embed", "rerank")  # every other task is a chat, retired ones on old rows too
 NOT_ANSWERED = ("unavailable", "error")  # outcomes of an attempt that got no answer
 ANSWERING, FAILING, REFUSED = "AI answering", "AI failures other than 429", "Refused by the limit (429)"
 IDLE = "No request in flight"  # the rest: waiting to be sent (pacing, a call slot) or the app's own work
@@ -95,7 +96,7 @@ def attempts_of(rows: list[dict], caps: Mapping[str, int]) -> list[Attempt]:
         refused, start = row.get("error_type") == REFUSED_ERROR, end - (row.get("seconds") or 0.0)
         found.append(
             Attempt(module, api, request, session, ask, stage, row.get("attempt") or 0, row["task"],
-                    row["task"] in caps, row["outcome"], row.get("error_type") or "", refused,
+                    row["task"] not in SEARCH_TASKS, row["outcome"], row.get("error_type") or "", refused,
                     tokens_in + tokens_out, held, start, end)
         )  # fmt: skip
     return sorted(found, key=lambda attempt: attempt.start)

@@ -636,7 +636,6 @@ def _new_run_record(
         "context": context.to_record(),
         "status": Status.QUEUED,
         "step": Step.THREATS,
-        "plan_note": None,
         "last_action": running_action(RunActionKind.START, now),
         "counts": dict.fromkeys(_RUN_COUNTS, 0),
         "job": new_job(TaskName.FIND_THREATS, 1, now),

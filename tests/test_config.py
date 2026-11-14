@@ -63,23 +63,17 @@ def test_each_module_reads_its_own_chat_lines_and_a_missing_one_stops_start_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Owner 2026-10-28: no shared chat lines; each module's are its own, the same or a different model per
-    module. URL, key and model are required. A module's fallback lines count only with a fallback model."""
-    glm, kimi = "litellm_proxy/glm-5.3", "litellm_proxy/kimi-k2.5"
+    module. URL, key and model are required."""
+    glm = "litellm_proxy/glm-5.3"
     monkeypatch.setenv("CII_REMEDIATION_CHAT_MODEL", glm)
     monkeypatch.setenv("CII_REMEDIATION_CHAT_MODEL_THINKING", "true")
     monkeypatch.setenv("CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE", "30")
-    monkeypatch.setenv("CII_REMEDIATION_CHAT_FALLBACK_MODEL", kimi)
-    monkeypatch.setenv("CII_REMEDIATION_MAX_CONCURRENT_FALLBACK_CALLS", "3")
-    monkeypatch.setenv("CII_SERVICE_MAPPER_CHAT_FALLBACK_MODEL", "")
-    monkeypatch.setenv("CII_SERVICE_MAPPER_MAX_CONCURRENT_FALLBACK_CALLS", "3")  # no fallback model: none
     settings = Settings()  # type: ignore[call-arg]
-    scenario, remediation, mapper = (module_chat(settings, module) for module in ChatModule)
+    scenario, remediation, _ = (module_chat(settings, module) for module in ChatModule)
     assert (remediation.model, remediation.model_thinking, remediation.requests_per_minute) == (glm, True, 30)
-    assert (remediation.fallback_model, remediation.max_concurrent_fallback_calls) == (kimi, 3)
     assert (
         scenario.model == settings.scenario_chat_model != glm
     )  # remediation's lines are remediation's alone
-    assert (mapper.fallback_model, mapper.max_concurrent_fallback_calls) == ("", 0)
     without_model = settings.model_dump()
     del without_model["service_mapper_chat_model"]  # its line missing, or blank (a blank line is no line)
     with pytest.raises(ValidationError, match="service_mapper_chat_model"):
@@ -113,7 +107,7 @@ def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
         assert written[f"CII_{field.upper()}"] == str(info.default).lower(), field  # a bool is "false"
     limits = [f for f in ChatModelSettings.model_fields if f.endswith(("_tokens", "_timeout_seconds"))]
     limits = [f for f in limits if not f.endswith("tokens_per_minute")]
-    assert len(limits) == 18
+    assert len(limits) == 9  # 3 a module
     assert all(written[f"CII_{f.upper()}"] == "" and Settings.model_fields[f].default is None for f in limits)
 
 
@@ -130,7 +124,6 @@ def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
         "CII_ANSWER_TOKENS_RELEVANCE_GATE": "2048",
         "CII_AI_BUSY_MAX_WAIT_SECONDS": "25",
         "CII_AI_BUSY_TOTAL_WAIT_SECONDS": "30",
-        "CII_AI_MODEL_COOL_DOWN_SECONDS": "45",
         "CII_AI_BUSY_LIMIT_FLOOR": "2",
         "CII_AI_BUSY_LIMIT_SECONDS": "90",
         "CII_AI_CALL_TOKENS_LIMIT": "15000",
@@ -142,7 +135,7 @@ def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
         "Generation as G, RerankGateLimits as R, ThreatFinding as T; "
         "print(json.dumps([T.AI_BATCHES_AT_ONCE, T.THREATS_PER_QUESTION, G.WRITER_BATCH, R.RERANKS_AT_ONCE, "
         "C[AiTask.RELEVANCE_GATE], L.RATE_LIMITED_MAX_WAIT_SECONDS, L.RATE_LIMITED_TOTAL_WAIT_SECONDS, "
-        "L.MODEL_COOL_DOWN_SECONDS, L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS, "
+        "L.ADAPTIVE_LIMIT_FLOOR, L.ADAPTIVE_LIMIT_TTL_SECONDS, "
         "L.CALL_TOKENS_LIMIT]))"
     )
     restarted = subprocess.run(  # noqa: S603 - our own probe

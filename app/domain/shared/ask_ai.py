@@ -28,8 +28,8 @@ def ask_ai_and_check(
     """What a checked answer means. An answer with problems is asked again once with them; raises
     UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
     `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
-    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, the fallback model, a
-    re-ask) is one ask in tsg_ai_usage."""
+    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, a re-ask) is one ask
+    in tsg_ai_usage."""
     with one_ask():
         answer = chat.ask_for_checked_json(
             task,

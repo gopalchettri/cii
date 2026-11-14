@@ -67,14 +67,14 @@ class AiSlots:
             start_thread_without_lease("ai-slot-leases", self._renew_leases_forever)
 
     @contextmanager
-    def hold_slot(self, task: str, waits: bool = True) -> Iterator[float]:
+    def hold_slot(self, task: str) -> Iterator[float]:
         """Holds one slot while the call runs, giving the seconds it waited; Unavailable when its turn does
-        not come within the wait (none with `waits` false); an answered call raises a 429's limit by 1 /
+        not come within the wait; an answered call raises a 429's limit by 1 /
         limit. LeaseLost before, during and after the wait for a job whose lease was lost (cancelled), so a
         stopped job holds no slot another run needs. `task`: whose refusal tsg_ai_outages_total counts."""
         raise_if_lease_lost()
         call_id, started = uuid.uuid4().hex, time.monotonic()
-        if not self._redis_in_use() or not self._take_slot(call_id, task, waits):
+        if not self._redis_in_use() or not self._take_slot(call_id, task):
             yield time.monotonic() - started
             return
         self._held.add(call_id)
@@ -126,10 +126,10 @@ class AiSlots:
         """A client, and no Redis failure at cap 0 in the last REDIS_SKIP_SECONDS."""
         return self._redis is not None and time.monotonic() >= self._skip_redis_until
 
-    def _take_slot(self, call_id: str, task: str, waits: bool) -> bool:
+    def _take_slot(self, call_id: str, task: str) -> bool:
         """True once recorded, when its turn comes within the wait (else Unavailable). A Redis error with no
         cap never fails the call: False, unrecorded (logged once); with a cap, an outage the job retries."""
-        wait = self.wait_seconds if waits else 0
+        wait = self.wait_seconds
         deadline, pause = time.monotonic() + wait, AiLimits.SLOT_FIRST_PAUSE_SECONDS
         keys = [self._key, self._limit_key, f"{self._key}:line", f"{self._key}:line_polls"]
         stale = AiLimits.SLOT_WAITER_STALE_SECONDS

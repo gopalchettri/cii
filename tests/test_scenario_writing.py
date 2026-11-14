@@ -934,9 +934,6 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     assert view.validation_status == ValidationStatus.OK and view.validation_notes == []
     assert view.threat.threat_name == "Unauthorised firmware update" and view.threat.scope_rank == 3
     assert (view.controls_status, record["rewritten"], view.evidence) == ("queued", False, [])
-    assert record["plan_check"] == {
-        "status": "unchecked", "problems": [], "unsupported": [], "same_threat": None, "same_impact": None,
-    }  # fmt: skip
 
 
 def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None:

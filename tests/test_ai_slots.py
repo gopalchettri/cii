@@ -91,7 +91,7 @@ def test_slots_left_by_a_process_that_died_stop_counting_once_their_lease_ends(
     limiter = AiSlots(get_redis_client(), cap=0, wait_seconds=0.2)
     limiter.note_rate_limited()  # nothing in flight: the floor, 4
     for call in range(AiLimits.ADAPTIVE_LIMIT_FLOOR):
-        limiter._take_slot(f"killed-{call}", TASK, waits=True)  # taken, then never freed nor renewed
+        limiter._take_slot(f"killed-{call}", TASK)  # taken, then never freed nor renewed
     with pytest.raises(Unavailable), limiter.hold_slot(TASK):
         pass
     time.sleep(1)
@@ -370,7 +370,8 @@ def test_a_slot_whose_release_redis_missed_is_freed_by_the_next_call() -> None:
             slots._skip_redis_until = time.monotonic() + 60  # Redis fails while the call runs
         assert redis.zcard(key) == 1  # its release was skipped
         slots._skip_redis_until = 0.0  # Redis is back
-        with slots.hold_slot(AiTask.RELEVANCE_GATE, waits=False):  # no wait at all: refused if not free
+        slots.wait_seconds = 0  # no wait at all: refused if not free
+        with slots.hold_slot(AiTask.RELEVANCE_GATE):
             assert redis.zcard(key) == 1  # itself alone, the missed slot freed
     finally:
         redis.delete(key, f"{key}:limit", f"{key}:line", f"{key}:line_polls")
