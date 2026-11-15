@@ -10,8 +10,8 @@
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 # New release: in every deploy_*.yaml, replace the image tag (31-Oct-2026) with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.2 CPU and 10.5 Gi, with the monitoring
-# proxy (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
+# Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.45 CPU and 10.5 Gi, with the monitoring
+# proxy (deploy_common.yaml) 5.5 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
 # One worker per queue: the quota has no room for a second. A worker update stops the old pod first (maxSurge 0):
 # its queue's jobs wait and nothing is lost, and the API stays ready meanwhile (its readiness needs MongoDB only).
 # A stopping pod still counts against the quota until it has exited (a worker that asks the AI may take 4-5
@@ -274,8 +274,8 @@ spec:                                            # what to run
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
-            requests: { cpu: 100m, memory: 640Mi }   # reserved for the pod
-            limits: { cpu: 250m, memory: 1Gi }     # the most it may use
+            requests: { cpu: 250m, memory: 640Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }     # the most it may use: 10 users' first sets are about 4 CPU-s of control searches (8 s at 500m, 16 s at 250m)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root

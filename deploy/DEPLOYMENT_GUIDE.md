@@ -134,9 +134,9 @@ oc -n ai-threatgen describe quota
 ```
 
 **You should see:** each quota with a `Used` and a `Hard` column. `limits.cpu` and `limits.memory` must have a Hard of
-at least `6` and `12Gi`: TSG's pods there need 5.25 CPU and 10.56 Gi, and an update never adds a pod (Part 6). TSG's
-own pods are part of `Used`: they are replaced, not added. Anything else in `Used` (v1's pods) takes from the same
-quota.
+at least `5.5` and `10.6Gi` (6 CPU and 12 GB or 12Gi both fit): TSG's pods there need 5.5 CPU and 10.56 Gi, and
+an update never adds a pod (Part 6). TSG's own pods are part of `Used`: they are replaced, not added. Anything else
+in `Used` (v1's pods) takes from the same quota.
 
 **If Hard is lower:** send the cluster admin those quota lines and wait for more room before step 12.
 
@@ -1283,7 +1283,7 @@ control mapping never waits behind a busy writer. A run's next step also goes ah
 |---|---|---|---|---|
 | worker-threats | `tsg_threats` | 10 (10 users at once) | 500m / 1 | 1Gi / 1.5Gi |
 | worker-scenarios | `tsg_scenarios` | 10 | 500m / 1 | 1Gi / 2Gi |
-| worker-controls | `tsg_controls` | 4 (each maps 6 scenarios at once) | 100m / 250m | 640Mi / 1Gi |
+| worker-controls | `tsg_controls` | 4 (each maps 6 scenarios at once) | 250m / 500m | 640Mi / 1Gi |
 | worker-remediation | `tsg_remediation` | 12 (10 glm-5.3 plans at once, plus 2) | 250m / 500m | 640Mi / 1Gi |
 | worker-service-mapper | `tsg_servicemapper` | 10 (one mapping, one call) | 250m / 500m | 640Mi / 1Gi |
 | worker-maintenance | `tsg_maintenance` | 3 | 100m / 250m | 768Mi / 1.5Gi |
@@ -1292,7 +1292,7 @@ control mapping never waits behind a busy writer. A run's next step also goes ah
 | beat | - | - | 50m / 200m | 320Mi / 512Mi |
 | monitoring-proxy (Grafana and Flower on the API's address) | - | - | 50m / 50m | 64Mi / 64Mi |
 
-Totals (limits) in ai-threatgen: 5.25 CPU and 10.56 Gi, also during an update: every pod, the two API pods too,
+Totals (limits) in ai-threatgen: 5.5 CPU and 10.56 Gi, also during an update: every pod, the two API pods too,
 stops before its new one starts (maxSurge 0). That leaves no room for a second copy of any worker, so the reaper
 worker runs in ai-common. TSG's monitoring and reaper worker in ai-common: about 2.45 CPU and 4.8 Gi, 22 Gi of
 volumes.
