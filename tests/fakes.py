@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from app.ai import TruncatedAiAnswer, UnreadableAiAnswer
-from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, AiTask
+from app.core.constants import AI_OUTAGE_MESSAGES, CHAT_MAX_OUTPUT_TOKENS, AiOutage, AiTask
 from app.core.exceptions import Unavailable
 from app.models.scenario.write import ScenarioDraft
 
@@ -96,6 +96,10 @@ class FakeChatModel:
     @property
     def max_prompt_chars(self) -> int:
         return self._input_limit
+
+    def get_answer_room(self, task: AiTask) -> int:
+        """The task's configured room: the fake model has no answer limit of its own."""
+        return CHAT_MAX_OUTPUT_TOKENS[task]
 
     def queue(self, task: AiTask, *answers: Answer) -> None:
         self.queued[task].extend(answers)

@@ -383,7 +383,7 @@ class _ThreatFindingCalls:
         batches = [
             list(part)
             for batch in itertools.batched(items, size)
-            for part in within_call_limit(batch, prompt_of, AiTask.RELEVANCE_GATE)
+            for part in within_call_limit(batch, prompt_of, self.chat, AiTask.RELEVANCE_GATE)
         ]
         answered = run_in_shared_pool(self.pool, self._ask_one_batch_which_apply, batches)
         judged = {slot: verdict for batch in answered for slot, verdict in batch.items()}

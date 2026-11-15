@@ -33,9 +33,9 @@ def test_a_cut_off_second_half_keeps_the_first_halfs_scenarios(
 ) -> None:
     """SC1 and SC2 go as one call each; SC2's is cut off. SC1 is kept from its write, and SC2 alone is asked
     in the rewrite: written there, or a failure card when the rewrite is cut off too."""
-    briefs = _briefs(2)
+    briefs, fake = _briefs(2), FakeChatModel()
     one = max(
-        call_tokens(build_writer_prompt([(label, brief, "")]), AiTask.WRITE_SCENARIO)
+        call_tokens(build_writer_prompt([(label, brief, "")]), fake, AiTask.WRITE_SCENARIO)  # type: ignore[arg-type]
         for label, brief in briefs
     )
     monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", one)
@@ -43,7 +43,6 @@ def test_a_cut_off_second_half_keeps_the_first_halfs_scenarios(
     def write(block: str) -> dict[str, Any]:
         return _cut_off(block) if '"Threat 2"' in block else draft_answer(_CLEAN)
 
-    fake = FakeChatModel()
     fake.responders |= {
         AiTask.WRITE_SCENARIO: write,
         AiTask.REPAIR_SCENARIO: (lambda _: draft_answer(_CLEAN)) if rewritten else _cut_off,

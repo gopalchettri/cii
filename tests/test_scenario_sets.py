@@ -322,21 +322,20 @@ def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(
 ) -> None:
     """With the most tokens one call may hold set between one slot's write and two slots', the write goes as
     two calls of one slot each, and every write call stays within the limit."""
-    briefs = _briefs(2)
+    briefs, fake = _briefs(2), FakeChatModel()
     one = max(
-        call_tokens(build_writer_prompt([(label, brief, "")]), AiTask.WRITE_SCENARIO)
+        call_tokens(build_writer_prompt([(label, brief, "")]), fake, AiTask.WRITE_SCENARIO)  # type: ignore[arg-type]
         for label, brief in briefs
     )
     both = build_writer_prompt([(label, brief, "") for label, brief in briefs])
-    assert call_tokens(both, AiTask.WRITE_SCENARIO) > one
+    assert call_tokens(both, fake, AiTask.WRITE_SCENARIO) > one  # type: ignore[arg-type]
     monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", one)
-    fake = FakeChatModel()
     fake.responders |= {AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN)}
     assert len(list(write_scenario_set(fake, briefs))) == 2  # type: ignore[arg-type]
     writes = fake.asked(AiTask.WRITE_SCENARIO)
     assert [_labels(prompt) for prompt in writes] == [["SC1"], ["SC2"]]
     for prompt in writes:
-        assert call_tokens((build_writer_system_prompt(), prompt), AiTask.WRITE_SCENARIO) <= one
+        assert call_tokens((build_writer_system_prompt(), prompt), fake, AiTask.WRITE_SCENARIO) <= one  # type: ignore[arg-type]
 
 
 def test_a_clean_set_costs_one_call_and_an_exact_blocker_still_blocks() -> None:

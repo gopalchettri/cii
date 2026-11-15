@@ -556,7 +556,7 @@ def _ask_writer(
     """Each slot's answer item; a cut-off part's slots stay unanswered, a set cut off in every part raises."""
     items: dict[str, dict[str, Any]] = {}
     build_prompt = functools.partial(build_writer_prompt, system_prompt=build_writer_system_prompt())
-    parts = within_call_limit(slots, build_prompt, task) if slots else []
+    parts = within_call_limit(slots, build_prompt, chat, task) if slots else []
     cut, answered = None, False
     for part in parts:
         read_answer = functools.partial(_read_writer_answer, asked={label for label, _, _ in part})
@@ -650,10 +650,11 @@ def _find_actions_missing_from_story(item: dict[str, Any], actions: tuple[str, .
             elif isinstance(number, float) and number.is_integer() or type(number) is int:
                 found.append(int(number))
         numbers[name_match_key(str(act))] = found
-    missing = [
+    covered = {act for act, found in numbers.items() if any(1 <= number <= count for number in found)}
+    missing = [  # an "X or Y" action is covered whole, or by a number for each of its parts
         act
         for act in actions
-        if not any(1 <= number <= count for number in numbers.get(name_match_key(act), []))
+        if (key := name_match_key(act)) not in covered and not set(key.split(" or ")) <= covered
     ]
     if not missing:
         return []

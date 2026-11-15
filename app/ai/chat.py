@@ -155,6 +155,10 @@ class ChatModel:
         """The most prompt characters the model takes: a batched caller fills its prompts to a share."""
         return self._profile.max_input_chars
 
+    def get_answer_room(self, task: AiTask) -> int:
+        """The answer tokens a first call of `task` asks for: a batched caller counts them in its size."""
+        return max_answer_tokens(self._profile, task, self._thinking)
+
     def _ask_and_read_answer(
         self, task: AiTask, messages: list[dict[str, str]], reuse_check: AnswerChecker | None, capped: bool
     ) -> tuple[dict[str, Any] | None, str, bool]:

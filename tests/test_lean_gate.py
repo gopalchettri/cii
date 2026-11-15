@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from structlog.testing import capture_logs
 
+from app.ai import ChatModel
 from app.core.ai_tuning_settings import AiTuningSettings
 from app.core.constants import (
     CHAT_MAX_OUTPUT_TOKENS,
@@ -19,9 +20,12 @@ from app.core.constants import (
     PlanStage,
     ThreatFinding,
 )
+from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
+from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import build_plan
+from app.models.ai.profiles import ChatModelProfile
 from app.models.library.library import LibraryActor, LibraryThreat
 from tests.fakes import FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
@@ -262,6 +266,24 @@ def test_a_batch_over_the_call_limit_is_sent_as_halves_each_under_it(monkeypatch
     assert [len(items_in(user, "CANDIDATES")) for user in asked] == [3, 3]
     assert all(tokens(user) <= AiLimits.CALL_TOKENS_LIMIT for user in asked)
     assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]
+
+
+@pytest.mark.parametrize("room", [20_480, 10_240])
+def test_the_call_limit_counts_the_answer_room_the_model_is_asked_not_the_room_set(
+    monkeypatch: pytest.MonkeyPatch, room: int
+) -> None:
+    """Laptop, 14 Nov: a gate room of 20,480 set over a model answering at most 12,288 asks 12,288, so 40
+    small threats under a 20,000-token limit stay one question (not 40 of one); 10,240 is unchanged."""
+    monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 40)
+    monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", 20_000)
+    monkeypatch.setitem(CHAT_MAX_OUTPUT_TOKENS, AiTask.RELEVANCE_GATE, room)
+    profile = ChatModelProfile(12_288, 5, True, None, 131_072)  # the model answers at most 12,288
+    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    model = ChatModel("m", profile, "http://ai.invalid", "key", records)  # its answer room only: no call
+    chat = planner_chat({"Threat number 3": ["SYS1"]})
+    monkeypatch.setattr(chat, "get_answer_room", model.get_answer_room)
+    finder(chat, threats=_library(40)).find_threats(CONTEXT)
+    assert [len(items_in(user, "CANDIDATES")) for user in chat.asked(AiTask.RELEVANCE_GATE)] == [40]
 
 
 def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the_card() -> None:
