@@ -74,7 +74,7 @@ $GrafanaUrl = 'http://localhost:3000/grafana/'
 # tsg_controls stays in the job worker: the laptop's local CPU reranker is shared within one process.
 $Programs = [ordered]@{
     api         = @('-m', 'uvicorn', 'app.main:app', '--host', $ApiHost, '--port', '8000')
-    worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '10',
+    worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '30',
                     '-Q', 'tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation', '-n', $WorkerName,
                     '--loglevel=INFO')
     service_mapper = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
@@ -214,7 +214,10 @@ function Get-Arguments([string]$Name) {
         if ($Python.Contains(' ')) { throw "-Reload needs a project path without spaces: $Root" }
         return @('-m', 'watchfiles', '--filter', 'python', "$Python $($Programs.api -join ' ')", 'app')
     }
-    return $Programs[$Name]
+    $arguments = @($Programs[$Name])
+    $threads = if ($Name -eq 'worker') { Get-EnvValue 'CII_WORKER_THREADS' } else { '' }
+    if ($threads) { $arguments[[array]::IndexOf($arguments, '-c') + 1] = $threads }  # more users: .env only
+    return $arguments
 }
 
 function Start-Window([string]$Name) {

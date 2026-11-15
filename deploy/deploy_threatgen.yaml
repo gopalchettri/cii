@@ -127,7 +127,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_threats]   # 2 threads on the tsg_threats queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_threats]   # 10 threads on the tsg_threats queue: 10 users' threat finding at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -189,7 +189,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_scenarios]   # 2 threads on the tsg_scenarios queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_scenarios]   # 10 threads on the tsg_scenarios queue: 10 users' sets at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -251,7 +251,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "1", -Q, tsg_controls]   # 1 thread on the tsg_controls queue (each job maps several scenarios at once)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_controls]   # 4 threads on the tsg_controls queue (each job maps several scenarios at once)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets

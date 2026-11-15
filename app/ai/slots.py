@@ -274,11 +274,13 @@ class AiRequestRate:
         return waited
 
     def pause(self, seconds: float) -> float:
-        """A 429 from this model: its next send time, on every pod, becomes at least `seconds` away, so the
-        calls queued for it wait (wait_for_send_time) instead of each drawing a 429 of its own; `seconds`."""
+        """A 429 from this model: its next send time, on every pod, becomes at least `seconds` away and its
+        burst is used up, so the calls queued for it wait (wait_for_send_time) and then go one interval apart
+        instead of each drawing a 429 of its own; `seconds`."""
         if self._in_use():
             try:
-                self._pause_send_time(keys=[self._key, self._pause_key, self._line_key], args=[seconds])
+                keys = [self._key, self._pause_key, self._line_key]
+                self._pause_send_time(keys=keys, args=[seconds, AiLimits.RATE_BURST_SECONDS])
             except RedisError:  # its own retry still waits; the others may meet a 429 of their own
                 self._redis_failed()
         return seconds

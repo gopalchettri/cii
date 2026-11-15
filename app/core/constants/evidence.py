@@ -57,7 +57,7 @@ class EvidenceLimits:
 
 
 class RerankGateLimits:
-    # remote reranker calls in flight in the whole process (CII_RERANKS_AT_ONCE: 6)
+    # remote reranker calls in flight in the whole process (CII_RERANKS_AT_ONCE: 24 for 10 users at once)
     RERANKS_AT_ONCE: Final = TUNING.reranks_at_once
     LOCAL_RERANKS_AT_ONCE: Final = 1  # the local CPU model predicts one at a time
     CHECK_EVERY_SECONDS: Final = 2.0  # a waiter checks its job's lease (and deadline) this often

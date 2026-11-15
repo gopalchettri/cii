@@ -221,9 +221,9 @@ def test_a_give_back_never_ends_a_429_pause_early(monkeypatch: pytest.MonkeyPatc
     pause ends, also when the pause was shorter than the turns already booked."""
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
     rate = AiRequestRate(get_redis_client(), "give-back-paused", 0, 120, tokens_per_minute=60_000)
-    rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
+    rate.wait_for_turn(TASK, 60_000)  # the next send 60 s away, past the pause end plus the burst (50 s)
     rate.pause(20)
-    assert rate.give_back(1000) == pytest.approx(10, abs=0.5)  # 29 s unused, 10 s of it before 20 s
+    assert rate.give_back(1000) == pytest.approx(10, abs=0.5)  # 59 s unused, all but 10 s of it before 50 s
     assert rate.wait_for_send_time(TASK) == pytest.approx(20, abs=0.5)
 
 
@@ -310,6 +310,21 @@ def test_no_request_goes_before_a_429_pause_ends_with_burst_room(monkeypatch: py
     rate.give_back(1000)  # back to the pause end, 20 s away
     assert rate.wait_for_send_time(TASK) == pytest.approx(20, abs=0.5)
     assert min(rate.wait_for_turn(TASK, 1000) for _ in range(3)) == pytest.approx(20, abs=0.5)
+
+
+def test_after_a_429_pause_one_request_goes_at_its_end_and_the_rest_are_spaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 uses the burst up: the gateway's minute is still full when the pause ends, so the queued requests
+    go one interval apart, not all at once, even after an answer gives its booking back. Mutation: PAUSE
+    without the burst gives [20, 20, 50]."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    rate = AiRequestRate(get_redis_client(), "burst-after-pause", 0, 300, tokens_per_minute=60_000)
+    rate.wait_for_turn(TASK, 30_000)
+    rate.pause(20)
+    rate.give_back(1000)
+    waits = [rate.wait_for_turn(TASK, 30_000) for _ in range(3)]  # 30 s apart at 60,000 a minute
+    assert waits == [pytest.approx(20, abs=0.5), pytest.approx(50, abs=0.5), pytest.approx(80, abs=0.5)]
 
 
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:

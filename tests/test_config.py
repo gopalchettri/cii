@@ -20,7 +20,7 @@ from app.core.logging import configure_logging
 
 REPO = Path(__file__).resolve().parents[1]
 #: Keys an env file may hold besides the Settings fields: the laptop monitoring script reads this one.
-EXTRA_ENV_KEYS = {"GRAFANA_ADMIN_PASSWORD"}
+EXTRA_ENV_KEYS = {"GRAFANA_ADMIN_PASSWORD", "CII_WORKER_THREADS"}  # the last is read by run.ps1 only
 
 
 def _settings(**changes: object) -> Settings:

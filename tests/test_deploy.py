@@ -25,7 +25,6 @@ from app.core.constants import (
     ChatModule,
     Lease,
     Queue,
-    ThreatFinding,
     Worker,
 )
 from app.worker import ROUTED_QUEUES, celery_app
@@ -757,7 +756,7 @@ def test_each_ai_module_s_workers_can_fill_its_cap_and_no_one_job_takes_it_all()
     limits = [int(settings.get(f"CII_{m}_CHAT_REQUESTS_PER_MINUTE", "0")) for m in on_kimi]
     assert limits and all(limits) and sum(limits) <= CHAT_MODEL_REQUESTS_PER_MINUTE, limits
     calls_per_job = {  # a job's chat calls in flight, and the module whose AI slots they hold
-        Queue.THREATS: (ChatModule.SCENARIO, ThreatFinding.AI_BATCHES_AT_ONCE),
+        Queue.THREATS: (ChatModule.SCENARIO, int(settings["CII_THREAT_QUESTIONS_AT_ONCE"])),  # as deployed
         Queue.SCENARIOS: (ChatModule.SCENARIO, 1),  # a set's calls, one after another
         Queue.REMEDIATION: (ChatModule.REMEDIATION, 1),  # one plan, one call
         Queue.SERVICEMAPPER: (ChatModule.SERVICE_MAPPER, 1),  # one mapping, one call

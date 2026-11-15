@@ -55,8 +55,9 @@ class AiLimits:
     REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
     # A model's requests may run this far ahead of their spacing (a GCRA tolerance), never into a 429's
     # pause: requests sent together go at once while the minute has room, then spaced as before.
-    # ponytail: one minute may use up to (60 + burst) / 60 of the set rate (1.5x at 30 s); the booking already
-    # over-counts (prompt chars / 3 plus the whole answer room). Lower it if 429s follow bursts.
+    # ponytail: after an idle spell one minute may book (60 + burst) / 60 of the set rate plus one call (1.5x
+    # at 30 s), so set the rate at most 2/3 of the gateway's limit; a 429 uses the burst up. Lower it if 429s
+    # follow bursts.
     RATE_BURST_SECONDS: Final = 30
     SEARCH_POOL: Final = "search"  # tsg_ai_slots_*{pool}: the search calls' slots; each module's: its name
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot

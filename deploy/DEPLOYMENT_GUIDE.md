@@ -1304,27 +1304,28 @@ scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 t
 scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`): the gateway admin confirmed that only TSG
 uses kimi-k2.5 (Oct 2026). Modules put on one model and key split its limit.
 
-Tokens are the tighter limit: the organization gets 25,000 kimi-k2.5 tokens a minute (UAT, Oct 2026), and the
-gateway counts each call's question and its whole answer room while it runs. Threat scenarios pace themselves just
-under it (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 24000), so a call waits its turn instead of drawing a 429.
+Tokens are the tighter limit. Since Nov 2026 the gateway gives kimi-k2.5 2,000,000 tokens a minute, shared with
+the team, and it counts each call's question and its whole answer room while it runs. Threat scenarios pace
+themselves at half of it (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 1000000), so a call waits its turn instead of
+drawing a 429. After a quiet spell the pacer lets calls run up to 30 s of budget ahead (a burst), so the questions
+of one Start, and of 10 Starts together, all go at once; a 429 uses the burst up.
 
-Example: a click (plan + first set of 6) is about 3 big calls (a threat check, a write and a review) and about
-40,000 tokens. At 25,000 a minute that is about 2 minutes, the floor whatever the pods do; at 300,000 about
-1.3 minutes.
+Sized for 10 users at once (owner, Nov 2026), each Start (threats, the first set of 6, its controls) in about a
+minute:
 
-- One user alone: threat finding asks one question for up to 40 threats (`CII_THREATS_PER_QUESTION`), one at a
-  time (`CII_THREAT_QUESTIONS_AT_ONCE`); a set is one write and one review, at most 4 calls when some scenarios
-  need a second round.
-- 10 users click together: at 25,000 tokens a minute their roughly 400,000 tokens take about 16 minutes, however
-  the work is spread (an estimate). At 300,000, 2 runs find threats at once (the worker-threats pod's 2 jobs) and
-  the others wait their turn in `tsg_threats` (not yet measured).
-- More pods or more jobs at once would not be faster: they would only wait longer for kimi's turn. That is why the
-  threats and scenarios workers run 2 jobs at a time, one copy each, and threat scenarios ask at most 4 calls at
-  once (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS`: 2 workers × 2 jobs × 1 call). A second copy would not fit the
-  quota either (6.25 CPU of 6). To go faster, ask the gateway admin for more kimi-k2.5 tokens a minute (300,000,
-  or no limit), then use the 300,000 column of Part 4, "What is new in this release (31-Oct-2026)":
-  `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 290000 and, with more worker threads (`-c`),
-  `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` 16.
+- Threat finding asks up to 20 threats a question (`CII_THREATS_PER_QUESTION`), every question at once
+  (`CII_THREAT_QUESTIONS_AT_ONCE` 16: 320 threats in one round). 75 threats are 4 questions of 18-19, each answer
+  about half as long as one for 40: about 22-32 s, against 45-50 s (dev, 15 Nov 2026).
+- 10 users at once: 10 x 4 questions = 40 answers at the same moment (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` 40),
+  about 510,000 tokens booked at once, inside the 1,000,000 plus its burst. Evidence and control searches: 24 at
+  once a worker (`CII_RERANKS_AT_ONCE`).
+- Worker threads: a thread mostly waits for the AI. The UAT server's job worker (`run.ps1`) runs
+  `CII_WORKER_THREADS` (30, in `.env`) threads for threats, writing, controls and remediation; on OpenShift
+  `worker-threats` and `worker-scenarios` run 10 jobs each, `worker-controls` 4.
+- More users later is a settings change only, then a restart: answers at once about 4 x users, threads about
+  2 x users plus spare, searches at once about 2.5 x users (64 at most), tokens a minute at most 2/3 of the
+  gateway's budget (about 1,300,000 of 2,000,000). Past about 13 users starting in the same second the budget,
+  not TSG, sets the pace: the last ones start some seconds later; more needs a bigger budget from the gateway team.
 
 Memory was measured (on a laptop): a worker uses about 220 MB. The scenarios worker keeps the evidence index
 loaded: about 450 MB, and up to about 815 MB while it rebuilds the index (its limit is 2 Gi). Only the scenarios
@@ -1337,14 +1338,14 @@ small.
 |---|---|---|
 | `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
 | `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 192); remediation's and the service mapper's: 0 = no limit until the gateway admin gives glm-5.3's |
-| `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 24000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429. Just under the budget a 429 names: 24000 at 25,000, 290000 at 300,000 (Part 5); 0 = no token pacing |
+| `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 1000000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429, after up to 30 s of burst. At most 2/3 of the gateway's budget (2,000,000 since Nov 2026, shared); 0 = no token pacing |
 | `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 4, 2 | calls to glm-5.3 at once (it takes 55-99 s a call) |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
-| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 4 | at most 4 threat-scenario calls to kimi-k2.5 at once, all pods together (2 workers × 2 jobs × 1 call: each call is a whole batch or set); 16 with more worker threads at a 300,000 budget; TSG also backs off by itself after a gateway 429 |
+| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 40 | at most 40 threat-scenario calls to kimi-k2.5 at once, all pods together: 10 users x 4 threat questions (4 x users for more); TSG also backs off by itself after a gateway 429 |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |
 | `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 10240, write 6144, rewrite 5632, remediation 3584, service mapper 3072 ... | the answer room each task asks for (the gate's and writer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
-| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 | how much TSG asks at once: threat questions per run and whole threats per question (35 threats: 1 question), scenarios in one write call (3 if a write times out), reranker calls per worker |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 8192, write 6144, rewrite 5632, remediation 3584, service mapper 3072 ... | the answer room each task asks for (the gate's and writer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
+| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 16, 20, 6, 24 | how much TSG asks at once: threat questions per run, all at once (never above the module's calls at once), and whole threats per question (75 threats: 4 questions), scenarios in one write call (3 if a write times out), reranker calls per worker |
 | `CII_THREAT_FINDING_REUSE_HOURS` | 24 | hours threat finding takes an earlier run's answer to the very same question (same asset facts, systems, library, prompt): a second Start on an unchanged asset makes no gate call; 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
 | `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 180 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
