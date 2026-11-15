@@ -260,6 +260,17 @@ def test_the_ai_contract_refuses_blank_text() -> None:
             PlanDraft.model_validate(answer)
 
 
+def test_a_combined_control_type_reads_as_its_first_known_type() -> None:
+    """The model's "a/b" or "a, b" type is its first known one; a type with no known part is still broken."""
+    for given, read in (("detective/preventive", "detective"), ("physical, corrective", "corrective")):
+        answer = ANSWER | {"controls_to_be_implemented": {"controls": [CONTROL | {"control_type": given}]}}
+        assert PlanDraft.model_validate(answer).controls_to_be_implemented[0].control_type == read
+    for unknown in ("physical", "physical/administrative"):
+        answer = ANSWER | {"controls_to_be_implemented": {"controls": [CONTROL | {"control_type": unknown}]}}
+        with pytest.raises(ValidationError):
+            PlanDraft.model_validate(answer)
+
+
 @pytest.mark.parametrize(
     ("status", "decision", "overall"),
     [

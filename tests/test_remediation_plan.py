@@ -1220,6 +1220,30 @@ def test_a_check_left_out_or_a_replacement_outside_the_alternatives_is_re_asked_
     ]
 
 
+def test_a_control_replaced_by_another_identified_control_is_flagged_without_a_re_ask() -> None:
+    """CII-CID-6 "replaced" by CII-CID-5, another identified control (a duplicate): one ask, 6 flagged for
+    review with the refusal warning, 5 still recommended; a code neither offered nor identified: re-asked."""
+    checks = [
+        _check("CII-CID-1", "retained"),
+        _check("CII-CID-5", "retained"),
+        _check("CII-CID-6", "replaced", "cii-cid-5"),
+    ]
+    answer = _answer("CII-CID-5", control_validation=checks)
+    plan, warnings, chat = _written(answer, snapshot=_snapshot(alternatives=OFFERED))
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 1
+    assert warnings == [PlanWarning.REPLACEMENT_REFUSED.format(code="CII-CID-6", replacement="cii-cid-5")]
+    rows = {row["control_code"]: row for row in plan["control_assessment"]}
+    assert (rows["CII-CID-6"]["validation"], rows["CII-CID-6"]["implementation_status"]) == (
+        "flagged_for_review",
+        ImplementationStatus.UNVERIFIED,
+    )
+    assert _recommended(plan) == ["CII-CID-5"]
+    unknown = [*checks[:2], _check("CII-CID-6", "replaced", "CII-CID-9")]
+    again = _answer("CII-CID-5", control_validation=unknown)
+    _, _, chat = _written(again, again, snapshot=_snapshot(alternatives=OFFERED))
+    assert len(chat.asked(AiTask.REMEDIATION_PLAN)) == 2
+
+
 def test_an_implemented_control_comes_back_with_how_it_already_reduces_the_risk() -> None:
     """Covered: no control to implement, and each implemented control carries the AI's explanation."""
     implemented = {

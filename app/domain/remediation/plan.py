@@ -520,15 +520,15 @@ def _is_kept_after_ai_check(row: dict[str, Any]) -> bool:
 
 
 def _gap_problems(snapshot: dict[str, Any], draft: PlanDraft, rows: list[dict[str, Any]]) -> list[str]:
-    """A first answer's faults: an identified control left unchecked, or replaced by a code outside the
-    alternatives; a kept gap left out; an implemented, replaced or flagged control named."""
+    """A first answer's faults: an identified control left unchecked, or replaced by a code neither offered
+    nor identified; a kept gap left out; an implemented, replaced or flagged control named."""
     checks = _ai_verdict_for_each_control(snapshot, draft)
-    offered = {
-        _normalise_code(row["control_code"])
-        for row in snapshot["existing_controls"].get("library_alternatives") or []
-    }
+    existing = snapshot["existing_controls"]
+    # Replaced by another identified control (a duplicate): _apply_ai_verdicts flags it, as a re-ask would.
+    controls = [*existing["library_mapped"], *(existing.get("library_alternatives") or [])]
+    known = {_normalise_code(row["control_code"]) for row in controls}
     problems = []
-    for row in snapshot["existing_controls"]["library_mapped"]:
+    for row in existing["library_mapped"]:
         code, check = row["control_code"], checks.get(_normalise_code(row["control_code"]))
         if check is None:
             problems.append(RemediationMessage.VALIDATION_MISSING.format(code=code))
@@ -536,7 +536,7 @@ def _gap_problems(snapshot: dict[str, Any], draft: PlanDraft, rows: list[dict[st
             problems.append(RemediationMessage.REPLACEMENT_REQUIRED.format(code=code))
         elif (
             check.validation == ControlValidation.REPLACED
-            and _normalise_code(check.replacement_code or "") not in offered
+            and _normalise_code(check.replacement_code or "") not in known
         ):
             problems.append(
                 RemediationMessage.REPLACEMENT_UNKNOWN.format(code=code, replacement=check.replacement_code)

@@ -1,5 +1,6 @@
 """Remediation plans: the AI's answer contract (`PlanDraft`) and what the API shows of a plan record."""
 
+import re
 from datetime import date, datetime
 from typing import Annotated, Any, ClassVar
 
@@ -38,8 +39,16 @@ def _the_controls(value: Any) -> Any:
     return value.get("controls", value) if isinstance(value, dict) else value
 
 
+def _keep_first_known_type(value: Any) -> Any:
+    """A combined type ("detective/preventive", "detective, preventive") read as its first known one."""
+    if not isinstance(value, str):
+        return value
+    parts = (part.strip() for part in re.split(r"[/,]", value))
+    return next((part for part in parts if part in ControlType), value)
+
+
 class DraftControl(BaseModel):
-    control_type: ControlType
+    control_type: Annotated[ControlType, BeforeValidator(_keep_first_known_type)]
     control_name: Given
     description: str
     priority: ActionPriority
