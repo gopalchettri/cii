@@ -51,7 +51,7 @@ items:                                           # one tsg-config per project th
       CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
       CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
       CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
-      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "4"                    # its calls at once to glm-5.3, all pods
+      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "10"                   # its calls at once to glm-5.3, all pods: 10 users' plans at once; with the mapper's, at most glm-5.3's own limit
       CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
       CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
       CII_SERVICE_MAPPER_CHAT_MODEL_THINKING: "false"                 # false = the model's "thinking" mode off (faster)
@@ -59,7 +59,7 @@ items:                                           # one tsg-config per project th
       CII_SERVICE_MAPPER_CHAT_MAX_OUTPUT_TOKENS: "12288"              # glm-5.3: longest answer in tokens
       CII_SERVICE_MAPPER_CHAT_TIMEOUT_SECONDS: "180"                  # glm-5.3: seconds to wait for one answer before giving up
       CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
-      CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "2"                 # its calls at once to glm-5.3, all pods
+      CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "6"                 # its calls at once to glm-5.3, all pods: 10 once the gateway admin confirms glm-5.3 takes 20 at once
       # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
       # answer that needs more is asked once more with the model's full room.
       CII_ANSWER_TOKENS_RELEVANCE_GATE: "8192"                        # threat finding: is each threat relevant, as which kinds (one answer for up to 20 threats: 2,000-6,000 measured)

@@ -1281,11 +1281,11 @@ control mapping never waits behind a busy writer. A run's next step also goes ah
 
 | Pod (1 each unless noted) | Queue | Jobs at once | CPU request / limit | Memory request / limit |
 |---|---|---|---|---|
-| worker-threats | `tsg_threats` | 2 | 500m / 1 | 1Gi / 1.5Gi |
-| worker-scenarios | `tsg_scenarios` | 2 | 500m / 1 | 1Gi / 2Gi |
-| worker-controls | `tsg_controls` | 1 (maps 6 scenarios at once) | 100m / 250m | 640Mi / 1Gi |
-| worker-remediation | `tsg_remediation` | 4 (one glm-5.3 plan each) | 250m / 500m | 640Mi / 1Gi |
-| worker-service-mapper | `tsg_servicemapper` | 2 | 250m / 500m | 640Mi / 1Gi |
+| worker-threats | `tsg_threats` | 10 (10 users at once) | 500m / 1 | 1Gi / 1.5Gi |
+| worker-scenarios | `tsg_scenarios` | 10 | 500m / 1 | 1Gi / 2Gi |
+| worker-controls | `tsg_controls` | 4 (each maps 6 scenarios at once) | 100m / 250m | 640Mi / 1Gi |
+| worker-remediation | `tsg_remediation` | 12 (10 glm-5.3 plans at once, plus 2) | 250m / 500m | 640Mi / 1Gi |
+| worker-service-mapper | `tsg_servicemapper` | 6 (one mapping, one call) | 250m / 500m | 640Mi / 1Gi |
 | worker-maintenance | `tsg_maintenance` | 3 | 100m / 250m | 768Mi / 1.5Gi |
 | worker-reaper (in ai-common) | `tsg_reaper` | 2 | 50m / 150m | 512Mi / 768Mi |
 | api (2 pods) | - | - | 250m / 750m | 512Mi / 1Gi |
@@ -1339,7 +1339,7 @@ small.
 | `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
 | `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 192); remediation's and the service mapper's: 0 = no limit until the gateway admin gives glm-5.3's |
 | `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 1000000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429, after up to 30 s of burst. At most 2/3 of the gateway's budget (2,000,000 since Nov 2026, shared); 0 = no token pacing |
-| `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 4, 2 | calls to glm-5.3 at once (it takes 55-99 s a call) |
+| `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 6 | calls to glm-5.3 at once (it takes 55-99 s a call): 10 users' plans and 6 mappings; together at most glm-5.3's own limit (ask the gateway admin; the mapper goes to 10 once glm takes 20). On the UAT server `run.ps1` sizes the remediation and mapper workers from these two (plans + 2 threads, mappings 1 each) |
 | `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 40 | at most 40 threat-scenario calls to kimi-k2.5 at once, all pods together: 10 users x 4 threat questions (4 x users for more); TSG also backs off by itself after a gateway 429 |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |

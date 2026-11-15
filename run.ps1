@@ -229,8 +229,11 @@ function Get-Arguments([string]$Name) {
             $cap = Get-EnvValue 'CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS'
             if ($cap -ne '0') { $cap }
         }
-        # Its cap's plans in AI calls, and two more past them.
-        'remediation' { [int](Get-EnvValue 'CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS') + 2 }
+        # Its cap's plans in AI calls, and two more past them; 0 (no limit) or missing: the app's own cap, 16.
+        'remediation' {
+            $cap = [int](Get-EnvValue 'CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS')
+            $(if ($cap -gt 0) { $cap } else { 16 }) + 2
+        }
     }
     if ($threads) { $arguments[[array]::IndexOf($arguments, '-c') + 1] = "$threads" }
     if ($Name -eq 'worker' -and (Get-ProgramNames) -notcontains 'remediation') {

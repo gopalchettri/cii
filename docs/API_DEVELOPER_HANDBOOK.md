@@ -920,7 +920,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). Before Recipe D, the local script starts `tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation` on one worker, `tsg_maintenance` on another and `tsg_reaper` on a third (`reaper@`, metrics port 9104), plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; `/ready` then reports that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
+`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). Before Recipe D, the local script starts `tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation` on one worker (since D79 `tsg_remediation` gets a worker of its own when the reranker is remote), `tsg_maintenance` on another and `tsg_reaper` on a third (`reaper@`, metrics port 9104), plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; `/ready` then reports that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
 
 ### 13.3 Run tests without touching application data
 

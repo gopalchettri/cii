@@ -119,6 +119,24 @@ def test_the_mapper_s_threads_follow_its_ai_cap(tmp_path: Path, cap: list[str], 
     assert _option(programs["service_mapper"], "-c") == threads
 
 
+@NO_POWERSHELL
+@pytest.mark.parametrize("cap", ["CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS=0", ""])
+def test_a_remediation_worker_with_no_cap_gets_the_app_s_own_cap_of_threads(tmp_path: Path, cap: str) -> None:
+    """No limit (0) or none set: the app's own cap (16) plus 2 threads, never 2 plans at a time."""
+    programs, _ = _start(
+        tmp_path, ["CII_WORKER_THREADS=40", cap, "CII_RERANK_BASE_URL=https://rerank.example"]
+    )
+    assert _option(programs["remediation"], "-c") == "18"
+
+
+def test_start_runs_the_programs_and_targets_its_layout_chose() -> None:
+    """Start opens only the layout's programs and writes their Prometheus targets: looping over every program
+    would run remediation twice on the laptop, and a stale or full targets file fires TargetDown."""
+    start = RUN_PS1[RUN_PS1.index("function Invoke-Start") : RUN_PS1.index("function Invoke-Stop")]
+    assert "$names = Get-ProgramNames" in start and "Save-WorkerTargets $names" in start
+    assert "foreach ($name in $names)" in start and "$Programs.Keys" not in start
+
+
 def test_stop_asks_every_worker_to_finish_and_start_checks_every_metrics_port() -> None:
     """A worker missing from stop's list is killed mid-job; a port missing from start's check fails it."""
     stop = RUN_PS1[RUN_PS1.index("function Invoke-Stop") : RUN_PS1.index("function Show-Status")]

@@ -313,7 +313,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_remediation]   # 4 threads on the tsg_remediation queue: 4 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "12", -Q, tsg_remediation]   # 12 threads on the tsg_remediation queue: 10 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS), plus 2
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -375,7 +375,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_servicemapper]   # 2 threads on the tsg_servicemapper queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "6", -Q, tsg_servicemapper]   # 6 threads on the tsg_servicemapper queue: one mapping, one call (CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets

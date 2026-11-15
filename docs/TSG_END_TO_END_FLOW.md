@@ -3911,7 +3911,8 @@ the run's cancel stands, else queued for the run), and recounts and publishes th
    writes only the not implemented (implement) and partially implemented (extend) controls that passed, each
    action with its supporting systems, and the parts of the risk no control covers. It sees the window's
    `total_days` when the request gives one. A first answer is asked again once when it:
-   - leaves a check or a required gap out, or replaces with a code outside the alternatives;
+   - leaves a check or a required gap out, or replaces with a code that is neither an alternative nor one of
+     the plan's identified controls (one of them is flagged for review at once, with no re-ask, D79);
    - lists an implemented control;
    - describes a partial control as new or a missing one as extended;
    - (every control implemented) has an interim action.
@@ -4162,8 +4163,8 @@ stateDiagram-v2
   Error text (exception messages, `error` and `message` fields) is redacted before it is written. AI lines
   name the AI step `ai_task` (the job's `task` stays the Celery task), and the limiter's lines `limiter`.
 - **Metrics:** `/metrics` on the API port, and on each worker at `CII_WORKER_METRICS_PORT` (9100; locally
-  the maintenance worker uses 9102, the service-mapper worker 9103, the reaper worker 9104, and 9101 is the
-  VS Code debug worker's): HTTP requests, jobs by task, module and outcome (`expired`: a timer message
+  the maintenance worker uses 9102, the service-mapper worker 9103, the reaper worker 9104, the remediation
+  worker 9105 when it runs, and 9101 is the VS Code debug worker's): HTTP requests, jobs by task, module and outcome (`expired`: a timer message
   dropped after its expiry), jobs stopped as stalled (`tsg_jobs_hung_total`), when the reaper last started and
   finished a pass (exported only by the reaper's process, from its first pass), how long each job ran (`tsg_job_seconds`, buckets up to 3600 s)
   and waited in its queue (`tsg_job_queue_wait_seconds`, the same top bucket), runs, scenarios by outcome, decisions, plans, AI calls, AI outages by
@@ -4229,7 +4230,9 @@ stateDiagram-v2
   activity and model, the failed ones and why, the tokens and whether the tracking works, and links to one
   session's or request's reports. Flower shows the Celery tasks.
 - **Local run:** `.\run.ps1` checks the stores, opens the API (127.0.0.1:8000), the job worker
-  (`tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation`), the service-mapper worker (`tsg_servicemapper`), the
+  (`tsg_threats,tsg_scenarios,tsg_controls`, `CII_WORKER_THREADS` threads; with a local reranker also
+  `tsg_remediation`, else a remediation worker of its own with `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS` + 2
+  threads, D79), the service-mapper worker (`tsg_servicemapper`, threads = its AI cap), the
   maintenance worker (`tsg_maintenance`), the reaper worker (`tsg_reaper`) and beat, starts the monitoring
   tools, and waits for `/ready`. `.\run.ps1 stop` stops them
   cleanly.
