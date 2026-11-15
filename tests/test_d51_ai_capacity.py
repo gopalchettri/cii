@@ -138,7 +138,8 @@ def test_a_worker_waits_for_ai_capacity_until_its_lease_ends(monkeypatch: pytest
     assert served == ["worker"] and TenMinutesPerLook.now >= 1_800
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
     kimi = AiRequestRate(redis, "kimi", per_minute=1, wait_seconds=AiLimits.WORKER_SLOT_WAIT_SECONDS)
-    assert [kimi.wait_for_turn(TASK) for _ in range(8)][-1] == pytest.approx(420, abs=1)
+    eighth = [kimi.wait_for_turn(TASK) for _ in range(8)][-1]  # 7 turns of 60 s, less the burst
+    assert eighth == pytest.approx(420 - AiLimits.RATE_BURST_SECONDS, abs=1)
     assert rerank_gate_for("http://proxy.invalid")._wait_seconds is None  # noqa: SLF001
 
 

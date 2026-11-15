@@ -53,6 +53,11 @@ class AiLimits:
     SLOTS_KEY: Final = "tsg:ai_slots"  # the AI call limiter's Redis sorted set, shared by every pod
     SLOTS_LIMIT_KEY: Final = "tsg:ai_slots:limit"  # the limit a gateway 429 set on it (a Redis hash)
     REQUEST_RATE_KEY: Final = "tsg:ai_next_request:{model}"  # when that model's next request may be sent
+    # A model's requests may run this far ahead of their spacing (a GCRA tolerance), never into a 429's
+    # pause: requests sent together go at once while the minute has room, then spaced as before.
+    # ponytail: one minute may use up to (60 + burst) / 60 of the set rate (1.5x at 30 s); the booking already
+    # over-counts (prompt chars / 3 plus the whole answer room). Lower it if 429s follow bursts.
+    RATE_BURST_SECONDS: Final = 30
     SEARCH_POOL: Final = "search"  # tsg_ai_slots_*{pool}: the search calls' slots; each module's: its name
     API_SLOT_WAIT_SECONDS: Final = 30  # the API answers a caller: it waits briefly for a free slot
     # ponytail: a day stands for "no clock of its own": a worker waits for an AI slot or request turn until

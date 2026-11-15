@@ -331,9 +331,12 @@ def test_each_ai_gateway_frees_its_slot_while_it_waits_out_a_429(
     assert len(asked) == 2 and asked[1] - asked[0] >= 0.9
 
 
-def test_requests_let_through_a_full_slot_line_together_still_go_out_spaced() -> None:
+def test_requests_let_through_a_full_slot_line_together_still_go_out_spaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Review of the fix: a turn reserved before a long slot wait had passed by the time the slot freed, so
-    the requests let through went out back to back. The turn is reserved once the slot is held."""
+    the requests let through went out back to back. The turn is reserved once the slot is held (no burst)."""
+    monkeypatch.setattr(AiLimits, "RATE_BURST_SECONDS", 0)
     redis = get_redis_client()
     one_slot, rate = AiSlots(redis, cap=1, wait_seconds=5), AiRequestRate(redis, "spaced", 300, 30)  # 0.2 s
     sent: list[float] = []
@@ -378,10 +381,15 @@ def test_a_429_makes_the_next_call_to_its_model_wait_holding_no_slot(monkeypatch
     def answer() -> str:
         reply = next(answers)
         if isinstance(reply, Exception):
-            refused.set()
             raise reply
         return reply
 
+    def pause_and_tell(seconds: float) -> float:
+        paused = AiRequestRate.pause(rate, seconds)
+        refused.set()  # the 429 is on record: the next call is queued behind it
+        return paused
+
+    monkeypatch.setattr(rate, "pause", pause_and_tell)
     refused_call = threading.Thread(
         target=ai.common.call_with_retries, args=(answer, rate, one_slot), kwargs={"model": "m", "task": TASK}
     )

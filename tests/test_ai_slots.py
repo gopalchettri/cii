@@ -131,12 +131,13 @@ def test_no_limit_makes_no_redis_call() -> None:
 def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A module's CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock. A turn
-    further off than the caller waits reserves nothing and is Unavailable (busy); a lost lease ends the
-    wait."""
+    """A module's CHAT_REQUESTS_PER_MINUTE=20: every pod's requests go 3 s apart, by Redis's clock (no burst
+    here: burst 0 is the plain spacing). A turn further off than the caller waits reserves nothing and is
+    Unavailable (busy); a lost lease ends the wait."""
     lease_checking_sleep = slots.sleep_unless_lease_lost
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    monkeypatch.setattr(AiLimits, "RATE_BURST_SECONDS", 0)
     pod_a, pod_b = (AiRequestRate(get_redis_client(), "kimi", 20, wait_seconds=10) for _ in range(2))
     pod_a.wait_for_turn(TASK)
     pod_b.wait_for_turn(TASK)
@@ -158,9 +159,10 @@ def test_requests_from_every_pod_are_spaced_and_a_turn_too_far_off_is_refused(
 def test_a_tokens_a_minute_limit_spaces_requests_by_their_size(monkeypatch: pytest.MonkeyPatch) -> None:
     """UAT's 429s say limit_type "tokens": a module's CHAT_TOKENS_PER_MINUTE=60000 spaces a 600-token request
     0.6 s from the next, a 6000-token one 6 s more; the requests-a-minute spacing applies when it is longer; a
-    request of no stated size, or no tokens limit, is not spaced by tokens."""
+    request of no stated size, or no tokens limit, is not spaced by tokens (no burst here)."""
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    monkeypatch.setattr(AiLimits, "RATE_BURST_SECONDS", 0)
     redis = get_redis_client()
     sized = AiRequestRate(redis, "tokens-only", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
     for tokens in (600, 6000, 600):  # each request's size spaces the one after it; no sleep is real here
@@ -196,9 +198,10 @@ def test_a_429_pauses_its_model_on_every_pod(monkeypatch: pytest.MonkeyPatch) ->
 def test_an_answer_gives_back_the_booked_tokens_it_did_not_use(monkeypatch: pytest.MonkeyPatch) -> None:
     """LiteLLM counts what an answered call used: at 60,000 a minute a 6,000-token booking answered with 1,500
     used gives 4.5 s back, so the next request waits 1.5 s, not 6. Nothing comes back when more was used than
-    booked, under the requests-a-minute spacing, or with no tokens limit."""
+    booked, under the requests-a-minute spacing, or with no tokens limit (no burst here)."""
     slept: list[float] = []
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", slept.append)
+    monkeypatch.setattr(AiLimits, "RATE_BURST_SECONDS", 0)
     redis = get_redis_client()
     sized = AiRequestRate(redis, "give-back", per_minute=0, wait_seconds=30, tokens_per_minute=60_000)
     sized.wait_for_turn(TASK, 6000)
@@ -267,14 +270,46 @@ def test_a_call_waiting_for_its_model_s_send_time_goes_once_it_moves_earlier() -
     """A give-back while calls wait for the send time serves them, not only whoever asks next: a waiter
     re-reads it every LEASE_CHECK_SECONDS. Mutation: sleep the first read's whole wait."""
     rate = AiRequestRate(get_redis_client(), "wakes-early", 0, 120, tokens_per_minute=60_000)
-    rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
+    rate.wait_for_turn(TASK, 90_000)  # the next send 90 s away: 60 s past the burst
     waited: list[float] = []
     waiter = threading.Thread(target=lambda: waited.append(rate.wait_for_send_time(TASK)), daemon=True)
     waiter.start()
     time.sleep(0.3)
-    rate.give_back(1000)  # 29 s back: the next send under 1 s away
+    rate.give_back(1000)  # 89 s back: inside the burst, so it may go now
     waiter.join(5)
     assert waited and waited[0] < 3
+
+
+def test_requests_sent_together_go_at_once_while_the_burst_has_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two relevance-gate questions booked together (17,760 tokens each at 95,000 a minute: 11.2 s) both go at
+    once, and a call waiting for the send time is not held for them. Mutation: drop the burst from either
+    script."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    rate = AiRequestRate(get_redis_client(), "burst", 0, 120, tokens_per_minute=95_000)
+    assert [rate.wait_for_turn(TASK, 17_760) for _ in range(2)] == [pytest.approx(0, abs=0.1)] * 2
+    assert rate.wait_for_send_time(TASK) == 0
+
+
+def test_requests_beyond_the_burst_are_spaced_as_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    """At 6 requests a minute (10 s apart) the requests the burst holds go at once; each one after waits 10 s
+    more than the one before, as without a burst."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    rate = AiRequestRate(get_redis_client(), "beyond-burst", per_minute=6, wait_seconds=120)
+    waits = [rate.wait_for_turn(TASK) for _ in range(6)]
+    burst = AiLimits.RATE_BURST_SECONDS
+    assert waits == [pytest.approx(max(0, 10 * turn - burst), abs=0.5) for turn in range(6)]
+
+
+def test_no_request_goes_before_a_429_pause_ends_with_burst_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The burst has room and an answer gave its booking back to the pause end: still no request and no waiter
+    goes before the pause ends. Mutation: drop the pause end from either script."""
+    monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    rate = AiRequestRate(get_redis_client(), "burst-paused", 0, 120, tokens_per_minute=60_000)
+    rate.wait_for_turn(TASK, 30_000)  # the next send 30 s away
+    rate.pause(20)
+    rate.give_back(1000)  # back to the pause end, 20 s away
+    assert rate.wait_for_send_time(TASK) == pytest.approx(20, abs=0.5)
+    assert min(rate.wait_for_turn(TASK, 1000) for _ in range(3)) == pytest.approx(20, abs=0.5)
 
 
 def test_the_slots_in_use_are_counted_and_unknown_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -377,8 +412,9 @@ def test_every_request_turn_s_wait_is_measured_and_none_with_no_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """tsg_ai_request_rate_wait_seconds{model}: how long each model's requests wait for its limiter, 0
-    included."""
+    included (no burst here)."""
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
+    monkeypatch.setattr(AiLimits, "RATE_BURST_SECONDS", 0)
 
     def measured(name: str, model: str) -> float:
         sample = f"tsg_ai_request_rate_wait_seconds_{name}"

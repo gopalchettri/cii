@@ -194,8 +194,9 @@ class AiSlots:
 
 class AiRequestRate:
     """One model's requests in a `scope` (a module's own, or none), retries included, on their own Redis key:
-    60 / `per_minute` s apart, or a large request's tokens x 60 / `tokens_per_minute` s; a 429 pauses it
-    (pause). Both 0 = no limit, no Redis call. `waits_out_rate_limits`: true in a worker, false in the API."""
+    60 / `per_minute` s apart, or a large request's tokens x 60 / `tokens_per_minute` s, once a burst of
+    RATE_BURST_SECONDS is spent; a 429 pauses it (pause). Both 0 = no limit, no Redis call.
+    `waits_out_rate_limits`: true in a worker, false in the API."""
 
     def __init__(  # noqa: PLR0913 — one model's two limits, its scope and how its process waits
         self,
@@ -232,9 +233,10 @@ class AiRequestRate:
         if interval == 0 or not self._in_use():
             return 0.0
         raise_if_lease_lost()
-        keys = [self._key, self._line_key]
+        keys = [self._key, self._line_key, self._pause_key]
+        args = [interval, self.wait_seconds, AiLimits.RATE_BURST_SECONDS]
         try:
-            wait, line = self._reserve_send_time(keys=keys, args=[interval, self.wait_seconds])
+            wait, line = self._reserve_send_time(keys=keys, args=args)
         except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
             return self._redis_failed()
         if (wait := float(wait)) < 0:
@@ -246,13 +248,15 @@ class AiRequestRate:
 
     def wait_for_send_time(self, task: str) -> float:
         """Waits, reserving nothing and holding no AI slot, for the model's next send time (a 429's pause or a
-        line of turns), re-read each LEASE_CHECK_SECONDS so a give-back meanwhile ends it early, never longer
-        than the first read; the seconds waited. Unavailable when that read is further off than the wait."""
+        line of turns past the burst), re-read each LEASE_CHECK_SECONDS so a give-back meanwhile ends it
+        early, never longer than the first read; the seconds waited. Unavailable when that read is further
+        off than the wait."""
         if not self._in_use():
             return 0.0
         raise_if_lease_lost()
+        keys, args = [self._key, self._pause_key], [AiLimits.RATE_BURST_SECONDS]
         try:
-            wait = longest = float(self._seconds_to_send_time(keys=[self._key]))
+            wait = longest = float(self._seconds_to_send_time(keys=keys, args=args))
         except RedisError:  # down, hung, or refusing writes (MISCONF, OOM, READONLY)
             return self._redis_failed()
         if wait > self.wait_seconds:
@@ -263,7 +267,7 @@ class AiRequestRate:
             sleep_unless_lease_lost(step)
             waited += step
             try:
-                wait = min(float(self._seconds_to_send_time(keys=[self._key])), longest - waited)
+                wait = min(float(self._seconds_to_send_time(keys=keys, args=args)), longest - waited)
             except RedisError:
                 self._redis_failed()
                 break

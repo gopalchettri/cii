@@ -84,11 +84,13 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
 return redis.call('ZCARD', KEYS[1])
 """
 
-#: KEYS[1] a model's next send time: the seconds until it (0 when past), reserving nothing.
+#: KEYS[1] a model's next send time · KEYS[2] a 429's pause end · ARGV[1] the burst's seconds: the seconds
+#: until a request may be sent (0: now), as RESERVE_SEND_TIME_SCRIPT would give it, reserving nothing.
 SECONDS_TO_SEND_TIME_SCRIPT = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
-return tostring(math.max(0, tonumber(redis.call('GET', KEYS[1]) or now) - now))
+local next_send = tonumber(redis.call('GET', KEYS[1]) or now) - tonumber(ARGV[1])
+return tostring(math.max(0, next_send - now, tonumber(redis.call('GET', KEYS[2]) or 0) - now))
 """
 
 #: KEYS[1] a model's next send time, moved to at least ARGV[1] s from now: a 429 pauses it on every pod.
@@ -128,22 +130,26 @@ end
 return tostring(next_send - moved)
 """
 
-#: KEYS[1] the next send time · KEYS[2] the line's id · ARGV[1] seconds between two requests · ARGV[2] the
-#: longest wait accepted. {the seconds to wait, the id of the line that send time was reserved in}; {'-1',
-#: '0'}, nothing reserved, when the wait would be longer. A send time missing or past starts a new line.
+#: KEYS[1] the next send time · KEYS[2] the line's id · KEYS[3] a 429's pause end · ARGV[1] seconds between
+#: two requests · ARGV[2] the longest wait accepted · ARGV[3] the burst's seconds: a request goes up to them
+#: before the next send time (GCRA), never before the pause ends. {the seconds to wait, the id of the line
+#: that send time was reserved in}; {'-1', '0'}, nothing reserved, when the wait would be longer. A send
+#: time missing or past starts a new line.
 #: ponytail: the id never expires (one counter a model): an id that restarted at 1 would match a booking
 #: made before; give it a TTL longer than any AI call if the keys ever need one.
 RESERVE_SEND_TIME_SCRIPT = """
 local now_parts = redis.call('TIME')
 local now = tonumber(now_parts[1]) + tonumber(now_parts[2]) / 1000000
 local stored = tonumber(redis.call('GET', KEYS[1]))
-local send_at = math.max(now, stored or now)
+local next_send = math.max(now, stored or now)
+local pause_end = tonumber(redis.call('GET', KEYS[3]) or 0)
+local send_at = math.max(now, next_send - tonumber(ARGV[3]), pause_end)
 local wait = send_at - now
 if wait > tonumber(ARGV[2]) then
   return {'-1', '0'}
 end
-local interval = tonumber(ARGV[1])
-redis.call('SET', KEYS[1], tostring(send_at + interval), 'PX', math.ceil((wait + interval) * 1000))
+next_send = math.max(next_send, send_at) + tonumber(ARGV[1])
+redis.call('SET', KEYS[1], tostring(next_send), 'PX', math.ceil((next_send - now) * 1000))
 local line = redis.call('GET', KEYS[2])
 if not line or not stored or stored <= now then line = tostring(redis.call('INCR', KEYS[2])) end
 return {tostring(wait), line}
