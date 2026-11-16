@@ -77,7 +77,7 @@ items:                                           # one tsg-config per project th
       CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds
       CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the job tries again later
       CII_AI_BUSY_LIMIT_FLOOR: "4"                                    # after "too busy": the fewest questions still allowed at the same time
-      CII_AI_BUSY_LIMIT_SECONDS: "180"                                # seconds that slow-down lasts after the last "too busy"; a whole number
+      CII_AI_BUSY_LIMIT_SECONDS: "60"                                 # seconds that slow-down lasts after the last "too busy"; a whole number. 60 = one gateway window, so the calls that filled the gateway can finish first (the code's default is 180)
       CII_EMBEDDING_BASE_URL: "https://llmapi.govai.ae"            # the AI gateway for embeddings (text to vectors)
       CII_EMBEDDING_MODEL: "litellm_proxy/qwen3-embedding-8b"      # embedding model for the library searches
       CII_RERANK_BASE_URL: "https://llmapi.govai.ae"               # the AI gateway for re-ranking search results
@@ -102,10 +102,10 @@ items:                                           # one tsg-config per project th
       CONTROL_SIMILARITY_THRESHOLD: "50"         # how close a library control must be to a scenario to be kept
       CONTROL_CANDIDATES: "40"                   # library controls searched per scenario (required: no default)
       MIN_CONTROLS: "3"                          # fewest controls kept per scenario
-      MAX_CONTROLS: "15"                         # most controls kept per scenario
+      MAX_CONTROLS: "10"                         # most controls kept per scenario (the same as the UAT server)
       NEAREST_CONTROLS: "3"                      # controls kept when none is close enough
-      THREAT_SCENARIO_WORD_LIMIT: "150-200"      # words asked for per scenario statement (min-max)
-      RISK_STATEMENT_WORD_LIMIT: "100-150"       # words asked for per risk statement (min-max)
+      THREAT_SCENARIO_WORD_LIMIT: "120-180"      # words asked for per scenario statement (min-max; the code's default is 150-200)
+      RISK_STATEMENT_WORD_LIMIT: "80-120"        # words asked for per risk statement (min-max; the code's default is 100-150)
       EVIDENCE_STATEMENT_WORD_LIMIT: "20-60"     # words asked for per evidence passage (min-max)
       THREAT_SIMILARITY_THRESHOLD: "60"          # how close an AI-proposed threat must be to count as a library threat
       EXTERNAL_INTELLIGENCE_ENABLED: "true"      # use the outside intelligence feeds (CISA, NVD ...) as evidence

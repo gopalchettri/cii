@@ -1365,7 +1365,7 @@ small.
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 16, 20, 6, 4 | how much TSG asks at once: threat questions per run, all at once (never above the module's calls at once), and whole threats per question (75 threats: 4 questions), scenarios in one write call (3 if a write times out), evidence reranker calls per worker (control searches do not take it): half of `CII_MAX_CONCURRENT_AI_CALLS`, as UAT's reranker works best at 8 at once and drops connections above 10, with no 429 (16 Nov 2026) |
 | `CII_THREAT_FINDING_REUSE_HOURS` | 24 | hours threat finding takes an earlier run's answer to the very same question (same asset facts, systems, library, prompt): a second Start on an unchanged asset makes no gate call; 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
-| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 180 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
+| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 60 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
 
 Every line above is changed in `configmap.yaml` and applied with a rollout restart: no new image. The 31-Oct-2026
 values need that release's image, and going back to 29-Oct-2026 takes back its values too (Part 4, "What is new

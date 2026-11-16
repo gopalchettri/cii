@@ -4303,8 +4303,8 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 |---|---|---|
 | `EXTERNAL_INTELLIGENCE_ENABLED` | false | the evidence master switch |
 | `EVIDENCE_SIMILARITY_THRESHOLD` | 1.0, dev only (`.env.example`: 30, bge calibrated 2026-10-19) | evidence kept at or above this reranker score; outside dev with intelligence on it must be set, or start-up stops |
-| `THREAT_SCENARIO_WORD_LIMIT` | 150-200 | scenario statement words (max is hard) |
-| `RISK_STATEMENT_WORD_LIMIT` | 100-150 | risk statement words (max is hard) |
+| `THREAT_SCENARIO_WORD_LIMIT` | 150-200 (UAT 120-180) | scenario statement words (max is hard) |
+| `RISK_STATEMENT_WORD_LIMIT` | 100-150 (UAT 80-120) | risk statement words (max is hard) |
 | `EVIDENCE_STATEMENT_WORD_LIMIT` | 30-80 | words of code's evidence sentence (over the max: code's own precedent is cited) |
 | `INITIAL_SET_SIZE`, `NEXT_SET_SIZE` | 6, 6 | paths written per set |
 | `TOTAL_SCENARIO_COUNT` | 0 (no cap) | paths selected per session |
@@ -4322,7 +4322,7 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 (UAT 16, 20, 6, 4; 3, 12 at a 300,000 budget) | gate batches at once per run, whole threats per gate batch (35 threats at 40: 1 call), scenarios in one write call per job (3 if a write times out), remote evidence reranker calls at once per process (control searches do not take it; about half of `CII_MAX_CONCURRENT_AI_CALLS`) |
 | `CII_THREAT_FINDING_REUSE_HOURS` | 24 (UAT 24) | threat finding takes an earlier run's answer to the very same question for this many hours (a second Start on an unchanged asset: no gate call, 5.6); 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20000 (UAT 20000; 250000 at a 300,000 budget) | the most tokens one AI call may hold (question estimate + answer room); a bigger batch is sent as two halves |
-| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 180 | after a 429: the longest one wait before its ±20 % (TSG's own 2, 5, 10, 15 s steps too), all waits (4 retries at most: 0, 20, 40, 60 s) before the job is retried, the slow-down's floor and how long it lasts (section 15) |
+| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 180 (UAT 20, 60, 4, 60) | after a 429: the longest one wait before its ±20 % (TSG's own 2, 5, 10, 15 s steps too), all waits (4 retries at most: 0, 20, 40, 60 s) before the job is retried, the slow-down's floor and how long it lasts (section 15) |
 | `CII_REDIS_CA_FILE` | "" (the system's CAs) | the CA file a `rediss://` Redis server's certificate is checked against; the host name is always checked |
 
 ---
