@@ -246,8 +246,6 @@ def build_remediation_chat(settings: Any) -> Any:
         _CallsInMemory(),  # type: ignore[arg-type]
         UNLIMITED_AI_SLOTS,
         UNLIMITED_AI_REQUEST_RATE,
-        UNLIMITED_AI_SLOTS,
-        UNLIMITED_AI_REQUEST_RATE,
     )
 
 

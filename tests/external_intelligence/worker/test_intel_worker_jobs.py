@@ -84,8 +84,8 @@ def test_the_recorded_products_come_from_the_asset_row_and_the_threats_systems()
     )
     request = evidence_request(context, _threat())
     asset_row, system = request.recorded_products.rows  # only the threat's system: the Historian is not in it
-    assert (asset_row.vendors, asset_row.versions) == (("Acme",), ("1.2",))
-    assert system.products == ("Windows", "Siemens WinCC", "Windows 10") and system.versions == ("9.0",)
+    assert asset_row.vendors == ("Acme",)  # a recorded version is not read: nothing compares it
+    assert system.products == ("Windows", "Siemens WinCC", "Windows 10")
     assert "OT" in request.asset_types
 
 

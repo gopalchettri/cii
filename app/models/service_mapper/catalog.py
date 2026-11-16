@@ -6,8 +6,6 @@ from typing import Any
 
 @dataclass(frozen=True)
 class CatalogRows:
-    sector_summary: list[dict[str, Any]]
-    service_mappings: list[dict[str, Any]]
     services: list[dict[str, Any]]
     sectors: list[dict[str, Any]]
     sector_links: list[dict[str, Any]]

@@ -150,8 +150,6 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
-    AiTask.THREAT_ACTIONS: 0.0,
-    AiTask.PLAN_CHECK: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
     AiTask.WRITE_SCENARIO: None,
     AiTask.REPAIR_SCENARIO: None,
@@ -165,10 +163,8 @@ REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
 CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.RELEVANCE_GATE: TUNING.answer_tokens_relevance_gate,
     AiTask.GAP_FILL: TUNING.answer_tokens_gap_fill,
-    AiTask.THREAT_ACTIONS: TUNING.answer_tokens_threat_actions,
     AiTask.WRITE_SCENARIO: TUNING.answer_tokens_write_scenario,
     AiTask.REPAIR_SCENARIO: TUNING.answer_tokens_repair_scenario,
-    AiTask.PLAN_CHECK: TUNING.answer_tokens_plan_check,
     AiTask.REMEDIATION_PLAN: TUNING.answer_tokens_remediation_plan,
     AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
 }
@@ -221,6 +217,8 @@ class LogEvent(StrEnum):
     MONGODB_VALIDATOR_NOT_APPLIED = "mongodb.validator_not_applied"  # an older server or no collMod right
     # collMod refused while the stored rule requires fields the code no longer writes: every insert fails
     MONGODB_VALIDATOR_STALE = "mongodb.validator_stale"
+    # a start-up index build outlasted the socket timeout: the server goes on building it, start-up goes on
+    MONGODB_INDEX_STILL_BUILDING = "mongodb.index_still_building"
     AI_CALL = "ai.call"
     AI_CALL_RECORD_FAILED = "ai.call_record_failed"
     AI_CALL_REFUSED = "ai.call_refused"  # a key, permission or model name the gateway refused
@@ -267,6 +265,7 @@ class LogEvent(StrEnum):
     CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
+    JOB_STOPPED_HANDED_BACK = "job.stopped_handed_back"  # its stopping worker gave it back: not a stall
     JOB_LEASE_RENEW_FAILED = "job.lease_renew_failed"
     JOB_RETRY_SCHEDULED = "job.retry_scheduled"
     JOB_WAITING = "job.waiting"  # given back to look again: another job holds what it needs (not an outage)

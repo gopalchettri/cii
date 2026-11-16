@@ -2,7 +2,6 @@
 header, the retries and how each call's outcome is counted."""
 
 import os
-import time
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -137,8 +136,8 @@ def _gateways(settings: Settings) -> set[tuple[str, str]]:
     """(LITELLM_MODEL_PREFIX or "", host) of every AI model's base URL: which hosts the AI calls go to."""
     models = [(settings.embedding_model, settings.embedding_base_url)]
     models += [(settings.rerank_model, settings.rerank_base_url)]
-    for chat in (module_chat(settings, module) for module in ChatModule):  # each module's main and fallback
-        models += [(chat.model, chat.base_url), (chat.fallback_model, chat.base_url)]
+    chats = [module_chat(settings, module) for module in ChatModule]
+    models += [(chat.model, chat.base_url) for chat in chats]
     return {
         (LITELLM_MODEL_PREFIX if model.startswith(LITELLM_MODEL_PREFIX) else "", host)
         for model, url in models
@@ -201,20 +200,19 @@ def build_api_key_header(header: str, api_key: str, option: str = "extra_headers
 
 def call_with_retries[Answer](
     call: Callable[[], Answer], rate: AiRequestRate, slots: AiSlots, *, model: str, task: str, tokens: int = 0
-) -> tuple[Answer, float]:
-    """(the answer, its seconds without the request-turn and slot waits) of an AI call to `model` for `task`
-    and the check of its answer. Each attempt waits out `rate`'s pause or line holding no slot, then holds a
-    slot of `slots` for its own turn (`tokens`: its size) and the call alone. A 429 pauses `rate` on every pod
-    and is told to `slots`. Asked again when busy, unreachable or short: AiLimits.RETRIES times, 0.5, 1, 2 s
-    apart; a 429 (counted) as rate.wait_after_rate_limit says. A timed-out call is not asked again."""
-    started, attempt = time.perf_counter(), 0
-    waits = rate_limited_waits = 0.0  # request turns and AI slots: not the call's own seconds
+) -> Answer:
+    """The answer of an AI call to `model` for `task` and the check of its answer. Each attempt waits out
+    `rate`'s pause or line holding no slot, then holds a slot of `slots` for its own turn (`tokens`: its size)
+    and the call alone. A 429 pauses `rate` on every pod and is told to `slots`. Asked again when busy,
+    unreachable or short: AiLimits.RETRIES times, 0.5, 1, 2 s apart; a 429 (counted) as
+    rate.wait_after_rate_limit says. A timed-out call is not asked again."""
+    attempt, rate_limited_waits = 0, 0.0
     while True:
-        waits += rate.wait_for_send_time(task)  # a 429's pause or a long line: waited holding no slot
+        rate.wait_for_send_time(task)  # a 429's pause or a long line: waited holding no slot
         try:
-            with slots.hold_slot(task) as slot_wait:  # per attempt: a 429's Retry-After keeps no slot
-                waits += slot_wait + rate.wait_for_turn(task, tokens)  # spaced as sent, after any slot wait
-                answer, seconds = call(), time.perf_counter() - started - waits
+            with slots.hold_slot(task):  # per attempt: a 429's Retry-After keeps no slot
+                rate.wait_for_turn(task, tokens)  # spaced as sent, after any slot wait
+                answer = call()
         except litellm.Timeout:
             raise
         except litellm.RateLimitError as exc:
@@ -233,7 +231,7 @@ def call_with_retries[Answer](
             if wait is None or not (unmapped or isinstance(exc, _RETRYABLE_ERRORS)):
                 raise
         else:
-            return answer, seconds
+            return answer
         sleep_unless_lease_lost(wait)
         attempt += 1
 

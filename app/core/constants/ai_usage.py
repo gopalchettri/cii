@@ -18,7 +18,7 @@ class AiUsageCollection(StrEnum):
 
 
 #: Where the previous release kept the AI call texts (expired after 14 days): copied in by the ai_usage_tools
-#: copy-texts command, and read for the answers of jobs re-sent across the rollout.
+#: copy-texts command (the rollback path in deploy/DEPLOYMENT_GUIDE.md).
 PREVIOUS_AI_CALL_TEXTS: Final = "tsg_ai_calls"
 
 
@@ -120,7 +120,7 @@ GROUP_TIME_FORMATS: Final[dict[str, str]] = {
 class AiUsageLimits:
     ROLLUP_EVERY_SECONDS: Final = 300  # beat sends the hourly add-up this often (maintenance queue)
     #: An add-up redoes this many hours before the newest it holds: an ask's rows are written when it ends,
-    #: so a long ask (retries, a fallback model) lands its rows in an hour already added up.
+    #: so a long ask (retries, a re-ask) lands its rows in an hour already added up.
     ROLLUP_LOOKBACK_HOURS: Final = 2
     ROLLUP_LOCK_KEY: Final = "tsg:ai_usage:rollup"  # one add-up at a time, across workers
     ROLLUP_LOCK_SECONDS: Final = 240  # under the interval: a crashed run never blocks the next one

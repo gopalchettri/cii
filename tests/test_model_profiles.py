@@ -17,11 +17,7 @@ from app.core.constants import ChatModule
 from app.models.ai.profiles import ChatModelProfile
 
 _PROFILES_BY_SETTING = {
-    **{
-        f"CII_{module.upper()}_CHAT_{model}": CHAT_MODEL_PROFILES
-        for module in ChatModule
-        for model in ("MODEL", "FALLBACK_MODEL")
-    },
+    **{f"CII_{module.upper()}_CHAT_MODEL": CHAT_MODEL_PROFILES for module in ChatModule},
     "CII_EMBEDDING_MODEL": EMBEDDING_MODEL_PROFILES,
     "CII_RERANK_MODEL": RERANK_MODEL_PROFILES,
 }
@@ -32,8 +28,7 @@ def test_every_model_named_in_env_example_has_a_profile() -> None:
     for setting, profiles in _PROFILES_BY_SETTING.items():
         match = re.search(rf"^{setting}=(\S*)", env_example, re.MULTILINE)
         assert match, setting
-        if match.group(1):  # an empty fallback model (none) is allowed
-            find_model_profile(profiles, match.group(1))
+        find_model_profile(profiles, match.group(1))
 
 
 def test_a_local_model_path_resolves_by_its_folder_name() -> None:

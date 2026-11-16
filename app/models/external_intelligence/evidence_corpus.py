@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.core.constants import IntelLimits
 from app.models.external_intelligence.evidence import IntelHit
 
 
@@ -61,7 +60,6 @@ class SnapshotDescription:
             "source_versions": self.source_versions,
             "counts": self.counts,
             "checksum": self.checksum,
-            "parser_version": IntelLimits.PARSER_VERSION,
             "embedding_model": self.embedding_model,
             "rerank_model": self.rerank_model,
         }

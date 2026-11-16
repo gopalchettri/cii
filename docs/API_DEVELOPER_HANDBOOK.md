@@ -890,7 +890,7 @@ Build this after the original scenario path works with `EXTERNAL_INTELLIGENCE_EN
 ## Stage 12 — Add live updates and implement Service Mapper
 
 1. In `app/realtime/publisher.py`, name per-session/per-plan channels and publish after the persisted status changes. In `app/realtime/event_hub.py`, share one Redis subscription among streams in the API process. A published message tells a stream to **reread MongoDB**; it is not the result itself.
-2. In `scenario.events_router`, add `GET /v1/sessions/{session_id}/events` and `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`. Validate ownership **before** opening the stream; send the current status immediately, then changes; recheck key access while connected; emit a deletion event and close after deletion. See `_status_stream()` in `app/api/routers/scenario.py`.
+2. In `scenario.events_router`, add `GET /v1/sessions/{session_id}/events` and `GET /v1/sessions/{session_id}/scenarios/{scenario_id}/treatment-plan/events`. Validate ownership **before** opening the stream; send the current status immediately, then changes; recheck key access while connected; emit a deletion event and close after deletion. See `status_stream()` in `app/api/status_stream.py`.
 3. Service Mapper: built following **Recipe D1–D16**, with the later owner decisions recorded in [service_mapper/SERVICE_MAPPER.md](service_mapper/SERVICE_MAPPER.md) (one direction per service, names only to the AI, every database service grouped by sector). Its worker consumes only `tsg_servicemapper`.
 4. Register `scenario.events_router` and `service_mapper_router` in `app/main.py`; add their tags/descriptions in `app/api/openapi_docs.py`.
 
@@ -920,7 +920,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). Before Recipe D, the local script starts `tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation` on one worker, `tsg_maintenance` on another and `tsg_reaper` on a third (`reaper@`, metrics port 9104), plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; `/ready` then reports that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
+`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). Before Recipe D, the local script starts `tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation` on one worker (since D79 `tsg_remediation` gets a worker of its own when the reranker is remote), `tsg_maintenance` on another and `tsg_reaper` on a third (`reaper@`, metrics port 9104), plus beat. After D9 and D13, it also starts a separate `tsg_servicemapper` worker; `/ready` then reports that worker's heartbeat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
 
 ### 13.3 Run tests without touching application data
 

@@ -79,7 +79,7 @@ def test_a_longer_retry_after_is_honoured_up_to_the_longest_wait_and_the_total(
     assert rate_limited_wait("12", attempt=0, waited=0) == 12
     assert rate_limited_wait("60", attempt=0, waited=0) == 20
     assert rate_limited_wait("60", attempt=2, waited=50) == 10  # the rest of the minute
-    assert rate_limited_wait("60", attempt=3, waited=60) is None  # asked enough: the fallback model answers
+    assert rate_limited_wait("60", attempt=3, waited=60) is None  # asked enough: the job tries again later
 
 
 def _busy_waits_setting(source: str, key: str) -> int:
@@ -98,7 +98,7 @@ def test_litellm_s_60_s_retry_after_is_never_waited_whole_yet_the_last_try_lands
 ) -> None:
     """UAT 29 Oct: the room a refused call needs comes back within seconds, so one 60 s wait idles the
     budget. No one wait is the whole window; the tries (about 0/20/40/60 s) still reach its end before the
-    fallback model, at the jitter's lowest, none and highest."""
+    call gives up, at the jitter's lowest, none and highest."""
     for name in ("MAX", "TOTAL"):
         setting = _busy_waits_setting(source, f"CII_AI_BUSY_{name}_WAIT_SECONDS")
         monkeypatch.setattr(AiLimits, f"RATE_LIMITED_{name}_WAIT_SECONDS", setting)
@@ -168,7 +168,7 @@ def test_no_wait_after_a_429_is_longer_than_the_longest_wait_setting(monkeypatch
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_MAX_WAIT_SECONDS", 5)
     waits = [rate_limited_wait(None, attempt, waited=0) for attempt in range(4)]
     assert all(wait is not None and wait <= 5 for wait in waits)
-    assert rate_limited_wait(None, attempt=4, waited=0) is None  # asked enough: the backup model answers
+    assert rate_limited_wait(None, attempt=4, waited=0) is None  # asked enough: the job tries again later
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_MAX_WAIT_SECONDS", 60)
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_TOTAL_WAIT_SECONDS", 240)  # UAT's Retry-After 60, four times
     assert [rate_limited_wait("60", n, waited=60 * n) for n in range(5)] == [60] * 4 + [None]

@@ -38,7 +38,7 @@ from app.core.exceptions import (
 from app.data_access.jobs.job_repository import JobLease, JobRepository, failed_job_fields, retry_notice
 from app.realtime.publisher import publish_mapping_status, publish_remediation_status, publish_session_status
 from app.worker.celery_app import send_job
-from app.worker.lease_renewal import give_job_back, keep_lease_alive
+from app.worker.lease_renewal import give_job_back, handing_back, keep_lease_alive
 
 log = structlog.get_logger(__name__)
 
@@ -169,15 +169,18 @@ def _fail_or_end(lease: JobLease, collection: Collection, code: ErrorCode, messa
 
 
 def _end_lost_delivery(collection: Collection, record_id: str) -> NoReturn:
-    """This delivery no longer owns its job: its owner cancelled or deleted it (G214, a normal end: info), or
-    another delivery took it over (a warning: it stalled). Ignore: a delivery's end is not the job's outcome,
-    so it counts as neither a success nor a failure (lifecycle.py counts jobs)."""
+    """This delivery no longer owns its job: its owner cancelled or deleted it (G214, a normal end: info), its
+    stopping worker handed it back (info), or another delivery took it over (a warning: it stalled). Ignore: a
+    delivery's end is not the job's outcome, so it counts as neither a success nor a failure (lifecycle.py
+    counts jobs)."""
     try:
         status = JobRepository(get_mongodb()[collection]).get_job_status(record_id)
     except MONGO_UNAVAILABLE_ERRORS:
         status = Status.RUNNING  # unknown: reported as a lost lease
     if status is None or status == Status.CANCELLED:
         log.info(LogEvent.JOB_STOPPED_BY_OWNER, record_id=record_id, status=status or "deleted")
+    elif handing_back.is_set():
+        log.info(LogEvent.JOB_STOPPED_HANDED_BACK, record_id=record_id, status=status)
     else:
         log.warning(LogEvent.JOB_LEASE_LOST, record_id=record_id)
     raise Ignore

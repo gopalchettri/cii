@@ -106,16 +106,6 @@ class LibraryControl:
 
 
 @dataclass(frozen=True)
-class ResolvedControls:
-    """Control references resolved against the library (BLUEPRINT M05 L3): the library rows they name, in the
-    order first named, and the register entries no row matches, kept as text (tolerant mode only)."""
-
-    controls: tuple[LibraryControl, ...]
-    texts: tuple[str, ...] = ()
-    notes: tuple[str, ...] = ()  # entries left out or changed, for the reviewer (never the AI)
-
-
-@dataclass(frozen=True)
 class LoadedLibraries:
     """One consistent snapshot: both libraries and the fingerprint they were loaded at, replaced together."""
 

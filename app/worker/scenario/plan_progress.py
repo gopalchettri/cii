@@ -1,5 +1,5 @@
-"""A run's plan paths as the write job settles them, each change in one fenced write with the run's counts and
-plan note, then the set's next batch handed over, or the set or the regenerate ended."""
+"""A run's plan paths as the write job settles them, each change in one fenced write with the run's counts,
+then the set's next batch handed over, or the set or the regenerate ended."""
 
 from datetime import datetime
 from typing import Any
@@ -104,9 +104,9 @@ class PlanProgress:
         also: dict[str, Any] | None = None,
         counted: tuple[ScenarioOutcome, ...] = (),
     ) -> None:
-        """Save attack path states, the plan's figures, the scenario counts and the plan note in one fenced
-        write, then count `counted` in tsg_scenarios_total (only the delivery whose write is taken does) and
-        send a live update. `also`: more fields for the same write."""
+        """Save attack path states, the plan's figures and the scenario counts in one fenced write, then
+        count `counted` in tsg_scenarios_total (only the delivery whose write is taken does) and send a live
+        update. `also`: more fields for the same write."""
         for attack_path_id, state in states.items():
             self.paths[attack_path_id].update(state)
         figures = count_plan_paths(self.paths.values())

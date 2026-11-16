@@ -100,19 +100,13 @@ def get_ai_slots() -> AiSlots:
 
 
 @singleton
-def get_module_ai_slots() -> dict[ChatModule, tuple[AiSlots, AiSlots]]:
-    """Each module's own slots for its chat calls, (main, fallback): its 429s and its calls at once never slow
-    another module or the search calls. A fallback cap of 0 needs no Redis."""
+def get_module_ai_slots() -> dict[ChatModule, AiSlots]:
+    """Each module's own slots for its chat calls: its 429s and its calls at once never slow another module
+    or the search calls."""
     redis, settings, wait = get_redis_client(), get_settings(), _ai_slot_wait_seconds
-    pools = {}
-    for module in ChatModule:
-        chat, fallback_key = module_chat(settings, module), f"{AiLimits.FALLBACK_SLOTS_KEY}:{module}"
-        fallback_cap = chat.max_concurrent_fallback_calls
-        pools[module] = (
-            AiSlots(redis, chat.max_concurrent_ai_calls, wait, f"{AiLimits.SLOTS_KEY}:{module}"),
-            AiSlots(redis if fallback_cap else None, fallback_cap, wait, fallback_key),
-        )
-    return pools
+    caps = {module: module_chat(settings, module).max_concurrent_ai_calls for module in ChatModule}
+    key = AiLimits.SLOTS_KEY
+    return {module: AiSlots(redis, cap, wait, f"{key}:{module}") for module, cap in caps.items()}
 
 
 def ai_request_rate_for(
@@ -171,15 +165,13 @@ def _chat_model_of(module: ChatModule) -> ChatModel:
     """`module`'s chat model: its own settings (CII_<MODULE>_CHAT_...), slots and request turns."""
     apply_proxy_once()
     settings = get_settings()
-    chat, (slots, fallback_slots) = module_chat(settings, module), get_module_ai_slots()[module]
+    chat = module_chat(settings, module)
     return chat_model_from(
         chat,
         settings.ai_key_header,
         get_ai_call_repository(),
-        slots,
+        get_module_ai_slots()[module],
         ai_request_rate_for(chat.model, chat.requests_per_minute, chat.tokens_per_minute, module),
-        fallback_slots,
-        ai_request_rate_for(chat.fallback_model, chat.fallback_requests_per_minute, scope=module),
     )
 
 
@@ -367,7 +359,7 @@ def get_service_mapper_service() -> ServiceMapperService:
         get_mapping_repository(),
         get_settings(),
         send_job,
-        get_service_catalog_repository(),
+        get_service_catalog_provider().snapshot,
         get_audit_repository(),
         publish_mapping_status,
     )

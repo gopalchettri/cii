@@ -125,7 +125,7 @@ def _systems_of(context: FrozenContext, threat: dict[str, Any]) -> list[dict[str
 
 
 def _recorded(row: dict[str, Any]) -> RecordedProduct:
-    """The vendors, products and versions one record of the asset (itself or a system) states, as written."""
+    """The vendors and products one record of the asset (itself or a system) states, as written."""
 
     def values(keys: Iterable[str]) -> tuple[str, ...]:
         """Every text the row states under these field names."""
@@ -134,7 +134,6 @@ def _recorded(row: dict[str, Any]) -> RecordedProduct:
     return RecordedProduct(
         values(RecordedFields.VENDOR_KEYS),
         values(RecordedFields.PRODUCT_KEYS),
-        values(RecordedFields.VERSION_KEYS),
     )
 
 

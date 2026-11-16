@@ -1,8 +1,7 @@
 """The owner's check of every card a run serves (2026-10-18): an acting attacker the plan listed for its
-threat, the reviewer's verdicts that the scenario tells its threat and the risk its impact, the evidence
-(cited with external intelligence on, source-documented or nearest; none with it off, or when none was
-found), each text within its configured word maximum and no duplicate. Blocked records are listed with why,
-for review. Read-only: no AI call, nothing written.
+threat, the evidence (cited with external intelligence on, source-documented or nearest; none with it off,
+or when none was found), each text within its configured word maximum and no duplicate. Blocked records
+are listed with why, for review. Read-only: no AI call, nothing written.
 
 From the project folder: .venv\\Scripts\\python scripts\\scorecard.py [run id]   (default: TSG_RUN_ID in
 debug/.env). Exit 1 when any served card fails."""
@@ -30,22 +29,6 @@ def actor(card: dict[str, Any], threats: dict[str, dict[str, Any]]) -> str:
     if acting.get("id") not in {listed_actor.get("id") for listed_actor in listed}:
         return f"{acting['name']} is not an attacker the plan listed for its threat"
     return ""
-
-
-def threat(card: dict[str, Any]) -> str:
-    return _verdict(card, "same_threat", "the statement tells another threat")
-
-
-def risk(card: dict[str, Any]) -> str:
-    return _verdict(card, "same_impact", "the risk tells another impact")
-
-
-def _verdict(card: dict[str, Any], verdict: str, wrong: str) -> str:
-    """The reviewer's verdict; a check not made stores none, so correctness is not established."""
-    value = (card.get("plan_check") or {}).get(verdict)
-    if value is None:
-        return "no reviewer verdict recorded: correctness not established"
-    return "" if value else wrong
 
 
 #: The note on a card written with intelligence on when no evidence was found.
@@ -94,9 +77,7 @@ def words(card: dict[str, Any]) -> str:
     return "; ".join(f"{name} {count} words, over {most}" for name, count, most in counted if count > most)
 
 
-CHECKS: dict[str, Callable[[dict[str, Any]], str]] = {
-    "threat": threat, "risk": risk, "evidence": evidence, "words": words,
-}  # fmt: skip
+CHECKS: dict[str, Callable[[dict[str, Any]], str]] = {"evidence": evidence, "words": words}
 
 
 def served_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:

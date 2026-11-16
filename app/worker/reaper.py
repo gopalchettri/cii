@@ -201,13 +201,13 @@ def _resend_queued_job(
             "message": ErrorMessage.JOB_NEVER_STARTED.format(sends=resends),
             "reason": AbandonReason.NEVER_STARTED,
         }
-        if jobs.resend_or_fail_unsent_job(record, now, counted=False, error=error):
+        if jobs.resend_or_fail_unsent_job(record, now, error=error):
             metrics.count_job(job["task"], "failure")
             job_log.warning(LogEvent.JOB_FAILED, resends=resends, **error)
             publish(record["_id"])
         return
     # Moving due_at forward first means one re-send per REQUEUE_QUEUED_AFTER_SECONDS, never one per minute.
-    if not jobs.resend_or_fail_unsent_job(record, now, counted=False):
+    if not jobs.resend_or_fail_unsent_job(record, now):
         return
     job_log.info(LogEvent.JOB_REQUEUED, reason="never_picked_up", resends=resends)
     # Counted only once the broker took it: a broker outage never fails a healthy job as never started.

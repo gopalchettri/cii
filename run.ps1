@@ -59,8 +59,10 @@ $Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 $Python = Join-Path $Root '.venv\Scripts\python.exe'
 $EnvFile = Join-Path $Root '.env'
 $StateFile = Join-Path $Root '.run\processes.json'
+$WorkerTargetsFile = Join-Path $Root '.run\worker-targets.json'  # read by prometheus.local.yml
 $Monitoring = Join-Path $Root 'scripts\monitoring.py'
 $WorkerName = "scenarios@$env:COMPUTERNAME"  # named by module: logs/worker-scenarios.log
+$RemediationName = "remediation@$env:COMPUTERNAME"
 $MapperWorkerName = "mapper@$env:COMPUTERNAME"
 $MaintenanceName = "maintenance@$env:COMPUTERNAME"
 $ReaperName = "reaper@$env:COMPUTERNAME"
@@ -72,11 +74,15 @@ $GrafanaUrl = 'http://localhost:3000/grafana/'
 # jobs. With one worker for all queues, ten long mappings held every thread and a lost job was never re-sent
 # (live test 2026-10-11); library builds and intelligence refreshes, up to an hour each, get the maintenance one.
 # tsg_controls stays in the job worker: the laptop's local CPU reranker is shared within one process.
+# tsg_remediation has a worker of its own only with a remote reranker (UAT): a plan waiting for an AI slot holds
+# its thread, and ten users' plans would take every job worker thread from the Starts. With the local one the
+# job worker serves it too (Get-ProgramNames, Get-Arguments): a second process would load the model again.
 $Programs = [ordered]@{
     api         = @('-m', 'uvicorn', 'app.main:app', '--host', $ApiHost, '--port', '8000')
-    worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '10',
-                    '-Q', 'tsg_threats,tsg_scenarios,tsg_controls,tsg_remediation', '-n', $WorkerName,
-                    '--loglevel=INFO')
+    worker      = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '30',
+                    '-Q', 'tsg_threats,tsg_scenarios,tsg_controls', '-n', $WorkerName, '--loglevel=INFO')
+    remediation = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
+                    '-Q', 'tsg_remediation', '-n', $RemediationName, '--loglevel=INFO')
     service_mapper = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '2',
                        '-Q', 'tsg_servicemapper', '-n', $MapperWorkerName, '--loglevel=INFO')
     maintenance = @('-m', 'celery', '-A', 'app.worker', 'worker', '--pool=threads', '-c', '3',
@@ -91,7 +97,23 @@ $ProgramEnv = @{
     maintenance = @{ CII_WORKER_METRICS_PORT = '9102' }
     service_mapper = @{ CII_WORKER_METRICS_PORT = '9103' }
     reaper = @{ CII_WORKER_METRICS_PORT = '9104' }
+    remediation = @{ CII_WORKER_METRICS_PORT = '9105' }
 }
+# A click inside a console window starts QuickEdit's text selection ("Select" in its title), and Windows then
+# holds every line the program writes: the program stops at its next log line until Esc. Each window turns
+# QuickEdit off for itself (clears ENABLE_QUICK_EDIT_MODE 0x40, sets ENABLE_EXTENDED_FLAGS 0x80), leaving the
+# user's own console setting alone; Edit > Mark still selects text, on purpose.
+$QuickEditOff = @'
+Add-Type -Namespace Tsg -Name ConsoleInput -MemberDefinition @"
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
+"@
+$consoleInput = [Tsg.ConsoleInput]::GetStdHandle(-10); $mode = [uint32]0
+if ([Tsg.ConsoleInput]::GetConsoleMode($consoleInput, [ref]$mode)) {
+    [void][Tsg.ConsoleInput]::SetConsoleMode($consoleInput, [uint32](($mode -bor 0x80) -band 0xFFBF))
+}
+'@
 
 # PowerShell also takes the typographic apostrophes as quotes: each is doubled, or a folder such as
 # "Gopal's" typed with a curly apostrophe would break the window's command.
@@ -199,7 +221,42 @@ function Get-Arguments([string]$Name) {
         if ($Python.Contains(' ')) { throw "-Reload needs a project path without spaces: $Root" }
         return @('-m', 'watchfiles', '--filter', 'python', "$Python $($Programs.api -join ' ')", 'app')
     }
-    return $Programs[$Name]
+    $arguments = @($Programs[$Name])
+    $threads = switch ($Name) {  # more users: .env only
+        'worker' { Get-EnvValue 'CII_WORKER_THREADS' }
+        # One mapping is one AI call: as many threads as its cap; 0 (no limit) or missing keeps 2.
+        'service_mapper' {
+            $cap = Get-EnvValue 'CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS'
+            if ($cap -ne '0') { $cap }
+        }
+        # Its cap's plans in AI calls, and two more past them; 0 (no limit) or missing: the app's own cap, 16.
+        'remediation' {
+            $cap = [int](Get-EnvValue 'CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS')
+            $(if ($cap -gt 0) { $cap } else { 16 }) + 2
+        }
+    }
+    if ($threads) { $arguments[[array]::IndexOf($arguments, '-c') + 1] = "$threads" }
+    if ($Name -eq 'worker' -and (Get-ProgramNames) -notcontains 'remediation') {
+        $queues = [array]::IndexOf($arguments, '-Q') + 1
+        $arguments[$queues] = "$($arguments[$queues]),tsg_remediation"
+    }
+    return $arguments
+}
+
+function Get-ProgramNames {
+    # The programs start runs: the remediation worker only with a remote reranker (see $Programs).
+    @($Programs.Keys | Where-Object { $_ -ne 'remediation' -or (Get-EnvValue 'CII_RERANK_BASE_URL') })
+}
+
+function Save-WorkerTargets([string[]]$Names) {
+    # Prometheus reads the remediation worker's address from this file: a fixed one that no worker serves
+    # (the laptop's layout) would raise TargetDown. ponytail: a plain write; a Prometheus already running may
+    # read it half-written and keep its old list until its 5-minute re-read: write a temp file and rename if
+    # that ever matters.
+    $port = $ProgramEnv.remediation.CII_WORKER_METRICS_PORT
+    $targets = if ($Names -contains 'remediation') { "`"localhost:$port`"" }
+    New-Item -ItemType Directory -Force -Path (Split-Path $WorkerTargetsFile) | Out-Null
+    Set-Content -LiteralPath $WorkerTargetsFile -Value "[{`"targets`": [$targets]}]" -Encoding ASCII
 }
 
 function Start-Window([string]$Name) {
@@ -208,8 +265,8 @@ function Start-Window([string]$Name) {
     if ($ProgramEnv.Contains($Name)) {
         foreach ($entry in $ProgramEnv[$Name].GetEnumerator()) { $settings += "`$env:$($entry.Key) = $(Quote $entry.Value); " }
     }
-    $inner = "`$Host.UI.RawUI.WindowTitle = 'TSG $Name'; Set-Location -LiteralPath $(Quote $Root); $settings" +
-             "& $(Quote $Python) $arguments"
+    $inner = "$QuickEditOff`n`$Host.UI.RawUI.WindowTitle = 'TSG $Name'; Set-Location -LiteralPath $(Quote $Root); " +
+             "$settings& $(Quote $Python) $arguments"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
     return Start-Process powershell.exe -ArgumentList '-NoProfile', '-NoExit', '-EncodedCommand', $encoded `
         -WorkingDirectory $Root -PassThru
@@ -228,7 +285,7 @@ function Assert-CanStart {
         throw ("v1's worker or beat is running (process $($v1.ProcessId -join ', ')). v1 and v2 share Redis " +
                'databases 0 and 1: stop v1 first (its stop.ps1).')
     }
-    foreach ($port in 8000, 9100, 9102, 9103, 9104) {
+    foreach ($port in 8000, 9100, 9102, 9103, 9104, 9105) {
         $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
                     Select-Object -First 1
         if ($listener) {
@@ -309,9 +366,11 @@ function Invoke-Start {
     # Grafana's logs and audit panels read the log files (scripts\monitoring_commands.py: Alloy reads logs\).
     $setLogDir = -not (Get-EnvValue 'CII_LOG_DIR') -and -not $env:CII_LOG_DIR
     if ($setLogDir) { $env:CII_LOG_DIR = 'logs' }
+    $names = Get-ProgramNames
+    Save-WorkerTargets $names
     $state = [ordered]@{}
     try {
-        foreach ($name in $Programs.Keys) {
+        foreach ($name in $names) {
             $window = Start-Window $name
             $state[$name] = @{ pid = $window.Id; started = $window.StartTime.ToUniversalTime().ToString('o')
                                elevated = $Elevated }
@@ -354,7 +413,7 @@ function Invoke-Start {
 
 function Invoke-Stop {
     $state = Read-State
-    $workers = @(foreach ($name in 'worker', 'service_mapper', 'maintenance', 'reaper') {
+    $workers = @(foreach ($name in 'worker', 'remediation', 'service_mapper', 'maintenance', 'reaper') {
         if ($state.Contains($name)) { try { Get-Owned $state[$name] } catch { $null } }
     }) | Where-Object { $_ }
     if ($workers -and -not (Test-Broker)) {
@@ -364,7 +423,7 @@ function Invoke-Stop {
         # stays "running" until its lease runs out (2 min), and /ready counts the dead worker for up to 1 min.
         Write-Host "Asking the workers to finish their running jobs (up to $DrainSeconds s)..." -ForegroundColor Cyan
         # A worker shuts down instead of answering, so celery reports "No nodes replied": expected.
-        $names = "$WorkerName,$MapperWorkerName,$MaintenanceName,$ReaperName"
+        $names = "$WorkerName,$RemediationName,$MapperWorkerName,$MaintenanceName,$ReaperName"
         Invoke-Native { & $Python -m celery -A app.worker control shutdown --destination $names --timeout 5 } |
             Out-Null
         $deadline = (Get-Date).AddSeconds($DrainSeconds)

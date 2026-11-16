@@ -852,12 +852,18 @@ def test_a_window_started_as_administrator_is_never_forgotten() -> None:
 def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> None:
     """G198: the job worker's port (.env.example's CII_WORKER_METRICS_PORT) and the maintenance worker's (set
     by run.ps1) are exactly the laptop Prometheus' worker targets: a worker on another port is never scraped.
+    The remediation worker, started only with a remote reranker, is read from the file run.ps1 writes.
     """
     default = dotenv_values(REPO / ".env.example")["CII_WORKER_METRICS_PORT"]
-    started = re.findall(r"CII_WORKER_METRICS_PORT = '(\d+)'", (REPO / "run.ps1").read_text(encoding="ascii"))
+    script = (REPO / "run.ps1").read_text(encoding="ascii")
+    started = dict(re.findall(r"(\w+) = @\{ CII_WORKER_METRICS_PORT = '(\d+)' \}", script))
+    assert started.pop("remediation") == "9105"  # tests/test_run_ps1_workers.py: in the file when it runs
     local = yaml.safe_load(
         (REPO / "observability" / "prometheus" / "prometheus.local.yml").read_text(encoding="utf-8")
     )
     (worker,) = [job for job in local["scrape_configs"] if job["job_name"] == "worker"]
     targets = {target for config in worker["static_configs"] for target in config["targets"]}
-    assert targets == {f"localhost:{port}" for port in (default, *started)} and len(started) == 3
+    assert targets == {f"localhost:{port}" for port in (default, *started.values())} and len(started) == 3
+    [[written]] = [config["files"] for config in worker["file_sd_configs"]]
+    assert (OBS / "prometheus" / written).resolve() == REPO / ".run" / "worker-targets.json"
+    assert "$WorkerTargetsFile = Join-Path $Root '.run\\worker-targets.json'" in script

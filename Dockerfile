@@ -44,9 +44,10 @@ RUN python -m compileall -b -q app \
  && find app -name '*.py' -delete \
  && find app -name '__pycache__' -type d -prune -exec rm -rf {} +
 
-# OpenShift runs the container as a random user in group 0: /app belongs to group 0 with the owner's rights
-# (beat writes its schedule to an emptyDir, never here). 10001 is the user everywhere else.
-RUN useradd -u 10001 -g 0 -M -d /app tsg && chown -R 10001:0 /app && chmod -R g=u /app
+# OpenShift runs the container as a random user in group 0: /app is root's, and group 0 may read it but
+# never write it, so a code-execution bug cannot plant code for later imports (beat writes its schedule to an
+# emptyDir, workers their heartbeat to /tmp, never here). 10001 is the user everywhere else.
+RUN useradd -u 10001 -g 0 -M -d /app tsg && chown -R 0:0 /app && chmod -R g=rX /app
 USER 10001
 
 EXPOSE 8000 9100

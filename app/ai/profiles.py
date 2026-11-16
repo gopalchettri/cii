@@ -33,7 +33,7 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
         reasoning_effort="none",
         context_tokens=114_688 + 12_288,
     ),
-    # UAT's glm (remediation, service mapper, scenario fallback): the gateway's model info (2026-10-29),
+    # UAT's glm (remediation, service mapper): the gateway's model info (2026-10-29),
     # max_input_tokens 262,144, plus the answer kept free.
     # It answers in 55-99 s: 180 s keeps its longest answers from timing out (a timed-out gate batch fails
     # the job).

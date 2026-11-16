@@ -4785,7 +4785,7 @@
       "id": 21,
       "type": "table",
       "title": "Slowest AI steps",
-      "description": "How long 95 % of the AI calls of each step took, slowest first. Above a minute: the AI gateway is slow (see docs/UAT_LLM_TIMEOUT_RUNBOOK.md).",
+      "description": "How long 95 % of the AI calls of each step took, slowest first. Above a minute: the AI gateway is slow (see deploy/DEPLOYMENT_GUIDE.md Part 5, the 429 row).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -5673,7 +5673,7 @@
       "id": 63,
       "type": "timeseries",
       "title": "Wait for an AI request's turn (95 %), by model",
-      "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE or CII_<MODULE>_CHAT_FALLBACK_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
+      "description": "How long 95 % of each model's AI requests waited for their turn under that model's own requests-a-minute limit (a module's CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE, CII_EMBEDDING_REQUESTS_PER_MINUTE, CII_RERANK_REQUESTS_PER_MINUTE); a request that did not wait counts as 0, and a model with no limit (0) has no line. Above 30 s for 10 minutes fires AiRequestRateWaitHigh for that model: more work is sent to it than its limit allows, so jobs slow down.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -6848,7 +6848,7 @@
       "id": 73,
       "type": "table",
       "title": "AI tokens by module and API call",
-      "description": "Tokens sent (in) and answered (out) by chat calls. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "Tokens sent (in) and answered (out) by every AI call: writing, embedding and ranking. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.ai import ChatModel
 from app.ai.attempts import one_ask
-from app.core.constants import CHAT_MAX_OUTPUT_TOKENS, AiLimits, AiTask
+from app.core.constants import AiLimits, AiTask
 
 #: (system prompt, user prompt)
 ChatPrompt = tuple[str, str]
@@ -28,8 +28,8 @@ def ask_ai_and_check(
     """What a checked answer means. An answer with problems is asked again once with them; raises
     UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
     `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
-    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, the fallback model, a
-    re-ask) is one ask in tsg_ai_usage."""
+    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, a re-ask) is one ask
+    in tsg_ai_usage."""
     with one_ask():
         answer = chat.ask_for_checked_json(
             task,
@@ -42,22 +42,23 @@ def ask_ai_and_check(
     return meaning
 
 
-def call_tokens(prompt: ChatPrompt, task: AiTask) -> int:
-    """The tokens one call of `task` holds at the gateway: its prompt, erring high, plus its answer room."""
-    return sum(map(len, prompt)) // AiLimits.PROMPT_CHARS_PER_TOKEN + CHAT_MAX_OUTPUT_TOKENS[task]
+def call_tokens(prompt: ChatPrompt, chat: ChatModel, task: AiTask) -> int:
+    """The tokens one call of `task` holds at the gateway: its prompt, erring high, plus the answer room
+    `chat` asks for it."""
+    return sum(map(len, prompt)) // AiLimits.PROMPT_CHARS_PER_TOKEN + chat.get_answer_room(task)
 
 
 def within_call_limit[Item](
-    items: Sequence[Item], prompt_of: Callable[[Sequence[Item]], ChatPrompt], task: AiTask
+    items: Sequence[Item], prompt_of: Callable[[Sequence[Item]], ChatPrompt], chat: ChatModel, task: AiTask
 ) -> list[Sequence[Item]]:
     """`items` as one batch, or halved, again where needed, until each batch's call fits
     AiLimits.CALL_TOKENS_LIMIT; one item is never split (the gateway judges it)."""
-    if len(items) <= 1 or call_tokens(prompt_of(items), task) <= AiLimits.CALL_TOKENS_LIMIT:
+    if len(items) <= 1 or call_tokens(prompt_of(items), chat, task) <= AiLimits.CALL_TOKENS_LIMIT:
         return [items]
     half = (len(items) + 1) // 2
     return [
-        *within_call_limit(items[:half], prompt_of, task),
-        *within_call_limit(items[half:], prompt_of, task),
+        *within_call_limit(items[:half], prompt_of, chat, task),
+        *within_call_limit(items[half:], prompt_of, chat, task),
     ]
 
 

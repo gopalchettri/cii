@@ -47,6 +47,10 @@ os.environ["EXTERNAL_INTELLIGENCE_ENABLED"] = "false"
 # Threat finding never reuses another run's answer in the suite (the default reuses 24 h): tests share one
 # call-text collection, so an earlier test's answer would answer a later one. The reuse tests turn it on.
 os.environ["CII_THREAT_FINDING_REUSE_HOURS"] = "0"
+# The gate's batching at the code's own defaults, whatever the developer's .env tunes (dev for 10 users asks 2
+# questions at once): the planner goldens record the calls in this order.
+os.environ["CII_THREAT_QUESTIONS_AT_ONCE"] = "1"
+os.environ["CII_THREATS_PER_QUESTION"] = "40"
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client
 

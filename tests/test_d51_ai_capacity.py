@@ -98,7 +98,8 @@ def test_a_waiter_that_stopped_asking_leaves_the_line_and_a_refused_one_leaves_a
     cancelled, patient = (AiSlots(redis, cap=1, wait_seconds=5) for _ in range(2))  # in arrival order
     with ExitStack() as held:
         held.enter_context(patient.hold_slot(TASK))
-        with pytest.raises(Unavailable), patient.hold_slot(TASK, waits=False):
+        refused = AiSlots(redis, cap=1, wait_seconds=0)  # no wait at all
+        with pytest.raises(Unavailable), refused.hold_slot(TASK):
             pass
         assert redis.zcard(f"{own_slots_key}:line") == 0
         with lease_lost_signal("cancelled-run") as lost:
@@ -137,7 +138,8 @@ def test_a_worker_waits_for_ai_capacity_until_its_lease_ends(monkeypatch: pytest
     assert served == ["worker"] and TenMinutesPerLook.now >= 1_800
     monkeypatch.setattr(slots, "sleep_unless_lease_lost", lambda _seconds: None)
     kimi = AiRequestRate(redis, "kimi", per_minute=1, wait_seconds=AiLimits.WORKER_SLOT_WAIT_SECONDS)
-    assert [kimi.wait_for_turn(TASK) for _ in range(8)][-1] == pytest.approx(420, abs=1)
+    eighth = [kimi.wait_for_turn(TASK) for _ in range(8)][-1]  # 7 turns of 60 s, less the burst
+    assert eighth == pytest.approx(420 - AiLimits.RATE_BURST_SECONDS, abs=1)
     assert rerank_gate_for("http://proxy.invalid")._wait_seconds is None  # noqa: SLF001
 
 
@@ -166,7 +168,7 @@ def test_a_request_turn_s_redis_failure_lets_the_request_go_ahead_and_leaves_red
 
     def ask() -> str:
         with count_and_convert_ai_errors(TASK, "kimi"):
-            return call_with_retries(lambda: "answer", kimi, UNLIMITED_AI_SLOTS, model="kimi", task=TASK)[0]
+            return call_with_retries(lambda: "answer", kimi, UNLIMITED_AI_SLOTS, model="kimi", task=TASK)
 
     with monkeypatch.context() as broken, capture_logs() as logs:
         broken.setattr(redis, "execute_command", failing)

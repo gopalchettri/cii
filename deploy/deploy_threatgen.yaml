@@ -10,13 +10,13 @@
 #   oc apply -f deploy/deploy_threatgen.yaml
 #   oc -n ai-threatgen rollout status deployment -l part-of=tsg --timeout=10m
 # New release: in every deploy_*.yaml, replace the image tag (31-Oct-2026) with the one build-image.bat printed.
-# Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.2 CPU and 10.5 Gi, with the monitoring
-# proxy (deploy_common.yaml) 5.25 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
+# Quota here: 6 CPU, 12 Gi memory (limits), 60 Gi storage. These pods use 5.45 CPU and 10.5 Gi, with the monitoring
+# proxy (deploy_common.yaml) 5.5 CPU and 10.56 Gi; an update never adds a pod (maxSurge 0 everywhere). No volumes.
 # One worker per queue: the quota has no room for a second. A worker update stops the old pod first (maxSurge 0):
 # its queue's jobs wait and nothing is lost, and the API stays ready meanwhile (its readiness needs MongoDB only).
-# A stopping pod still counts against the quota until it has exited (a worker may take 2 minutes), so during an
-# update a new pod can be refused for a while ("exceeded quota" in the events). OpenShift retries and creates it
-# once the old pod is gone: rollout status only takes longer.
+# A stopping pod still counts against the quota until it has exited (a worker that asks the AI may take 4-5
+# minutes: its grace below), so during an update a new pod can be refused for a while ("exceeded quota" in
+# the events). OpenShift retries and creates it once the old pod is gone: rollout status only takes longer.
 # A worker is ready once its heartbeat has written /tmp/tsg-worker-alive (startupProbe).
 # The two API pods prefer different nodes, so one node failure never stops the API (preferred only: a pod still
 # starts when no other node fits). A worker on a failed node starts again on another; its jobs wait meanwhile.
@@ -122,12 +122,12 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 220         # a stopping worker finishes its AI call: 90 s hand-back + one kimi call (120 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_threats]   # 2 threads on the tsg_threats queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_threats]   # 10 threads on the tsg_threats queue: 10 users' threat finding at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -184,12 +184,12 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 220         # a stopping worker finishes its AI call: 90 s hand-back + one kimi call (120 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_scenarios]   # 2 threads on the tsg_scenarios queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_scenarios]   # 10 threads on the tsg_scenarios queue: 10 users' sets at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -251,7 +251,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "1", -Q, tsg_controls]   # 1 thread on the tsg_controls queue (each job maps several scenarios at once)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_controls]   # 4 threads on the tsg_controls queue (each job maps several scenarios at once)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -274,8 +274,8 @@ spec:                                            # what to run
             timeoutSeconds: 30                   # each check may take 30 s
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
-            requests: { cpu: 100m, memory: 640Mi }   # reserved for the pod
-            limits: { cpu: 250m, memory: 1Gi }     # the most it may use
+            requests: { cpu: 250m, memory: 640Mi }   # reserved for the pod
+            limits: { cpu: 500m, memory: 1Gi }     # the most it may use: 10 users' first sets are about 4 CPU-s of control searches (8 s at 500m, 16 s at 250m)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -308,12 +308,12 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 280         # a stopping worker finishes its AI call: 90 s hand-back + one glm call (180 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_remediation]   # 4 threads on the tsg_remediation queue: 4 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "12", -Q, tsg_remediation]   # 12 threads on the tsg_remediation queue: 10 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS), plus 2
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -370,12 +370,12 @@ spec:                                            # what to run
       automountServiceAccountToken: false        # the app never calls the OpenShift API
       hostAliases: [{ ip: "10.231.255.253", hostnames: [llmapi.govai.ae] }]   # the AI gateway's fixed address
       imagePullSecrets: [{ name: quay-pull }]    # login for the image registry
-      terminationGracePeriodSeconds: 120         # time a stopping worker gets to finish its AI calls
+      terminationGracePeriodSeconds: 280         # a stopping worker finishes its AI call: 90 s hand-back + one glm call (180 s) + 10
       containers:                                # the programs in the pod
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "2", -Q, tsg_servicemapper]   # 2 threads on the tsg_servicemapper queue
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_servicemapper]   # 10 threads on the tsg_servicemapper queue: one mapping, one call (CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets

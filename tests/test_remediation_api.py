@@ -68,7 +68,7 @@ ENTITY = 186  # its own entity: nothing here shows in another test's entity-wide
 MAPPED = [{"control_id": 1, "code": "CII-CID-1", "score": 87.4, "match": "exact"}]
 UNMAPPED = {"status": Status.QUEUED, "attempts": 0}
 REGISTER = {"risk_level": "High", "risk_owner": "Head of Grid Operations", "likelihood_rating": "4.47"}
-BROKEN = plan_answer("CII-CID-1", applicable_to_all_subsystems="Maybe")  # fails the answer contract
+BROKEN = plan_answer("CII-CID-1", control_validation="x")  # fails the answer contract
 DECIDED_BY = {"decided_by": "u1", "decided_by_client": "c1"}
 NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
 
@@ -252,7 +252,7 @@ def test_every_request_refusal(client: TestClient, api_key: str, world: dict[str
     elsewhere = plan_url(first, "status").replace(run, "another-run")
     assert client.get(elsewhere, headers=_identity(api_key)).status_code == 404
     empty = remediation_plan_service(
-        library=fake_library(()), send_job=lambda *args: world["sent"].append(args)
+        library=fake_library(()), send_job=lambda *args: world["sent"].append(args[:3])
     )
     client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: empty  # type: ignore[attr-defined]
     refused = _request(client, api_key, generated(_scenario()))
