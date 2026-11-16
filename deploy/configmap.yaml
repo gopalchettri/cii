@@ -41,9 +41,9 @@ items:                                           # one tsg-config per project th
       CII_SCENARIO_CHAT_MAX_INPUT_TOKENS: "114688"                    # kimi-k2.5: longest question in tokens (the gateway's limit)
       CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
       CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
-      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 600 (Nov 2026); 180 covers 10 users, up to about 570 for more
+      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 600 (Nov 2026); 180 covers up to about 20 users (about 8 a Start), up to about 570 for more
       CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "1000000"                  # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; the gateway's 2,000,000 since Nov 2026 covers every model (shared with the team), and a 30 s burst may book 1.5x: 1.5 x the scenario tokens a minute + about 21,000 x plans at once + 10,000 x mappings at once at most 2,000,000; 0 = no limit
-      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "40"                      # its questions at the same time, all pods: 10 users x 4 threat questions (4 x users for more); it also backs off after a 429
+      CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "20"                      # its questions at the same time, all pods: 5 users x 4 threat questions (4 x users); it also backs off after a 429
       CII_REMEDIATION_CHAT_BASE_URL: "https://llmapi.govai.ae"        # remediation plans: the AI gateway its chat calls go to
       CII_REMEDIATION_CHAT_MODEL: "litellm_proxy/glm-5.3"             # its main chat model
       CII_REMEDIATION_CHAT_MODEL_THINKING: "false"                    # false = the model's "thinking" mode off (faster)
@@ -51,7 +51,7 @@ items:                                           # one tsg-config per project th
       CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
       CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
       CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit: glm-5.3 has none of its own (Nov 2026)
-      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "10"                   # its calls at once to glm-5.3, all pods: 10 users' plans at once (each books about 10,300 tokens while it runs)
+      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "5"                    # its calls at once to glm-5.3, all pods: 5 users' plans at once (about one per user; each books about 10,300 tokens while it runs)
       CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
       CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
       CII_SERVICE_MAPPER_CHAT_MODEL_THINKING: "false"                 # false = the model's "thinking" mode off (faster)
@@ -59,7 +59,7 @@ items:                                           # one tsg-config per project th
       CII_SERVICE_MAPPER_CHAT_MAX_OUTPUT_TOKENS: "12288"              # glm-5.3: longest answer in tokens
       CII_SERVICE_MAPPER_CHAT_TIMEOUT_SECONDS: "180"                  # glm-5.3: seconds to wait for one answer before giving up
       CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit: glm-5.3 has none of its own (Nov 2026)
-      CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "10"                # its calls at once to glm-5.3, all pods: 10 users' mappings at once (each books about 4,900 tokens)
+      CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "5"                 # its calls at once to glm-5.3, all pods: 5 users' mappings at once (about one per user; each books about 4,900 tokens)
       # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
       # answer that needs more is asked once more with the model's full room.
       CII_ANSWER_TOKENS_RELEVANCE_GATE: "8192"                        # threat finding: is each threat relevant, as which kinds (one answer for up to 20 threats: 2,000-6,000 measured)
@@ -72,7 +72,7 @@ items:                                           # one tsg-config per project th
       CII_THREATS_PER_QUESTION: "20"                                  # threat finding: most whole threats in one question, split evenly (75 threats: 4 questions of 18-19, about half the time of 40)
       CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
       CII_THREAT_FINDING_REUSE_HOURS: "24"                            # threat finding: hours a run takes an earlier run's answer to the very same question (a second Start on an unchanged asset: no gate call); "0" = always ask
-      CII_RERANKS_AT_ONCE: "24"                                       # search: evidence reranker calls at the same time, per worker (control searches do not take it); set 4, half of CII_MAX_CONCURRENT_AI_CALLS 8, before OpenShift serves users (UAT's reranker: best at 8 at once, 12 dropped a connection, no 429, 16 Nov 2026)
+      CII_RERANKS_AT_ONCE: "4"                                        # search: evidence reranker calls at the same time, per worker (control searches do not take it): half of CII_MAX_CONCURRENT_AI_CALLS 8 (UAT's reranker: best at 8 at once, 12 dropped a connection, no 429, 16 Nov 2026)
       CII_AI_CALL_TOKENS_LIMIT: "20000"                               # most tokens one AI call may hold (question estimate + answer room); a bigger batch goes as halves
       CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds
       CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the job tries again later
@@ -86,7 +86,7 @@ items:                                           # one tsg-config per project th
       CII_AI_BYPASS_PROXY: "true"                # must stay true: AI calls go to the gateway directly, not via the proxy
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
-      CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (kept in this file for now by the owner's order): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on the search calls (embedding, re-ranking) at once across all pods. UAT's reranker answers no 429: it works best at 8 at once and drops connections above about 10 (the owner's probe, 16 Nov 2026), so set 8 before OpenShift serves users (the UAT server's .env.uat has 8). Each module's chat calls: its own limit above
+      CII_MAX_CONCURRENT_AI_CALLS: "8"           # the search calls (embedding, re-ranking) at once across all pods: UAT's reranker works best at 8 at once and drops connections above about 10, and it answers no 429 (the owner's probe, 16 Nov 2026), so 0 (no fixed limit, backing off only after a 429) would not protect it. A 429 still lowers the limit for a while (halved, raised again by each answer, gone a few minutes after the last 429). Each module's chat calls: its own limit above
       CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; it takes 30)
       CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS; best at 8, 10 worked, 12 dropped a connection with no 429, 16 Nov 2026)
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)

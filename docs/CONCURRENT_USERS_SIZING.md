@@ -32,9 +32,8 @@ reranker time. To go faster, ask the gateway team for more reranker capacity, th
 | `worker-remediation` | plans at once + 2 | 7 | 12 | 17 |
 | `worker-service-mapper` | mappings at once | 5 | 10 | 15 |
 
-The OpenShift files now have `worker-controls` 4 for 10 users. It works, but some users wait a few extra seconds for
-controls. They also have `CII_MAX_CONCURRENT_AI_CALLS` 0 (no cap) and `CII_RERANKS_AT_ONCE` 24: set them to the
-reranker's measured values (8 and 4) before OpenShift serves users.
+The OpenShift files use the 5-user column (16 Nov 2026), with `CII_MAX_CONCURRENT_AI_CALLS` 8 and
+`CII_RERANKS_AT_ONCE` 4.
 
 ## 2. Check the gateway's budget
 
@@ -83,5 +82,5 @@ Requests: each Start sends kimi-k2.5 about 8 requests. `CII_SCENARIO_CHAT_REQUES
 
       python scripts/ai_capacity_report.py --base <api> --since <time> --users N --env-file .env.uat
 
-UAT today (16 Nov 2026): the UAT server's `.env.uat` is set for 5 users, with the reranker capped at 8 calls at once
-(evidence 4). The OpenShift files are still set for 10 users (D78-D80), with no reranker cap.
+UAT today (16 Nov 2026): the UAT server's `.env.uat` and the OpenShift files are both set for 5 users, with the
+reranker capped at 8 calls at once (evidence 4). D81 in `docs/SOLUTION_DESIGN.md` records it.

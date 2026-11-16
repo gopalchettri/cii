@@ -127,7 +127,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_threats]   # 10 threads on the tsg_threats queue: 10 users' threat finding at once
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "5", -Q, tsg_threats]   # 5 threads on the tsg_threats queue: 5 users' threat finding at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -189,7 +189,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_scenarios]   # 10 threads on the tsg_scenarios queue: 10 users' sets at once
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "5", -Q, tsg_scenarios]   # 5 threads on the tsg_scenarios queue: 5 users' sets at once
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -251,7 +251,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "4", -Q, tsg_controls]   # 4 threads on the tsg_controls queue (each job maps several scenarios at once)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "5", -Q, tsg_controls]   # 5 threads on the tsg_controls queue: one controls job per run at a time, 5 users' at once (each maps several scenarios)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -275,7 +275,7 @@ spec:                                            # what to run
             failureThreshold: 3                  # 3 failures in a row = restart
           resources:                             # CPU and memory
             requests: { cpu: 250m, memory: 640Mi }   # reserved for the pod
-            limits: { cpu: 500m, memory: 1Gi }     # the most it may use: 10 users' first sets are about 4 CPU-s of control searches (8 s at 500m, 16 s at 250m)
+            limits: { cpu: 500m, memory: 1Gi }     # the most it may use: 5 users' first sets are about 2 CPU-s of control searches (4 s at 500m; 10 users' 8 s)
           securityContext:                       # locked down
             allowPrivilegeEscalation: false      # cannot gain more rights
             runAsNonRoot: true                   # never runs as root
@@ -313,7 +313,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "12", -Q, tsg_remediation]   # 12 threads on the tsg_remediation queue: 10 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS), plus 2
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "7", -Q, tsg_remediation]   # 7 threads on the tsg_remediation queue: 5 plans at once, one glm-5.3 call each (CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS), plus 2
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
@@ -375,7 +375,7 @@ spec:                                            # what to run
         - name: worker                           # container name
           image: quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc/tsg-api:31-Oct-2026   # the TSG image (change the tag per release)
           imagePullPolicy: IfNotPresent          # pull only if missing
-          command: [celery, -A, app.worker, worker, --pool=threads, -c, "10", -Q, tsg_servicemapper]   # 10 threads on the tsg_servicemapper queue: one mapping, one call (CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS)
+          command: [celery, -A, app.worker, worker, --pool=threads, -c, "5", -Q, tsg_servicemapper]   # 5 threads on the tsg_servicemapper queue: one mapping, one call (CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS)
           envFrom:                               # every setting, as environment variables
             - configMapRef: { name: tsg-config }   # plain settings
             - secretRef: { name: tsg-secrets }     # secrets
