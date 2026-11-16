@@ -72,7 +72,7 @@ items:                                           # one tsg-config per project th
       CII_THREATS_PER_QUESTION: "20"                                  # threat finding: most whole threats in one question, split evenly (75 threats: 4 questions of 18-19, about half the time of 40)
       CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
       CII_THREAT_FINDING_REUSE_HOURS: "24"                            # threat finding: hours a run takes an earlier run's answer to the very same question (a second Start on an unchanged asset: no gate call); "0" = always ask
-      CII_RERANKS_AT_ONCE: "24"                                       # search: evidence reranker calls at the same time, per worker (control searches do not take it); set 4, half of CII_MAX_CONCURRENT_AI_CALLS 8, before OpenShift serves users (UAT's reranker: best at 8 at once, 12 dropped a connection, 16 Nov 2026)
+      CII_RERANKS_AT_ONCE: "24"                                       # search: evidence reranker calls at the same time, per worker (control searches do not take it); set 4, half of CII_MAX_CONCURRENT_AI_CALLS 8, before OpenShift serves users (UAT's reranker: best at 8 at once, 12 dropped a connection, no 429, 16 Nov 2026)
       CII_AI_CALL_TOKENS_LIMIT: "20000"                               # most tokens one AI call may hold (question estimate + answer room); a bigger batch goes as halves
       CII_AI_BUSY_MAX_WAIT_SECONDS: "20"                              # after "too busy" (HTTP 429): longest wait (+-20%) before asking the same model again; LiteLLM always asks 60 s, but unused answer room comes back within seconds
       CII_AI_BUSY_TOTAL_WAIT_SECONDS: "60"                            # after "too busy": most seconds waited in all (4 retries at most), then the job tries again later
@@ -87,8 +87,8 @@ items:                                           # one tsg-config per project th
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
       CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (kept in this file for now by the owner's order): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on the search calls (embedding, re-ranking) at once across all pods. UAT's reranker answers no 429: it works best at 8 at once and drops connections above about 10 (the owner's probe, 16 Nov 2026), so set 8 before OpenShift serves users (the UAT server's .env.uat has 8). Each module's chat calls: its own limit above
-      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS; it takes 30)
-      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS; best at 8, 10 worked, 12 dropped a connection, 16 Nov 2026)
+      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; it takes 30)
+      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: the gateway sets no per-minute limit (calls at once: CII_MAX_CONCURRENT_AI_CALLS; best at 8, 10 worked, 12 dropped a connection with no 429, 16 Nov 2026)
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
       INITIAL_SET_SIZE: "6"                      # scenarios written first, so a reviewer can start reading
@@ -476,7 +476,9 @@ data:                                            # one key per file
                 Jobs slow down. At the pool's limit 0 the AI gateway keeps answering 429 and TSG holds back by itself:
                 ask the gateway admin for a higher limit on that key. Above 0 with no recent 429 it is the fixed
                 ceiling (search: CII_MAX_CONCURRENT_AI_CALLS, lowered for a while by a 429; a module: its own
-                CII_<MODULE>_MAX_CONCURRENT_AI_CALLS): raise it if the gateway can take more.
+                CII_<MODULE>_MAX_CONCURRENT_AI_CALLS): raise it if the gateway can take more. Search: not above the
+                reranker's measured capacity (8 on UAT, 16 Nov 2026); past it the reranker drops connections and
+                sends no 429, so ask the gateway team for more reranker capacity and measure again first.
 
           # Every AI request waits its turn under its model's own requests-a-minute setting (app/ai/slots.py
           # AiRequestRate), so by model: a long wait means more work is sent to that model than it allows.
@@ -6063,7 +6065,7 @@ data:                                            # one key per file
           "id": 23,
           "type": "gauge",
           "title": "AI capacity in use",
-          "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG runs at full speed.",
+          "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG sets no cap of its own. For the search calls that is unsafe on UAT, whose reranker drops connections above about 10 at once (16 Nov 2026): CII_MAX_CONCURRENT_AI_CALLS should be 8.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

@@ -1,7 +1,9 @@
 """AI capacity report: for each API that starts AI work, each step's AI calls and tokens per request
 (read from the no-key /v1/ai-usage reports), the busiest minute as the gateway counts it, and what N users
 starting it at the same moment need with no waiting: tokens a minute, requests a minute and calls at once.
-Read-only.
+Read-only. The chat calls scale with users; the "calls at once" line also counts the search calls (embedding,
+rerank), but those are capped by the reranker's measured capacity, not by users: CII_MAX_CONCURRENT_AI_CALLS 8
+on UAT (the owner's probe, 16 Nov 2026).
 
 From the project folder:
   python scripts/ai_capacity_report.py --base http://localhost:8000 --since 2026-10-30T09:00:00Z

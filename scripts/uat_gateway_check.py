@@ -1,6 +1,8 @@
 """UAT AI gateway check: what the gateway says about each AI model's limits, whether reranks count toward the
-token budget, and how the reranker and the embedding model answer when many calls go at once (10 users who
-press Start together make about 60 rerank calls). The key is never printed.
+token budget, and how the reranker and the embedding model answer when many calls go at once. The key is never
+printed. UAT's reranker works best at 8 calls at once and drops connections above about 10, with no 429 (the
+owner's probe, litellm_probe_oc.py, 16 Nov 2026); this script stops its load only at a 429, so on UAT pass
+--steps 1,4,8. TSG itself caps the reranker and embedding calls at 8 (CII_MAX_CONCURRENT_AI_CALLS).
 
 Run it where TSG runs, so it uses TSG's own settings (the CII_* names) and key:
   UAT Windows server, in the TSG folder (it reads .env):  python uat_gateway_check.py

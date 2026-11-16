@@ -5111,7 +5111,7 @@
       "id": 23,
       "type": "gauge",
       "title": "AI capacity in use",
-      "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG runs at full speed.",
+      "description": "AI calls running now, out of the limit in force: CII_MAX_CONCURRENT_AI_CALLS or the one a gateway 429 set, the lower (0 = none). A 429 sets that limit to half the calls in flight at that moment; each answer raises it a little, and it is gone a few minutes after the last 429. At 100 % new calls wait for a free slot. No limit set: TSG sets no cap of its own. For the search calls that is unsafe on UAT, whose reranker drops connections above about 10 at once (16 Nov 2026): CII_MAX_CONCURRENT_AI_CALLS should be 8.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

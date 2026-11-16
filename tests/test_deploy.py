@@ -108,7 +108,7 @@ REFERENCES = {
     "secretKeyRef": "Secret",
 }
 BLOCK_SCALAR = re.compile(r"(?:^|:|-)\s*[|>][-+]?$")  # `key: |`, `- >-`: the lines below are file content
-CHAT_MODEL_REQUESTS_PER_MINUTE = 192  # kimi-k2.5's own limit on UAT's gateway key (owner, 2026-10-24)
+CHAT_MODEL_REQUESTS_PER_MINUTE = 600  # kimi-k2.5's own limit on UAT's key (owner's reports, 14-15 Nov 2026)
 KIMI = "litellm_proxy/kimi-k2.5"
 #: Every worker's startup and liveness probe: the heartbeat's file exists, then is fresh. No Redis.
 FILE_AGE = f"$(( $(date +%s) - $(stat -c %Y {Worker.LIVENESS_FILE}) ))"
