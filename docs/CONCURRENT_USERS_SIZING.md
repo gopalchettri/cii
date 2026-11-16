@@ -10,8 +10,19 @@ N below means the number of users at the same time.
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 4 x N | 20 | 40 | 60 | threat-scenario AI calls (kimi-k2.5) at once, all users together: each Start asks about 4 threat questions at once |
 | `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS` | N | 5 | 10 | 15 | remediation plans at once (one glm-5.3 call each) |
 | `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | N | 5 | 10 | 15 | service mappings at once (one glm-5.3 call each) |
-| `CII_RERANKS_AT_ONCE` | 6 x N, at most 64 | 30 | 60 | 64 | evidence reranks at once in one worker: each Start's first set asks up to 6 |
 | `CII_WORKER_THREADS` (UAT server only) | 3 x N | 15 | 30 | 45 | threads of `run.ps1`'s job worker; a thread mostly waits for the AI |
+
+**Set by the reranker, not by N.** Measure it with the owner's probe (`litellm_probe_oc.py`, which steps up the calls
+sent at once):
+
+| Setting | Rule | UAT (16 Nov 2026) | What it controls |
+|---|---|---|---|
+| `CII_MAX_CONCURRENT_AI_CALLS` | the reranker's best "at once", below the step that failed | 8 (best speed at 8, 10 worked, 12 dropped a connection) | every reranker and embedding call at once, all processes together; the two models share it |
+| `CII_RERANKS_AT_ONCE` | half of the line above | 4 | evidence reranks at once in one worker; control searches keep the other half |
+
+With 8 at once the reranker finishes about 6.7 calls a second. One Start's first set makes about 12-24 reranks: 6
+evidence searches, 6 control searches, and gap-fill matches. So 5 users who start together share about 10-20 s of
+reranker time. To go faster, ask the gateway team for more reranker capacity, then measure again.
 
 **OpenShift only:** the worker threads (`-c`) in `deploy/deploy_threatgen.yaml`.
 
@@ -21,8 +32,9 @@ N below means the number of users at the same time.
 | `worker-remediation` | plans at once + 2 | 7 | 12 | 17 |
 | `worker-service-mapper` | mappings at once | 5 | 10 | 15 |
 
-The OpenShift files now have `CII_RERANKS_AT_ONCE` 24 and `worker-controls` 4 for 10 users. Both work, but some users
-wait a few extra seconds for evidence and controls.
+The OpenShift files now have `worker-controls` 4 for 10 users. It works, but some users wait a few extra seconds for
+controls. They also have `CII_MAX_CONCURRENT_AI_CALLS` 0 (no cap) and `CII_RERANKS_AT_ONCE` 24: set them to the
+reranker's measured values (8 and 4) before OpenShift serves users.
 
 ## 2. Check the gateway's budget
 
@@ -52,8 +64,9 @@ Requests: each Start sends kimi-k2.5 about 8 requests. `CII_SCENARIO_CHAT_REQUES
   - `CII_THREATS_PER_QUESTION`
   - every `CII_ANSWER_TOKENS_*`
   - the 429 settings `CII_AI_BUSY_*`
-  - `CII_RERANK_REQUESTS_PER_MINUTE` and `CII_EMBEDDING_REQUESTS_PER_MINUTE` (0: the gateway sets none)
-  - `CII_MAX_CONCURRENT_AI_CALLS` (0)
+  - `CII_RERANK_REQUESTS_PER_MINUTE` and `CII_EMBEDDING_REQUESTS_PER_MINUTE` (0: the gateway sets no per-minute limit)
+  - `CII_MAX_CONCURRENT_AI_CALLS` and `CII_RERANKS_AT_ONCE` (the reranker's capacity: measure again if the gateway
+    team changes the reranker)
 - Pod CPU and memory were measured for up to 10 users (D80). Above that, watch the worker pods' CPU in Grafana.
 
 ## 4. Where to set them, and apply
@@ -64,11 +77,11 @@ Requests: each Start sends kimi-k2.5 about 8 requests. `CII_SCENARIO_CHAT_REQUES
   3. `run.ps1` sizes the remediation worker (plans + 2 threads) and the mapper worker (mappings) by itself.
   4. Keep the key-free copy `.env.uat.example` the same, with keys blank.
 - **OpenShift:**
-  1. Set the four settings in `deploy/configmap.yaml` and the threads in `deploy/deploy_threatgen.yaml`.
+  1. Set the settings above in `deploy/configmap.yaml` and the threads in `deploy/deploy_threatgen.yaml`.
   2. Follow `deploy/DEPLOYMENT_GUIDE.md`, Part 5, "Change a setting or secret later". No new image is needed.
 - **To measure the need from real runs:**
 
       python scripts/ai_capacity_report.py --base <api> --since <time> --users N --env-file .env.uat
 
-UAT today (16 Nov 2026): the UAT server's `.env.uat` is set for 5 users. The OpenShift files are still set for 10
-(D78-D80).
+UAT today (16 Nov 2026): the UAT server's `.env.uat` is set for 5 users, with the reranker capped at 8 calls at once
+(evidence 4). The OpenShift files are still set for 10 users (D78-D80), with no reranker cap.
