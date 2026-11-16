@@ -1074,7 +1074,7 @@ restarted with `OOMKilled` (Part 5), ask the developer to raise its limit.
 
 Then watch the first threat-scenario run: in Grafana, the panel **AI gateway refusals (429) per minute** should
 stay at 0, or near it (at most 2 a click: threat scenarios wait their turn under
-`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, 24000 at kimi-k2.5's 25,000 budget). If it does not: Part 5, the row "The
+`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, 1000000 at the gateway's 2,000,000, which was 25,000 until Nov 2026). If it does not: Part 5, the row "The
 AI gateway answers 429".
 
 After every release, run the worker list of step 7 again: each worker once, none in ai-remediation.
@@ -1128,12 +1128,12 @@ foreach ($w in 'worker-threats', 'worker-scenarios', 'worker-remediation', 'work
 ```
 
 **You should see:** nothing (every 429 was waited out and answered: change nothing), or lines with e.g.
-`"limit_type": "tokens"` and `"limit_scope": "team", "limit": 300000`: a budget of 300,000 tokens a minute. Under
-that worker's module, set its `CII_<MODULE>_CHAT_TOKENS_PER_MINUTE` in `deploy\configmap.yaml` just under it:
-`"24000"` at a budget of 25,000 (UAT's kimi-k2.5 since 31-Oct-2026), `"290000"` at 300,000 (threat scenarios:
-`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`; at 300,000 also the other values of that column in Part 4, "What is new
-in this release (31-Oct-2026)"); for `"limit_type": "requests"`, its `..._CHAT_REQUESTS_PER_MINUTE`. Apply it and
-restart the app ("Change a setting or secret later"). No new image is needed.
+`"limit_type": "tokens"` and `"limit_scope": "team", "limit": 2000000`: the team's budget of 2,000,000 tokens a
+minute, shared by every model (it was 25,000 until Nov 2026). Set threat scenarios' `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`
+in `deploy\configmap.yaml` so that 1.5 x it, plus about 21,000 x plans at once and 10,000 x mappings at once, stays
+under the budget: `"1000000"` at 2,000,000 (UAT since 15-Nov-2026); lower it if 429s follow bursts. For
+`"limit_type": "requests"`, set that module's `..._CHAT_REQUESTS_PER_MINUTE` just under the named limit (kimi-k2.5's
+own is 600). Apply it and restart the app ("Change a setting or secret later"). No new image is needed.
 
 ### Change a setting or secret later
 
@@ -1300,9 +1300,11 @@ volumes.
 ### Why these sizes: the AI sets the speed, not the pods
 
 All AI models sit behind one gateway key. Each module names its own chat model (`CII_<MODULE>_CHAT_MODEL`): threat
-scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 takes 192 requests a minute; threat
-scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`): the gateway admin confirmed that only TSG
-uses kimi-k2.5 (Oct 2026). Modules put on one model and key split its limit.
+scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 takes 600 requests a minute (the
+gateway, 14 and 15 Nov 2026); threat scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`), enough
+for 10 users, and up to about 570 for more. The gateway admin confirmed that only TSG uses kimi-k2.5 (Oct 2026).
+glm-5.3, the embedding model and the reranker have no requests limit of their own; the team's 25,000 requests a
+minute covers the key. Modules put on one model and key split its limit.
 
 Tokens are the tighter limit. Since Nov 2026 the gateway gives 2,000,000 tokens a minute to every model together
 (kimi-k2.5 and glm-5.3; owner, 15 Nov), shared with the team, and it counts each call's question and its whole answer room while it runs. Threat scenarios pace
@@ -1343,10 +1345,10 @@ small.
 | Setting | UAT value | Meaning |
 |---|---|---|
 | `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
-| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 192); remediation's and the service mapper's: 0 = no limit until the gateway admin gives glm-5.3's |
+| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 600: up to about 570 for more users); remediation's and the service mapper's: 0 = no limit, as glm-5.3 has none of its own |
 | `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 1000000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429, after up to 30 s of burst. 1.5 x this plus the plans' and mappings' (about 310,000) stay within the gateway's 2,000,000 for all models; 0 = no token pacing |
 | `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 10, 10 | calls to glm-5.3 at once (it takes 55-99 s a call): 10 users' plans and mappings. glm-5.3 has no limit of its own; they book about 103,000 + 49,000 tokens at once of the gateway's shared 2,000,000. On the UAT server `run.ps1` sizes the remediation and mapper workers from these two (plans + 2 threads, mappings 1 each) |
-| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit until the gateway admin gives theirs |
+| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit, as the gateway sets neither one (`scripts/uat_gateway_check.py`, 15 Nov 2026: 60 reranks at once within 7.6 s, no 429) |
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 40 | at most 40 threat-scenario calls to kimi-k2.5 at once, all pods together: 10 users x 4 threat questions (4 x users for more); TSG also backs off by itself after a gateway 429 |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 0 | 0 = no fixed limit on the search calls (embedding, re-ranking) at once: TSG backs off by itself only after the gateway answers 429 (see below). A number above 0 is a fixed ceiling |
 | `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |

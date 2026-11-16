@@ -32,7 +32,7 @@ items:                                           # one tsg-config per project th
       CII_MONGO_DB: "cii_uat"                    # MongoDB database that holds every run, scenario, plan and job
       CII_REDIS_CA_FILE: ""                      # the CA file that signed Redis' TLS certificate, if a private CA did (mount it); "" = the image's trusted CAs
       # Each module's own chat model (.env.example explains every line; its key is in tsg-secrets). Its limits are
-      # its own: kimi-k2.5 (192 requests a minute on this key) serves threat scenarios alone;
+      # its own: kimi-k2.5 (600 requests a minute on this key) serves threat scenarios alone;
       # glm-5.3 serves remediation and the service mapper (55-99 s a call). The gateway's 2,000,000 tokens a
       # minute cover every model together (owner, Nov 2026). A line left out = its default.
       CII_SCENARIO_CHAT_BASE_URL: "https://llmapi.govai.ae"           # threat finding and scenario writing: the AI gateway its chat calls go to
@@ -41,7 +41,7 @@ items:                                           # one tsg-config per project th
       CII_SCENARIO_CHAT_MAX_INPUT_TOKENS: "114688"                    # kimi-k2.5: longest question in tokens (the gateway's limit)
       CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
       CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
-      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 192
+      CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 600 (Nov 2026); 180 covers 10 users, up to about 570 for more
       CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "1000000"                  # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; the gateway's 2,000,000 since Nov 2026 covers every model (shared with the team), and a 30 s burst may book 1.5x: 1.5 x the scenario tokens a minute + about 21,000 x plans at once + 10,000 x mappings at once at most 2,000,000; 0 = no limit
       CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "40"                      # its questions at the same time, all pods: 10 users x 4 threat questions (4 x users for more); it also backs off after a 429
       CII_REMEDIATION_CHAT_BASE_URL: "https://llmapi.govai.ae"        # remediation plans: the AI gateway its chat calls go to
@@ -50,7 +50,7 @@ items:                                           # one tsg-config per project th
       CII_REMEDIATION_CHAT_MAX_INPUT_TOKENS: "262144"                 # glm-5.3: longest question in tokens (the gateway's limit)
       CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
       CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
-      CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
+      CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit: glm-5.3 has none of its own (Nov 2026)
       CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "10"                   # its calls at once to glm-5.3, all pods: 10 users' plans at once (each books about 10,300 tokens while it runs)
       CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
       CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
@@ -58,7 +58,7 @@ items:                                           # one tsg-config per project th
       CII_SERVICE_MAPPER_CHAT_MAX_INPUT_TOKENS: "262144"              # glm-5.3: longest question in tokens (the gateway's limit)
       CII_SERVICE_MAPPER_CHAT_MAX_OUTPUT_TOKENS: "12288"              # glm-5.3: longest answer in tokens
       CII_SERVICE_MAPPER_CHAT_TIMEOUT_SECONDS: "180"                  # glm-5.3: seconds to wait for one answer before giving up
-      CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit until the gateway admin gives glm-5.3's
+      CII_SERVICE_MAPPER_CHAT_REQUESTS_PER_MINUTE: "0"                # glm-5.3 requests a minute, all pods; 0 = no limit: glm-5.3 has none of its own (Nov 2026)
       CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS: "10"                # its calls at once to glm-5.3, all pods: 10 users' mappings at once (each books about 4,900 tokens)
       # Answer room per task, in tokens: the AI service counts it against its budget while a question runs; an
       # answer that needs more is asked once more with the model's full room.
@@ -87,8 +87,8 @@ items:                                           # one tsg-config per project th
       CII_WORKER_METRICS_PORT: "9100"            # port each worker serves /metrics on for Prometheus
       CII_MAX_REQUEST_MB: "2"                    # largest request body the API accepts, in MB
       CII_MAX_CONCURRENT_AI_CALLS: "0"           # 0 = no fixed limit (the owner's choice for UAT): TSG backs off by itself only after a gateway 429 (one limit for all pods, halved at a 429, raised again by each answer, gone a few minutes after the last 429); above 0 = a fixed ceiling on the search calls (embedding, re-ranking) at once across all pods. Each module's chat calls: its own limit above
-      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: set it when the gateway admin gives its limit
-      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: set it when the gateway admin gives its limit
+      CII_EMBEDDING_REQUESTS_PER_MINUTE: "0"         # embedding requests a minute, all pods; 0 = no limit: the gateway sets none (15 Nov 2026: 60 at once within 0.9 s)
+      CII_RERANK_REQUESTS_PER_MINUTE: "0"            # the same for the re-ranking model; 0 = no limit: the gateway sets none (15 Nov 2026: 60 at once within 7.6 s)
       CII_LOG_LEVEL: "INFO"                      # log detail: DEBUG, INFO, WARNING or ERROR (DEBUG only for a short check)
       TOTAL_SCENARIO_COUNT: "15"                 # most scenarios a run produces
       INITIAL_SET_SIZE: "6"                      # scenarios written first, so a reviewer can start reading

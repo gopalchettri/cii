@@ -61,7 +61,7 @@ and a set never takes more than 4 (sections 5.5, 5.13 and 8.0).
 - **No duplicates within a session.** A session never tells the same threat as the same kind twice, and an exact repeat is never saved. The asset's other sessions never block a scenario (D15).
 - **People decide.** Every scenario waits for a person's decision, and decisions are audited.
 - **Bounded cost and safe failure.** AI calls are limited across all servers (by default 16 at once; in UAT 180
-  requests a minute to the main chat model, under its own limit of 192). Versions per
+  requests a minute to the main chat model, under its own limit of 600). Versions per
   scenario are capped at 10 (this cap is ready to merge). Every job is tracked and retried, so an outage never
   loses or duplicates work.
 
@@ -4055,7 +4055,9 @@ stateDiagram-v2
   so it sees its cancel within a second.
 - **AI calls:** LiteLLM for chat and embeddings, and for rerank when `CII_RERANK_BASE_URL` is set (empty in
   dev: a local rerank model). In UAT one gateway key serves chat, embedding and rerank
-  for every pod, and each model has its own requests-a-minute limit on it (kimi-k2.5: 192).
+  for every pod. kimi-k2.5 has its own limit of 600 requests a minute; glm-5.3, the embedding model and the
+  reranker have none of their own. The key's team allows 2,000,000 tokens and 25,000 requests a minute for every
+  model together (Nov 2026; 25,000 tokens before).
   - **Per module (owner, 2026-10-28):** threat scenarios (finding and writing), remediation plans and the service
     mapper each have their own chat model, key, thinking and limits, the same or a different model per module:
     `CII_SCENARIO_...`, `CII_REMEDIATION_...` and `CII_SERVICE_MAPPER_...`, 10 lines each, read on their own
@@ -4068,9 +4070,9 @@ stateDiagram-v2
     N a minute spaces that model's requests 60 / N s apart across all pods (`AiRequestRate`, one Redis key per
     module and model, `tsg:ai_next_request:{module}:{model}`, a search model's `tsg:ai_next_request:{model}`, timed
     by the Redis server's clock), so one queue never delays another's. Each module's
-    `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE` (UAT: threat scenarios' 180, a margin under kimi-k2.5's 192; 0 for
-    the modules on glm-5.3 until the gateway admin gives its limit), `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
-    `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0 until the gateway admin gives each model's limit). The API waits at
+    `CII_<MODULE>_CHAT_REQUESTS_PER_MINUTE` (UAT: threat scenarios' 180, under kimi-k2.5's 600; 0 for the
+    modules on glm-5.3, which has none of its own), `CII_EMBEDDING_REQUESTS_PER_MINUTE` and
+    `CII_RERANK_REQUESTS_PER_MINUTE` (UAT: 0, as the gateway sets none for either). The API waits at
     most 30 s for its turn, else an outage (`ai_busy`); a worker waits until its lease ends (a cancel, or the
     reaper taking over a stalled job). `tsg_ai_request_rate_wait_seconds{model}` records every request's wait,
     0 included. 0 = no limit. A Redis error while a turn is reserved (Redis down, hung, or refusing writes)
@@ -4311,8 +4313,8 @@ next: `pending`, `in_progress`, `awaiting_review`, `awaiting_next_set`, `complet
 | `THREAT_CONTEXT_COUNTRY` | United Arab Emirates | the country an evidence story reads |
 | `REGENERATIONS_MAX_VERSION_COUNT` | 10 (1-40) | treatment plan versions; scenario versions per attack path too once commit `b750eee` is merged (409 `version_limit_reached`; section 12.5); a treatment-plan version that failed for an outage is written again in place and uses no version |
 | `CII_MAX_CONCURRENT_AI_CALLS` | 16 (UAT: 0: no fixed limit, only the one a gateway 429 sets, section 15) | the search calls (embedding, reranker) at once, all pods |
-| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0 until the gateway admin gives each limit) | the same for the embedding model and the reranker, each its own |
-| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 10 lines each (`.env.example`); there is no backup model. UAT (31-Oct-2026): threat scenarios on kimi-k2.5, 180 requests and 24,000 tokens a minute (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, just under the gateway's 25,000; 290,000 at 300,000), 4 at once; remediation and the service mapper on glm-5.3, 4 and 2 calls at once |
+| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0, no limit (UAT: 0, as the gateway sets none for either) | the same for the embedding model and the reranker, each its own |
+| `CII_SCENARIO_...`, `CII_REMEDIATION_...`, `CII_SERVICE_MAPPER_...` | URL, key, model: required; thinking false; limits 0 (calls at once 16); model limits blank = the model's | each module's own chat model, URL, key, thinking, longest question and answer, timeout and limits, 10 lines each (`.env.example`); there is no backup model. UAT (15-Nov-2026): threat scenarios on kimi-k2.5, 180 requests and 1,000,000 tokens a minute (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`; the gateway's 2,000,000 for every model, 25,000 until Nov 2026), 40 at once; remediation and the service mapper on glm-5.3, 10 and 10 calls at once |
 | `CII_ANSWER_TOKENS_<TASK>` | gate 10240, gap fill 1024, writing 6144, repair 5632, remediation 3584, service mapper 3072 (UAT the same; gate, writing and repair answer whole batches and sets) | each task's answer room: the AI gateway counts it against its token budget while a question runs; an answer cut off at it is asked again at the model's limit |
 | `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 1, 40, 6, 6 (UAT the same; 3, 12 at a 300,000 budget) | gate batches at once per run, whole threats per gate batch (35 threats at 40: 1 call), scenarios in one write call per job (3 if a write times out), remote reranker calls at once per process |
 | `CII_THREAT_FINDING_REUSE_HOURS` | 24 (UAT 24) | threat finding takes an earlier run's answer to the very same question for this many hours (a second Start on an unchanged asset: no gate call, 5.6); 0 = always ask |
