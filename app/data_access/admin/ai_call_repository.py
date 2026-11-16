@@ -8,7 +8,7 @@ import pymongo
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import PREVIOUS_AI_CALL_TEXTS, AiOutcome, AiUsageLimits, Collection, Timeouts
+from app.core.constants import AiOutcome, AiUsageLimits, Collection, Timeouts
 from app.data_access.base import NeverDeletedRepository, Record
 
 _DAY = timedelta(days=1)
@@ -64,13 +64,8 @@ class AiCallRepository(NeverDeletedRepository):
         and job_task), read in RECORD_WRITE_SECONDS."""
         conversation = {**job, "prompt_hash": prompt_hash, "outcome": AiOutcome.OK}
         newest = {"projection": {"response": 1, "model": 1}, "sort": [("created_at", -1), ("_id", -1)]}
-        # ponytail: the previous release's collection too, for a job re-sent across the first rollout; drop
-        # this read 14 days after the release (its records expire by then).
-        previous = self.collection.database[PREVIOUS_AI_CALL_TEXTS]
         with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
-            found = self.collection.find_one(conversation, **newest) or previous.find_one(
-                conversation, **newest
-            )
+            found = self.collection.find_one(conversation, **newest)
         return (found["response"], found.get("model", "")) if found else None
 
     def find_recent_ok_response(

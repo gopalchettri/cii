@@ -18,10 +18,15 @@ def shared_celery_conf() -> dict[str, Any]:
             # Also the probe's: its poll gives back unacked messages older than this, never a running job's.
             "visibility_timeout": Worker.BROKER_VISIBILITY_SECONDS,
             "global_keyprefix": Worker.BROKER_KEY_PREFIX,  # every key and pub/sub channel, the mailbox's too
-            # Next stages and retries (0) before new work (3). kombu's own separator stays: it also joins the
-            # queue bindings Redis keeps, so pods with another one could not read each other's and every send
-            # would fail.
-            "priority_steps": [Worker.NEXT_STAGE_PRIORITY, Worker.NEW_WORK_PRIORITY],
+            # Next stages and retries (0) before new work (3) before a busy entity's plans (6): kombu files a
+            # priority under the highest step at or below it, so each one needs its own step. kombu's own
+            # separator stays: it also joins the queue bindings Redis keeps, so pods with another one could
+            # not read each other's and every send would fail.
+            "priority_steps": [
+                Worker.NEXT_STAGE_PRIORITY,
+                Worker.NEW_WORK_PRIORITY,
+                Worker.BUSY_ENTITY_PRIORITY,
+            ],
             "socket_timeout": Timeouts.REDIS_SECONDS,
             "socket_connect_timeout": Timeouts.REDIS_SECONDS,
         },

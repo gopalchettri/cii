@@ -170,7 +170,7 @@ SELECT
     , c.name AS category_name
     , ss.description
    -- , ss.incident_description AS past_incidents
-   --, Technology.technology_used
+    , Technology.technology_used                        -- threat search: platform and KEV vendor per system
    -- , ss.vendor_name
    -- , DatabasePlatforms.database_platforms
    -- , TargetedUsers.targeted_users

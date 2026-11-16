@@ -155,13 +155,6 @@
    "entity_id": 86,
    "findings": [],
    "path_id": "3612e77514e7fb83",
-   "plan_check": {
-    "problems": [],
-    "same_impact": null,
-    "same_threat": null,
-    "status": "unchecked",
-    "unsupported": []
-   },
    "replaces": null,
    "rewritten": false,
    "session_id": "run-golden-1",
@@ -251,13 +244,6 @@
     }
    ],
    "path_id": "2e90b23a30d2b689",
-   "plan_check": {
-    "problems": [],
-    "same_impact": null,
-    "same_threat": null,
-    "status": "unchecked",
-    "unsupported": []
-   },
    "replaces": null,
    "rewritten": false,
    "session_id": "run-golden-1",
@@ -359,13 +345,6 @@
    "entity_id": 86,
    "findings": [],
    "path_id": "84c07ebadbc26e6d",
-   "plan_check": {
-    "problems": [],
-    "same_impact": null,
-    "same_threat": null,
-    "status": "unchecked",
-    "unsupported": []
-   },
    "replaces": null,
    "rewritten": false,
    "session_id": "run-golden-1",
@@ -462,13 +441,6 @@
    "entity_id": 86,
    "findings": [],
    "path_id": "4a2ec48560942e06",
-   "plan_check": {
-    "problems": [],
-    "same_impact": null,
-    "same_threat": null,
-    "status": "unchecked",
-    "unsupported": []
-   },
    "replaces": null,
    "rewritten": false,
    "session_id": "run-golden-1",
@@ -565,13 +537,6 @@
    "entity_id": 86,
    "findings": [],
    "path_id": "cfcc04d78faed9c8",
-   "plan_check": {
-    "problems": [],
-    "same_impact": null,
-    "same_threat": null,
-    "status": "unchecked",
-    "unsupported": []
-   },
    "replaces": null,
    "rewritten": false,
    "session_id": "run-golden-1",
@@ -711,13 +676,6 @@
   "entity_id": 86,
   "findings": [],
   "path_id": "3612e77514e7fb83",
-  "plan_check": {
-   "problems": [],
-   "same_impact": null,
-   "same_threat": null,
-   "status": "unchecked",
-   "unsupported": []
-  },
   "replaces": "7028c852-4bbe-53d9-9703-e57c12ce0b5d",
   "rewritten": false,
   "session_id": "run-golden-1",

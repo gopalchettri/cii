@@ -33,7 +33,6 @@ def _settings(bypass: bool, proxy_url: str = "") -> Settings:
             "proxy_url": SecretStr(proxy_url),
             **{f"{module}_chat_model": "litellm_proxy/chat" for module in ChatModule},
             **{f"{module}_chat_base_url": GATEWAY for module in ChatModule},
-            **{f"{module}_chat_fallback_model": "" for module in ChatModule},
             "embedding_model": "litellm_proxy/embed",
             "embedding_base_url": "llmapi.example",  # no scheme: still read as a host
             "rerank_model": "openai/rerank",  # not a LiteLLM gateway model: its host keeps the proxy

@@ -281,7 +281,7 @@ def test_the_story_ends_with_one_precedent_built_from_its_entrys_own_facts(
         and content["evidence_mode"] == "source-documented"
     )
     assert content["applicability"] == {str(a): 1 for a in [cited.applicability] if a}
-    assert content["intel_search"] == {"query": "q"} and record["plan_check"]["unsupported"] == []
+    assert content["intel_search"] == {"query": "q"}
 
 
 @pytest.mark.parametrize(

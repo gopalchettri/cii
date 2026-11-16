@@ -271,7 +271,7 @@ def world_fixture(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterat
     state |= plan_job_fakes(tuple(CONTROLS.values()))
     built = remediation_plan_service(
         library=fake_library(tuple(CONTROLS.values())),
-        send_job=lambda *args: state["sent"].append(args),
+        send_job=lambda *args: state["sent"].append(args[:3]),  # (task, record id, epoch); not the priority
         publish_remediation_status=state["published"].append,
     )
     state |= {"service": built, "job": remediation_plan_job(state["chat"], state)}

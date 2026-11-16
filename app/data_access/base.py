@@ -7,6 +7,7 @@ aggregate). No timeout here: the records that need one keep their own. Every wri
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial
 from typing import Any
 
 import structlog
@@ -15,6 +16,8 @@ from pymongo.collection import Collection as MongoCollection
 from pymongo.errors import (
     BulkWriteError,
     DuplicateKeyError,
+    ExecutionTimeout,
+    NetworkTimeout,
     OperationFailure,
     PyMongoError,
     WriteConcernError,
@@ -127,11 +130,13 @@ class MongoRepository:
 
     def create_indexes(self) -> None:
         """The collection's validator, every index and TTL expiry; idempotent, run at start-up."""
-        _apply_validator(self.collection, self._required)
+        collection = self.collection
+        _apply_validator(collection, self._required)
         for index in self._indexes:
-            self.collection.create_index(**index)
+            build_index(collection, index["keys"], partial(collection.create_index, **index))
         for field, seconds in self._ttl:
-            expire_documents_after(self.collection, field, seconds() if callable(seconds) else seconds)
+            expiry = seconds() if callable(seconds) else seconds
+            build_index(collection, field, partial(expire_documents_after, collection, field, expiry))
 
     def create(self, record: Record) -> Any:
         """Inserts a new record, returns its _id; DuplicateRecord names the unique index that refused it."""
@@ -262,6 +267,20 @@ def _projection(
 def _update_document(changes: Mapping[str, Any]) -> Mapping[str, Any]:
     """Plain fields go in $set; a document of $ operators is used as it is."""
     return changes if any(key.startswith("$") for key in changes) else {"$set": dict(changes)}
+
+
+def build_index(collection: MongoCollection, keys: Any, build: Callable[[], object]) -> None:
+    """Runs one start-up index build; one outlasting the socket or server time limit (a new index on a large
+    collection) is logged and left to finish on the server, where the next start finds it ready."""
+    try:
+        build()
+    except (NetworkTimeout, ExecutionTimeout) as error:  # every pod would restart and time out again
+        log.warning(
+            LogEvent.MONGODB_INDEX_STILL_BUILDING,
+            collection=collection.name,
+            keys=str(keys),
+            message=str(error),
+        )
 
 
 def drop_retired_index(collection: MongoCollection, name: str) -> None:

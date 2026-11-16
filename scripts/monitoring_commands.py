@@ -36,8 +36,8 @@ QUEUES = (
     "tsg_reaper",
 )
 QUEUE_KEY_PREFIX = "tsg:"  # app/core/constants/jobs.py Worker.BROKER_KEY_PREFIX
-#: Each queue's two lists (next stages, new work): Worker.*_PRIORITY in app/core/constants, named by kombu.
-QUEUE_PRIORITY_SUFFIXES = ("", "\x06\x163")
+#: Each queue's three lists (next stages, new work, a busy entity's plans): Worker.*_PRIORITY, named by kombu.
+QUEUE_PRIORITY_SUFFIXES = ("", "\x06\x163", "\x06\x166")
 Command = tuple[list[str], dict[str, str]]  # (command line, extra environment)
 
 

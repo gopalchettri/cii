@@ -88,7 +88,7 @@ def _prepare_stores_and_models() -> None:
     pools = {
         AiLimits.SEARCH_POOL: container.get_ai_slots()
     }  # AiSlotsSaturated reads both gauges, pool by pool
-    pools |= {module: main for module, (main, _) in container.get_module_ai_slots().items()}
+    pools |= {module: slots for module, slots in container.get_module_ai_slots().items()}
     for pool, slots in pools.items():
         metrics.AI_SLOTS_IN_USE.labels(pool).set_function(slots.count_calls_in_progress)
         metrics.AI_SLOTS_CAP.labels(pool).set_function(slots.current_limit)

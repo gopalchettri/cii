@@ -89,23 +89,23 @@ def _run(
 
 
 def test_the_biggest_first_ask_is_rebuilt_as_tsg_sent_it(monkeypatch, tmp_path, capsys) -> None:
-    """A relevance check of 5,000 input tokens asks for 15,240 with its 10,240 answer cap: more than a writer
-    call of 9,000 and its 6,144. Mutation: calls ranked by input alone, a re-ask, the fallback model's call or
-    one whose system prompt is not found taken, the fingerprint not checked, TSG's options not sent, litellm's
-    own options left in the body, not today's Create scenario rows read."""
+    """A relevance check of 8,000 input tokens asks for 16,192 or more with its answer cap (8,192 or more):
+    more than a writer call of 9,000 and its 6,144. Mutation: calls ranked by input alone, a re-ask, another
+    model's call or one whose system prompt is not found taken, the fingerprint not checked, TSG's options not
+    sent, litellm's own options left in the body, not today's Create scenario rows read."""
     unknown = "A system prompt TSG no longer has."
     body, asked = _run(
         monkeypatch,
         tmp_path,
         _call(AiTask.WRITE_SCENARIO, 9_000, build_writer_system_prompt()),
-        _call(AiTask.RELEVANCE_GATE, 5_000, _PLANNER_SYSTEM),
+        _call(AiTask.RELEVANCE_GATE, 8_000, _PLANNER_SYSTEM),
         _call(AiTask.RELEVANCE_GATE, 20_000, _PLANNER_SYSTEM, reask=True),
         _call(AiTask.RELEVANCE_GATE, 30_000, _PLANNER_SYSTEM, model="litellm_proxy/glm-5.3"),
         _call(AiTask.RELEVANCE_GATE, 25_000, unknown),
     )
     assert body == {
         "model": "kimi-k2.5",
-        "messages": build_conversation(_PLANNER_SYSTEM, "QUESTION of 5,000 tokens"),
+        "messages": build_conversation(_PLANNER_SYSTEM, "QUESTION of 8,000 tokens"),
         "max_tokens": CHAT_MAX_OUTPUT_TOKENS[AiTask.RELEVANCE_GATE],
         "stream": False,
         "response_format": {"type": "json_object"},
@@ -125,7 +125,7 @@ def test_the_biggest_first_ask_is_rebuilt_as_tsg_sent_it(monkeypatch, tmp_path, 
     ]
     said = " ".join(capsys.readouterr().out.split())
     assert 'at 14:02:31 UTC, in its "Relevance check" step' in said and "its fingerprint matches" in said
-    assert "TSG recorded 5,000 input tokens for it and an answer of 6,980 tokens" in said
+    assert "TSG recorded 8,000 input tokens for it and an answer of 6,980 tokens" in said
 
 
 def test_nothing_to_rebuild_says_so(monkeypatch, tmp_path) -> None:

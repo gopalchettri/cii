@@ -1,5 +1,4 @@
 {
- "AiLimits.FALLBACK_SLOTS_KEY": "tsg:ai_fallback_slots",
  "AiLimits.REQUEST_RATE_KEY": "tsg:ai_next_request:{model}",
  "AiLimits.SLOTS_KEY": "tsg:ai_slots",
  "AiLimits.SLOTS_LIMIT_KEY": "tsg:ai_slots:limit",

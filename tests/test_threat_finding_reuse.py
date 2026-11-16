@@ -45,8 +45,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _chat(model: str = "test-chat", thinking: bool = False) -> ai.ChatModel:
     records = AiCallRepository(get_mongodb()[TEXTS])
-    on = frozenset({model} if thinking else ())
-    return ai.ChatModel([(model, PROFILE)], "http://ai.invalid", "key", records, thinking_on=on)
+    return ai.ChatModel(model, PROFILE, "http://ai.invalid", "key", records, thinking=thinking)
 
 
 def _run() -> dict[str, Any]:

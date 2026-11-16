@@ -1,0 +1,53 @@
+# API key limits
+
+Checked 2026-11-14 07:44:12 UTC with one tiny request to each model.
+
+## Kimi-K2.6 (chat model) @ ccpm-control-extraction-resource.services.ai.azure.com
+
+In short: this key may use at most 100,000 tokens a minute, shared with others.
+
++------------------------------+------------------------+------------------------------------------------------------------+
+| What was checked             | Result                 | What it means                                                    |
++==============================+========================+==================================================================+
+| Tokens this key may use in   | 100,000                | AI text is counted in tokens (a token is about 3/4 of a word).   |
+| one minute                   |                        | Everything sent to the AI and everything it writes back counts,  |
+|                              |                        | so this is about 75,000 words a minute in and out together. It   |
+|                              |                        | is set by the model's own capacity (shared by every caller of    |
+|                              |                        | the model).                                                      |
++------------------------------+------------------------+------------------------------------------------------------------+
+| Tokens left when checked     | 99,980                 | What the shared budget still held in that minute; other users of |
+|                              |                        | the same budget lower it.                                        |
++------------------------------+------------------------+------------------------------------------------------------------+
+| Questions this key may send  | 100                    | Not the problem: 100 questions sharing 100,000 tokens could      |
+| in one minute                |                        | average only 1,000 tokens (about 750 words) each.                |
++------------------------------+------------------------+------------------------------------------------------------------+
+| This key's own setting       | not stated             | The key has no limit of its own; the shared one applies.         |
++------------------------------+------------------------+------------------------------------------------------------------+
+| Tokens guaranteed to this    | 0                      | Nothing is set aside for it: when others use the shared budget   |
+| key                          |                        | first, this key's questions wait or are refused (HTTP 429).      |
++------------------------------+------------------------+------------------------------------------------------------------+
+
+In detail:
+
+| Per minute, unless said                     |                  Tokens |   Requests | Notes                                                                                  |
+|---------------------------------------------|------------------------:|-----------:|----------------------------------------------------------------------------------------|
+| The model's own capacity                    |                 100,000 |        100 | shared by every caller of the model                                                    |
+| This key's own limit                        |              not stated | not stated | for this key alone                                                                     |
+| **Most this key can use in one minute**     |             **100,000** |    **100** | the lowest above; tokens: the model's own capacity; requests: the model's own capacity |
+| Left of it in the minute of this check      |                  99,980 |         99 | after this check's own tiny request                                                    |
+| Least this key is sure to get in one minute |                       0 |          0 | a limit caps use; none reserves any for it                                             |
+| Most tokens in one request: prompt / answer | not stated / not stated |          - | per request                                                                            |
+| Most requests at once (in parallel)         |                       - | not stated | per key                                                                                |
+| How long 'one minute' is                    |                       - |          - | 60 s, as the gateway states it                                                         |
+
+The gateway's answers, word for word:
+
+```
+  /key/info           HTTP 404: this gateway has no such page
+  /team/info          not known: the key's own settings were not read
+  /organization/info  not known: the key's own settings were not read
+  /model/info         HTTP 404: this gateway has no such page
+  answer              HTTP 200
+  headers             x-ratelimit-abusepenalty-active False, x-ratelimit-key Kimi-K2.6, x-ratelimit-limit-requests 100, x-ratelimit-limit-tokens 100000, x-ratelimit-remaining-requests 99, x-ratelimit-remaining-tokens 99980, x-ratelimit-renewalperiod-requests 60, x-ratelimit-renewalperiod-tokens 60, x-ratelimit-reset-requests 0, x-ratelimit-reset-tokens 0
+```
+

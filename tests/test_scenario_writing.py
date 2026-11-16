@@ -691,6 +691,29 @@ def test_a_sentence_number_within_the_story_passes(numbers: dict[str, Any]) -> N
     assert _find_actions_missing_from_story(answer, _ACTIONS) == []
 
 
+_EITHER = "deny service to OT communications or deny service to access layer"
+
+
+@pytest.mark.parametrize(
+    ("numbers", "missing"),
+    [
+        ({"deny service to OT communications": 1, "deny service to access layer": 3}, []),
+        ({_EITHER: 2}, []),
+        ({"deny service to OT communications": 1}, [_EITHER]),
+        ({"deny service to OT communications": 1, "deny service to access layer": 4}, [_EITHER]),
+    ],
+)
+def test_an_or_action_is_covered_whole_or_by_a_sentence_for_each_of_its_parts(
+    numbers: dict[str, Any], missing: list[str]
+) -> None:
+    """tsg_ai_call_texts, 15 Nov: the writer numbers each part of an "X or Y" action; one part alone, or one
+    past the story's end, still leaves the action missing."""
+    story = f"{_PUSH} {_HIDE} They could then stop the access layer."
+    answer = {"scenario_statement": story, "action_sentences": numbers}
+    problems = [AnswerProblem.ACTION_SENTENCES_MISSING.format(actions=json.dumps(act)) for act in missing]
+    assert _find_actions_missing_from_story(answer, (_EITHER,)) == problems
+
+
 @pytest.mark.parametrize(
     "number", [None, 0, 3, -1, "3", "", "the second", 1.5, True, [[2]], float("nan"), float("inf")]
 )
@@ -934,9 +957,6 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     assert view.validation_status == ValidationStatus.OK and view.validation_notes == []
     assert view.threat.threat_name == "Unauthorised firmware update" and view.threat.scope_rank == 3
     assert (view.controls_status, record["rewritten"], view.evidence) == ("queued", False, [])
-    assert record["plan_check"] == {
-        "status": "unchecked", "problems": [], "unsupported": [], "same_threat": None, "same_impact": None,
-    }  # fmt: skip
 
 
 def test_the_card_keeps_each_systems_recorded_name_and_one_entry_point() -> None:

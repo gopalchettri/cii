@@ -22,7 +22,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 
 from app import container
-from app.api.routers import scenario as events
+from app.api.status_stream import status_stream
 from app.core.constants import Collection, Event, Header, Realtime, SessionState, StageState, Status, Step
 from app.core.database import get_mongodb, get_redis_client
 from app.main import create_app
@@ -524,9 +524,7 @@ def test_a_burst_of_changes_costs_one_status_read_made_after_the_burst() -> None
     async def scenario() -> tuple[object, object]:
         hub = CountingHub()
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(event_hub=hub)))
-        stream = events._status_stream(
-            request, "channel", read_status, (Event.SESSION_UPDATED, None), lambda: True
-        )
+        stream = status_stream(request, "channel", read_status, Event.SESSION_UPDATED, lambda: True, None)
         first = await anext(stream)
 
         async def save_a_burst() -> None:

@@ -12,6 +12,7 @@ from app.core.prompts import PROMPTS
 from app.domain.service_mapper.answer_checks import answer_problems
 from app.domain.service_mapper.reconcile import reconcile, selected_service_id
 from app.domain.shared.names import as_json, is_same_name, shorten_text
+from app.domain.shared.prompt_redaction import redacted
 from app.models.service_mapper.catalog import CatalogService, CatalogSnapshot
 from app.models.service_mapper.contract import CreateMappingRequest
 from app.models.service_mapper.generation import GeneratedAnswer
@@ -65,7 +66,7 @@ def generate_answer(
     def dropped_items(answer: dict[str, Any]) -> list[str]:
         return answer_problems(request, GeneratedAnswer.model_validate(answer), catalog)
 
-    with one_ask():  # every attempt of it (retries, the fallback model, a re-ask): one ask in tsg_ai_usage
+    with one_ask():  # every attempt of it (retries, a re-ask): one ask in tsg_ai_usage
         answer = chat.ask_for_checked_json(  # a retry of this generation takes the answers it already got
             AiTask.SERVICE_MAPPER, _SYSTEM, prompt, check, dropped_items, reuse_earlier_answer=True
         )
@@ -118,7 +119,8 @@ def _is_selected(service: CatalogService, request: CreateMappingRequest) -> bool
 
 
 def _queries(request: CreateMappingRequest) -> list[str]:
-    role = f"{request.service_name}. {request.service_description}. {request.sector} / {request.subsector}"
+    text = redacted(request.model_dump())
+    role = f"{text['service_name']}. {text['service_description']}. {text['sector']} / {text['subsector']}"
     return [
         role,
         f"Direct upstream services and operational inputs needed by: {role}",
@@ -134,9 +136,10 @@ def _user_prompt(
     held: Sequence[dict],
 ) -> str:
     already = {"already_mapped": _already_mapped(held)} if held else {}
+    selected = redacted(request.model_dump()) | _selected_known_dependencies(request, catalog)
     return as_json(
         {
-            "selected_service": request.model_dump() | _selected_known_dependencies(request, catalog),
+            "selected_service": selected,
             "upstream_count": counts[0],
             "downstream_count": counts[1],
             **already,

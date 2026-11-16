@@ -72,6 +72,18 @@ class MappingRepository(MongoRepository):
         )
         return bool(started.modified_count)
 
+    def add_request_key(self, mapping_id: str, claim: dict[str, Any]) -> None:
+        """Add a key's claim on the run it joined; nothing once that run ended or the key is in."""
+        self.collection.update_one(
+            {
+                "_id": mapping_id,
+                "status": {"$in": _GENERATING},
+                "job.epoch": claim["generation"],
+                "request_keys.key": {"$ne": claim["key"]},
+            },
+            {"$push": {"request_keys": claim}},
+        )
+
     def finish_generation(
         self, lease: JobLease, found: dict[str, Any], timings: dict[str, float] | None = None
     ) -> None:

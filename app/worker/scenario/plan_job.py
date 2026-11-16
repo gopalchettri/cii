@@ -13,7 +13,6 @@ from app.core.constants import (
     ChatModule,
     Lease,
     LogEvent,
-    PlanMessage,
     RunActionOutcome,
     Status,
     Step,
@@ -53,7 +52,7 @@ class PlanJob:
             plan["paths"], get_settings().initial_set_size
         )  # [] when none
         trace = build_plan_trace(findings, plan, len(asked))
-        changes = _plan_changes(plan, len(selected), time.perf_counter() - started) | {"plan_trace": trace}
+        changes = _plan_changes(plan, trace, len(selected), time.perf_counter() - started)
         if asked:
             hand_over(lease, TaskName.WRITE_SCENARIOS, changes | {"job.batch": batch, "job.set": asked})
         else:
@@ -62,14 +61,17 @@ class PlanJob:
         log.info(LogEvent.PLANNER_FUNNEL, **trace["counts"], landscape_cut=trace["landscape_cut"])
 
 
-def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[str, Any]:
-    """The plan and what the run shows from it: the counts and the plan note."""
+def _plan_changes(
+    plan: dict[str, Any], trace: dict[str, Any], selected: int, seconds: float
+) -> dict[str, Any]:
+    """The plan, its trace and what the run shows from them: the counts."""
     return {
         "plan": plan,
-        "plan_note": PlanMessage.PLAN_NOTE.format(planned=selected, written=0, remaining=selected),
+        "plan_trace": trace,
         "step": Step.SCENARIOS,
         "counts.planned": selected,
         "counts.remaining": selected,
+        "counts.not_judged": trace["counts"]["not_judged"],
         "timings.threats_s": round(seconds, 1),
     }
 
@@ -77,10 +79,8 @@ def _plan_changes(plan: dict[str, Any], selected: int, seconds: float) -> dict[s
 def _made_with(library_stamp: dict[str, str | None]) -> dict[str, Any]:
     """The models and library version the plan was made with, frozen on the plan for the reviewer."""
     settings = get_settings()
-    chat = module_chat(settings, ChatModule.SCENARIO)
-    chat_models = [chat.model] + ([chat.fallback_model] if chat.fallback_model else [])
     return {
-        "chat_models": chat_models,
+        "chat_models": [module_chat(settings, ChatModule.SCENARIO).model],
         "embedding_model": settings.embedding_model,
         "rerank_model": settings.rerank_model,
         "library": library_stamp,

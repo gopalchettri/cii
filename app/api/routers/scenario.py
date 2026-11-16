@@ -4,9 +4,9 @@ threat to the library (`review_router`); a run's or a plan's live status over Se
 (`events_router`). Each route makes one service call; the run check (404/403) is the valid_session
 dependency."""
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from functools import partial
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -217,19 +217,6 @@ def promote_to_library(
 
 # Live updates: a run's or a plan's status now, then at every change, until the client closes, its API key is
 # revoked, or the record is deleted (one `.deleted` event, then the stream ends).
-
-
-async def _status_stream(
-    request: Request,
-    channel: str,
-    read_status: Callable[[], dict[str, Any] | None],
-    events: tuple[Event, ServerSentEvent | None],
-    still_allowed: Callable[[], bool],
-) -> AsyncIterator[ServerSentEvent]:
-    """Keep the session stream interface while sharing its implementation with Service Mapper."""
-    updated, gone = events
-    async for item in status_stream(request, channel, read_status, updated, still_allowed, gone):
-        yield item
 
 
 @events_router.get(

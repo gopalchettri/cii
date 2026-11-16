@@ -1,11 +1,12 @@
 """Remediation plans: a plan requested for a generated or a hand-written scenario, a new version, a review,
 and the reads. No request calls the AI: the plan job builds each version's input and writes it."""
 
+from collections.abc import Callable
 from typing import Any
 
 import structlog
 
-from app.core.callables import Publish, SendJob
+from app.core.callables import Publish
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
@@ -21,6 +22,7 @@ from app.core.constants import (
     SessionMessage,
     Status,
     TaskName,
+    Worker,
 )
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Conflict, DuplicateRecord, NotFound
 from app.core.redaction import REDACTED
@@ -97,7 +99,7 @@ class RemediationPlanService:
         assets: AssetRepository,
         library: LibraryCache,
         audit: AuditRepository,
-        send_job: SendJob,
+        send_job: Callable[[TaskName, str, int, int], bool],  # (task, record id, epoch, priority)
         publish_remediation_status: Publish,
     ) -> None:
         self._remediations, self._scenarios, self._sessions = remediations, scenarios, sessions
@@ -268,7 +270,7 @@ class RemediationPlanService:
         if self._sessions.is_being_deleted(record["session_id"]):
             self._remediations.delete(_id=record["_id"])
             raise run_being_deleted(record["session_id"])
-        self._send_job(TaskName.WRITE_PLAN, record["_id"], record["job"]["epoch"])  # a lost send is re-sent
+        self._send_plan_job(principal.entity_id, record["_id"], record["job"]["epoch"])
         register = dict(record["register"])  # audited with the risk owner masked
         if register.get("risk_owner"):
             register["risk_owner"] = REDACTED
@@ -359,7 +361,7 @@ class RemediationPlanService:
         if self._sessions.is_being_deleted(read["session_id"]):
             self._undo_version(read, version, in_place)
             raise run_being_deleted(read["session_id"])
-        self._send_job(TaskName.WRITE_PLAN, remediation_id, version)
+        self._send_plan_job(principal.entity_id, remediation_id, version)
         target = audit_target(AuditTarget.REMEDIATION, remediation_id)
         self._audit.create_audit_record(
             AuditAction.PLAN_REGENERATED, caller_actor(principal), target, after={"version": version}
@@ -372,6 +374,14 @@ class RemediationPlanService:
             version=version,
             status=Status.QUEUED,
         )
+
+    def _send_plan_job(self, entity_id: int, remediation_id: str, version: int) -> None:
+        """Sends the queued version's job, behind new work while the entity has other plans waiting."""
+        working = {"$in": [Status.QUEUED, Status.RUNNING]}
+        others = self._remediations.count(entity_id=entity_id, status=working) - 1  # this one is queued
+        busy = others >= Worker.BUSY_ENTITY_WAITING
+        priority = Worker.BUSY_ENTITY_PRIORITY if busy else Worker.NEW_WORK_PRIORITY
+        self._send_job(TaskName.WRITE_PLAN, remediation_id, version, priority)  # a lost send is re-sent
 
     def _undo_version(self, read: dict[str, Any], version: int, in_place: bool) -> None:
         """The plan put back as `read` before `version` was queued: one queued again in place fails for its

@@ -1,6 +1,9 @@
 .env
 .env.*
 !.env.example
+# Key-free copies of .env and .env.uat (every key, password and connection string blank)
+!.env.dev.example
+!.env.uat.example
 # Local copies of the env files (they hold real keys)
 .env copy*
 .venv/

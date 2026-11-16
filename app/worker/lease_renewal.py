@@ -25,6 +25,8 @@ log = structlog.get_logger(__name__)
 #: The leases held here that a stopping worker gives back, by signal: each one's give-back and a copy of its
 #: work's context (its log fields, request id).
 _held: dict[LeaseSignal, tuple[Callable[[], bool], contextvars.Context]] = {}
+#: Set once this stopping worker starts giving its leases back: a lease lost from then on was handed back.
+handing_back = threading.Event()
 
 
 class RenewableLease(Protocol):
@@ -95,6 +97,7 @@ def hand_back_running_jobs(after_seconds: float = 0) -> None:
     """After `after_seconds` (time for running work to finish), gives back every lease still held here; its
     work then stops at its next lease check (an AI call or wait), not at its next renewal."""
     time.sleep(after_seconds)
+    handing_back.set()
     for lost, (give_back, context) in _held.copy().items():
         if context.run(_given_back, give_back):
             lost.set()
