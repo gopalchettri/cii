@@ -23,11 +23,21 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from app.ai import limiter_scripts
-from app.ai.retry_waits import busy_retry_wait, rate_limited_wait
 from app.core import metrics
-from app.core.constants import AI_OUTAGE_MESSAGES, AiLimits, AiOutage, AiOutageSource, ErrorMessage, LogEvent
+from app.core.config import get_settings
+from app.core.constants import (
+    AI_OUTAGE_MESSAGES,
+    AiLimits,
+    AiOutage,
+    AiOutageSource,
+    ChatModule,
+    ErrorMessage,
+    LogEvent,
+)
+from app.core.database import get_redis_client
 from app.core.exceptions import Unavailable
 from app.core.lease_signal import raise_if_lease_lost, start_thread_without_lease
+from app.core.singletons import singleton
 
 log = structlog.get_logger(__name__)
 
@@ -40,12 +50,29 @@ def sleep_unless_lease_lost(seconds: float) -> None:
         raise_if_lease_lost()
 
 
+def rate_limited_wait(retry_after: str | None, attempt: int, waited: float) -> float | None:
+    """A 429's wait: its step or a longer Retry-After, capped, jittered, never past the total; None: asked enough."""
+    left = AiLimits.RATE_LIMITED_TOTAL_WAIT_SECONDS - waited
+    if attempt >= len(AiLimits.RATE_LIMITED_WAITS_SECONDS) or left <= 0:
+        return None
+    try:
+        asked = float(retry_after or "")  # none, or an HTTP date (LiteLLM's proxy sends seconds): 0
+    except ValueError:
+        asked = 0.0
+    asked = asked if math.isfinite(asked) else 0.0  # "nan" or "inf" asks for nothing
+    capped = min(max(AiLimits.RATE_LIMITED_WAITS_SECONDS[attempt], asked), AiLimits.RATE_LIMITED_MAX_WAIT_SECONDS)
+    # Jittered after the cap: every LiteLLM 429 asks for 60 s, so capped waits would all be the same.
+    jitter = random.uniform(-AiLimits.RATE_LIMITED_JITTER, AiLimits.RATE_LIMITED_JITTER)  # noqa: S311
+    return min(capped * (1 + jitter), left)
+
+
+def busy_retry_wait(attempt: int) -> float | None:
+    """A busy request's wait before it is asked again: 0.5 s, doubling; None after AiLimits.RETRIES."""
+    return AiLimits.RETRY_FIRST_WAIT_SECONDS * 2**attempt if attempt < AiLimits.RETRIES else None
+
+
 class AiSlots:
-    """Records every AI call in flight across the pods (the sorted set `key`, AiLimits.SLOTS_KEY by default)
-    and starts one only while fewer run than the limit: `cap` (0 = none), or the lower limit a gateway 429
-    set (note_rate_limited) until a few minutes pass with no 429. `redis` None: no limit, none recorded. A
-    daemon thread renews this process's slots every SLOT_RENEW_SECONDS; a slot not renewed for
-    SLOT_LEASE_SECONDS ends, so a process that died stops counting within a lease."""
+    """AI calls in flight across the pods (sorted set `key`), started only below `cap` or a 429's lower limit."""
 
     def __init__(self, redis: Redis | None, cap: int, wait_seconds: float, key: str = "") -> None:
         self._redis = redis
@@ -54,9 +81,7 @@ class AiSlots:
         self._key = key or AiLimits.SLOTS_KEY
         self._limit_key = f"{key}:limit" if key else AiLimits.SLOTS_LIMIT_KEY
         self._held: set[str] = set()  # this process's calls in flight: the slots its renewer renews
-        self._unreleased: set[str] = (
-            set()
-        )  # slots whose release a Redis failure missed: freed by the next take
+        self._unreleased: set[str] = set()  # slots whose release a Redis failure missed: freed by the next take
         self._skip_redis_until = 0.0  # time.monotonic(): set at cap 0 by a Redis failure
         self._untracked_logged = False
         if redis is not None:  # registered: each poll sends EVALSHA, not the whole script
@@ -69,10 +94,7 @@ class AiSlots:
 
     @contextmanager
     def hold_slot(self, task: str) -> Iterator[None]:
-        """Holds one slot while the call runs; Unavailable when its turn does
-        not come within the wait; an answered call raises a 429's limit by 1 /
-        limit. LeaseLost before, during and after the wait for a job whose lease was lost (cancelled), so a
-        stopped job holds no slot another run needs. `task`: whose refusal tsg_ai_outages_total counts."""
+        """Holds one slot while the call runs; Unavailable after the wait, LeaseLost for a job that lost its lease."""
         raise_if_lease_lost()
         call_id = uuid.uuid4().hex
         if not self._redis_in_use() or not self._take_slot(call_id, task):
@@ -89,8 +111,7 @@ class AiSlots:
             self._release_slot(call_id, answered)
 
     def note_rate_limited(self) -> None:
-        """A gateway 429: this pool's limit on every pod becomes half its calls in flight, at most once each
-        ADAPTIVE_CUT_SPACING_SECONDS, never below the floor, until ADAPTIVE_LIMIT_TTL_SECONDS with no 429."""
+        """A gateway 429: halves this pool's limit on every pod, floored, until ADAPTIVE_LIMIT_TTL_SECONDS pass."""
         if not self._redis_in_use():
             return
         floor, ttl = AiLimits.ADAPTIVE_LIMIT_FLOOR, AiLimits.ADAPTIVE_LIMIT_TTL_SECONDS
@@ -124,12 +145,9 @@ class AiSlots:
         return float(min(limits, default=0))
 
     def _redis_in_use(self) -> bool:
-        """A client, and no Redis failure at cap 0 in the last REDIS_SKIP_SECONDS."""
         return self._redis is not None and time.monotonic() >= self._skip_redis_until
 
     def _take_slot(self, call_id: str, task: str) -> bool:
-        """True once recorded, when its turn comes within the wait (else Unavailable). A Redis error with no
-        cap never fails the call: False, unrecorded (logged once); with a cap, an outage the job retries."""
         wait = self.wait_seconds
         deadline, pause = time.monotonic() + wait, AiLimits.SLOT_FIRST_PAUSE_SECONDS
         keys = [self._key, self._limit_key, f"{self._key}:line", f"{self._key}:line_polls"]
@@ -160,7 +178,6 @@ class AiSlots:
         return True
 
     def _release_slot(self, call_id: str, answered: bool) -> None:
-        """Frees the slot, raising a 429's limit when the call was answered: one round trip."""
         if not self._redis_in_use():
             self._unreleased.add(call_id)  # else it counted as in flight until its lease ended
             return
@@ -174,7 +191,6 @@ class AiSlots:
                 self._note_redis_failure()
 
     def _renew_leases_forever(self) -> None:
-        """Every SLOT_RENEW_SECONDS, one script renews the slots this process holds; no error ends it."""
         while True:
             time.sleep(AiLimits.SLOT_RENEW_SECONDS)
             if held := self._held.copy():
@@ -184,7 +200,6 @@ class AiSlots:
                     self._note_redis_failure()
 
     def _note_redis_failure(self) -> None:
-        """Redis failed and the call went on without it: logged once, until a slot is recorded again."""
         if not self._cap:  # a hung Redis would cost every call its timeout; a cap must still hold
             self._skip_redis_until = time.monotonic() + AiLimits.REDIS_SKIP_SECONDS
         if not self._untracked_logged:
@@ -193,10 +208,7 @@ class AiSlots:
 
 
 class AiRequestRate:
-    """One model's requests in a `scope` (a module's own, or none), retries included, on their own Redis key:
-    60 / `per_minute` s apart, or a large request's tokens x 60 / `tokens_per_minute` s, once a burst of
-    RATE_BURST_SECONDS is spent; a 429 pauses it (pause). Both 0 = no limit, no Redis call.
-    `waits_out_rate_limits`: true in a worker, false in the API."""
+    """One model's request spacing in a `scope` on its own Redis key, by requests and tokens a minute."""
 
     def __init__(  # noqa: PLR0913 — one model's two limits, its scope and how its process waits
         self,
@@ -225,9 +237,7 @@ class AiRequestRate:
             self._give_back_send_time = redis.register_script(limiter_scripts.GIVE_BACK_SEND_TIME_SCRIPT)
 
     def wait_for_turn(self, task: str, tokens: int = 0) -> float:
-        """Waits for the send time it reserves for a request of about `tokens`; the seconds waited.
-        Unavailable, nothing reserved, when that time is further off than the wait; LeaseLost for a job that
-        lost its lease. A Redis error never fails the request: it goes ahead unspaced (_redis_failed)."""
+        """Waits for the send time it reserves for about `tokens`; the seconds waited (a Redis error: none)."""
         self._booked.turn = None
         interval = self._spacing(tokens)
         if interval == 0 or not self._in_use():
@@ -247,10 +257,7 @@ class AiRequestRate:
         return wait
 
     def wait_for_send_time(self, task: str) -> float:
-        """Waits, reserving nothing and holding no AI slot, for the model's next send time (a 429's pause or a
-        line of turns past the burst), re-read each LEASE_CHECK_SECONDS so a give-back meanwhile ends it
-        early, never longer than the first read; the seconds waited. Unavailable when that read is further
-        off than the wait."""
+        """Waits, holding no slot, for the model's next send time (a 429's pause or a long line); the seconds."""
         if not self._in_use():
             return 0.0
         raise_if_lease_lost()
@@ -274,9 +281,7 @@ class AiRequestRate:
         return waited
 
     def pause(self, seconds: float) -> float:
-        """A 429 from this model: its next send time, on every pod, becomes at least `seconds` away and its
-        burst is used up, so the calls queued for it wait (wait_for_send_time) and then go one interval apart
-        instead of each drawing a 429 of its own; `seconds`."""
+        """A 429: the model's next send time on every pod moves `seconds` away and its burst is used up; `seconds`."""
         if self._in_use():
             try:
                 keys = [self._key, self._pause_key, self._line_key]
@@ -286,9 +291,7 @@ class AiRequestRate:
         return seconds
 
     def give_back(self, used: int) -> float:
-        """Moves back, on every pod, the part of this thread's last turn an answer that `used` tokens did not
-        need (LiteLLM counts only what was used), once; never before a 429's pause ends, nothing when the
-        turn's line is another now or the thread reserved none."""
+        """Moves back, on every pod, the part of this thread's last turn the answer did not use, once."""
         turn, self._booked.turn = getattr(self._booked, "turn", None), None
         if turn is None:
             return 0.0
@@ -303,35 +306,28 @@ class AiRequestRate:
             return self._redis_failed()
 
     def _spacing(self, tokens: int) -> float:
-        """The seconds a request of about `tokens` holds the next one off: the longer of the two limits."""
         return max(
             60 / self._per_minute if self._per_minute else 0.0,
             tokens * 60 / self._tokens_per_minute if self._tokens_per_minute else 0.0,
         )
 
     def _in_use(self) -> bool:
-        """A Redis client and a limit, and no Redis failure in the last REDIS_SKIP_SECONDS."""
         limited = self._per_minute or self._tokens_per_minute
         return self._redis is not None and bool(limited) and time.monotonic() >= self._skip_redis_until
 
     def _redis_failed(self) -> float:
-        """Redis is left alone for REDIS_SKIP_SECONDS, logged; the request waits none."""
         self._skip_redis_until = time.monotonic() + AiLimits.REDIS_SKIP_SECONDS
         log.warning(LogEvent.AI_SLOTS_UNTRACKED, limiter=self._key, exc_info=True)
         return 0.0
 
     def _refuse(self, task: str) -> NoReturn:
-        """No turn within the wait: TSG's own refusal, counted for `task` (Unavailable, busy)."""
         limits = {"per_minute": self._per_minute, "tokens_per_minute": self._tokens_per_minute}
-        log.warning(
-            LogEvent.AI_REQUEST_RATE_BUSY, model=self._model, wait_seconds=self.wait_seconds, **limits
-        )
+        log.warning(LogEvent.AI_REQUEST_RATE_BUSY, model=self._model, wait_seconds=self.wait_seconds, **limits)
         metrics.AI_OUTAGES.labels(task, AiOutage.BUSY, AiOutageSource.LIMITER).inc()
         raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.BUSY], reason=AiOutage.BUSY)
 
     def wait_after_rate_limit(self, retry_after: str | None, attempt: int, waited: float) -> float | None:
-        """How long a rate-limited request (HTTP 429) waits before it is asked again: as rate_limited_wait
-        says in a worker, as any busy request in the API (it answers a caller); None: not asked again."""
+        """A 429's wait: rate_limited_wait's in a worker, a busy wait's in the API; None: not asked again."""
         if self._waits_out_rate_limits:
             return rate_limited_wait(retry_after, attempt, waited)
         return busy_retry_wait(attempt)
@@ -340,3 +336,31 @@ class AiRequestRate:
 #: Tests and any caller that needs no limit.
 UNLIMITED_AI_SLOTS = AiSlots(None, 0, 0)
 UNLIMITED_AI_REQUEST_RATE = AiRequestRate(None, "", 0, 0)
+
+
+#: This process's wait for a slot or request turn, and whether it waits out a 429: the API waits briefly and
+#: retries a 429 as any busy answer; a worker waits longer and waits out a 429 (app/worker/lifecycle.py).
+_ai_slot_wait_seconds: float = AiLimits.API_SLOT_WAIT_SECONDS
+_waits_out_rate_limits = False
+
+
+@singleton
+def get_ai_slots() -> AiSlots:
+    """The search calls' slots (embedding, reranker); at cap 0 a 429 still limits the calls in flight."""
+    return AiSlots(get_redis_client(), get_settings().max_concurrent_ai_calls, _ai_slot_wait_seconds)
+
+
+@singleton
+def get_module_ai_slots() -> dict[ChatModule, AiSlots]:
+    """Each module's own chat slots: its 429s never slow another module or the search calls."""
+    redis, settings, key = get_redis_client(), get_settings(), AiLimits.SLOTS_KEY
+    caps = {module: settings.chat_of(module).max_concurrent_ai_calls for module in ChatModule}
+    return {module: AiSlots(redis, cap, _ai_slot_wait_seconds, f"{key}:{module}") for module, cap in caps.items()}
+
+
+def ai_request_rate_for(model: str, per_minute: int, tokens_per_minute: int = 0, scope: str = "") -> AiRequestRate:
+    """`model`'s own request-rate limiter in `scope` (a module's), with this process's waits."""
+    redis = get_redis_client() if per_minute or tokens_per_minute else None
+    return AiRequestRate(
+        redis, model, per_minute, _ai_slot_wait_seconds, _waits_out_rate_limits, tokens_per_minute, scope
+    )

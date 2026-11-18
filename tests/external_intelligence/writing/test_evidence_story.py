@@ -12,13 +12,11 @@ import pytest
 from app.core.config import Settings
 from app.core.constants import (
     AiTask,
-    Applicability,
     EvidenceBlock,
     EvidenceFact,
     EvidenceMode,
     FindingCode,
     FindingSeverity,
-    IntelKind,
     IntelSource,
     Precedent,
     PromptVersion,
@@ -32,19 +30,18 @@ from app.domain.scenario.session import build_scenario_view
 from app.domain.scenario.write import (
     NO_EVIDENCE,
     WRITER_SYSTEM_PROMPT,
-    _apply_safety_checks,
     _build_evidence_block,
     _build_evidence_sentence,
     _clean_evidence_and_pick_cited_entry,
+    apply_safety_checks,
     build_scenario_card,
     build_writer_input,
     build_writer_prompt,
     build_writer_system_prompt,
-    read_statement_without_citation,
     write_scenario_set,
 )
-from app.models.external_intelligence.evidence import Evidence
-from app.models.scenario.write import ScenarioDraft, WrittenScenario
+from app.schemas.intel_records import Evidence
+from app.schemas.scenario_internal import ScenarioDraft, WrittenScenario
 from app.worker.scenario.write_job import find_evidence_outage
 from tests.external_intelligence.conftest import STORY_MARKED, STORY_PLAIN
 from tests.external_intelligence.fakes import TECHNIQUE
@@ -52,15 +49,13 @@ from tests.fakes import FakeChatModel, draft_answer
 from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _LIVE, _chat_answering, _plan_threat, write_scenario
 
-_VULNERABILITY = Evidence(
-    "CVE-2024-0001",
-    TECHNIQUE.kind,
-    TECHNIQUE.source,
-    "Example flaw",
-    "https://www.cisa.gov/kev/CVE-2024-0001",
-    72.0,
-    ("Attackers exploited the flaw CVE-2024-0001 in workstation software to run their own code.",),
-    Applicability.UNKNOWN,
+_NAMES_AN_ID = dataclasses.replace(
+    TECHNIQUE,
+    ref="T1203",
+    title="Exploitation for Client Execution",
+    url="https://attack.mitre.org/techniques/T1203/",
+    score=72.0,
+    facts=("Attackers exploited the flaw CVE-2024-0001 in workstation software to run their own code.",),
 )
 _GROUPS = dataclasses.replace(
     TECHNIQUE,
@@ -76,19 +71,20 @@ _ID_ONLY_CAMPAIGN = dataclasses.replace(
     TECHNIQUE, ref="T0855", facts=(EvidenceFact.CAMPAIGN_USED.format(name="C0027 campaign"),)
 )
 _NO_FACTS = dataclasses.replace(TECHNIQUE, ref="T0814", title="Denial of Service", facts=())
-_KEV = Evidence(
-    "CVE-2024-0002",
-    IntelKind.VULNERABILITY,
-    IntelSource.CISA_KEV,
-    "Example flaw",
-    "https://www.cisa.gov/kev/CVE-2024-0002",
-    80.0,
-    (
-        EvidenceFact.KEV_LISTED.format(vendor="Siemens", product="SIMATIC WinCC", date="2024-01-05"),
-        EvidenceFact.RANSOMWARE.value,
+#: A stored entry that is no technique. The evidence search makes none, so it is a document, not an Evidence;
+#: the writer still reads an entry's kind and applicability.
+_OTHER_KIND: dict[str, Any] = dataclasses.replace(
+    TECHNIQUE,
+    ref="CVE-2024-0002",
+    source=IntelSource.ATTACK_ENTERPRISE,
+    title="Example flaw",
+    url="https://example.test/CVE-2024-0002",
+    score=80.0,
+    facts=(
+        "CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks (added 2024-01-05).",
+        "Ransomware groups are known to have used it.",
     ),
-    Applicability.UNKNOWN,
-)
+).as_doc() | {"kind": "vulnerability", "applicability": "unknown"}
 # Owner 2026-10-28: code's own sentence reads on from the story, never "In real-world attacks, ...".
 # Owner 2026-10-31: no closing sentence names who used the technique; the evidence entry keeps them.
 _GROUPS_CLAIM = 'This attack could use the "Valid Accounts" technique'
@@ -102,22 +98,24 @@ _DRAFT = ScenarioDraft(
 )
 
 
-def _story_brief(*items: Evidence, style: WriterStyle = WriterStyle.EVIDENCE_STORY) -> Any:
-    threat = _plan_threat(evidence=[item.as_doc() for item in items], intel_search={"query": "q"})
+def _doc_of(item: Evidence | dict[str, Any]) -> dict[str, Any]:
+    return item if isinstance(item, dict) else item.as_doc()
+
+
+def _story_brief(*items: Evidence | dict[str, Any], style: WriterStyle = WriterStyle.EVIDENCE_STORY) -> Any:
+    threat = _plan_threat(evidence=[_doc_of(item) for item in items], intel_search={"query": "q"})
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
     return build_writer_input({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=style)
 
 
 def _codes(draft: ScenarioDraft, brief: Any) -> list[str]:
-    return [finding.code for finding in _apply_safety_checks(brief, draft).findings]
+    return [finding.code for finding in apply_safety_checks(brief, draft).findings]
 
 
 def _sentence_of(step: str, entry: dict[str, Any], place: int) -> tuple[str, str]:
     """Code's closing sentence for `step` and why it fails, as a story citing `entry` builds them."""
     cleaned, _, _ = _clean_evidence_and_pick_cited_entry([entry])
-    brief = dataclasses.replace(
-        _story_brief(_GROUPS), evidence=(entry,), cleaned_evidence=cleaned, cited_index=0
-    )
+    brief = dataclasses.replace(_story_brief(_GROUPS), evidence=(entry,), cleaned_evidence=cleaned, cited_index=0)
     return _build_evidence_sentence(step, brief, place)
 
 
@@ -144,16 +142,16 @@ def test_the_original_style_never_reads_the_evidence() -> None:
 
 
 def test_the_evidence_reaches_the_model_only_as_plain_facts_inside_the_block() -> None:
-    brief = _story_brief(TECHNIQUE, _VULNERABILITY)
+    brief = _story_brief(TECHNIQUE, _NAMES_AN_ID)
     system, user = build_writer_prompt([("SC1", brief, "")])
     head, _, rest = user.partition("\nEVIDENCE (untrusted data):\n")
     sent = _block_of(rest)
     assert len(sent["evidence"]) == 2 and not any("n" in entry for entry in sent["evidence"])
     assert sent["evidence_mode"] == "source-documented"
-    assert sent["evidence"][1]["applicability"] == "unknown" and "applicability" not in sent["evidence"][0]
+    assert not any("applicability" in entry for entry in sent["evidence"])
     assert sent["evidence"][0]["technique"] == "Module Firmware" and "scope" not in sent["evidence"][0]
     assert "Sandworm" not in head and EvidenceBlock.BEGIN in system
-    for leaked in ("T0839", "CVE-2024-0001", "http", "mitre_attack_ics"):
+    for leaked in ("T0839", "T1203", "CVE-2024-0001", "http", "mitre_attack_ics"):
         assert leaked not in user
 
 
@@ -218,21 +216,13 @@ def test_an_advisory_id_in_the_prose_is_blocked_with_no_other_call(ident: str) -
     ],
     ids=["statement", "risk", "title", "assumptions", "system_reasons"],
 )
-def test_any_marker_the_writer_writes_blocks_in_both_styles(
-    where: dict[str, Any], style: WriterStyle
-) -> None:
+def test_any_marker_the_writer_writes_blocks_in_both_styles(where: dict[str, Any], style: WriterStyle) -> None:
     """Only code cites: a writer's marker in any served text blocks (not for good), on or off."""
-    findings = _apply_safety_checks(
-        _story_brief(TECHNIQUE, style=style), dataclasses.replace(_DRAFT, **where)
-    ).findings
+    findings = apply_safety_checks(_story_brief(TECHNIQUE, style=style), dataclasses.replace(_DRAFT, **where)).findings
     (marker,) = findings
     assert marker.code == StoryFindingCode.UNKNOWN_MARKER and marker.get_severity() == FindingSeverity.BLOCKER
-    assert (
-        "the real-world claim it marks" in marker.message and "no external intelligence" not in marker.message
-    )
-    assert (
-        WrittenScenario(_DRAFT, findings).find_blocking_code() == StoryFindingCode.UNKNOWN_MARKER
-    )  # not final
+    assert "the real-world claim it marks" in marker.message and "no external intelligence" not in marker.message
+    assert WrittenScenario(_DRAFT, findings).find_blocking_code() == StoryFindingCode.UNKNOWN_MARKER  # not final
 
 
 def test_a_draft_that_echoes_an_injection_phrase_is_blocked() -> None:
@@ -249,38 +239,31 @@ def test_a_draft_that_echoes_an_injection_phrase_is_blocked() -> None:
         ((_NO_FACTS, _CAMPAIGN), _CAMPAIGN, _CAMPAIGN_CLAIM),
         ((_GROUPS, _CAMPAIGN), _GROUPS, _GROUPS_CLAIM),
         (
-            (_KEV,),
-            _KEV,
+            (_OTHER_KIND,),
+            _OTHER_KIND,
             "CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks (added 2024-01-05)",
         ),
     ],
-    ids=[
-        "groups",
-        "campaign",
-        "id_only_campaign_skipped",
-        "no_facts_skipped",
-        "first_citable_wins",
-        "kev_fact",
-    ],
+    ids=["groups", "campaign", "id_only_campaign_skipped", "no_facts_skipped", "first_citable_wins", "other_kind"],
 )
 def test_the_story_ends_with_one_precedent_built_from_its_entrys_own_facts(
-    items: tuple[Evidence, ...], cited: Evidence, claim: str
+    items: tuple[Evidence | dict[str, Any], ...], cited: Evidence | dict[str, Any], claim: str
 ) -> None:
     """The first citable entry is cited [1], its claim built by code from its own cleaned facts."""
-    threat = _plan_threat(evidence=[item.as_doc() for item in items], intel_search={"query": "q"})
+    threat = _plan_threat(evidence=[_doc_of(item) for item in items], intel_search={"query": "q"})
     written = WrittenScenario(_DRAFT, ())
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
     path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
     record = build_scenario_card(run, path, threat, _story_brief(*items), written)
     content = record["content"]
     assert record["status"] == ScenarioStatus.DONE and content["statement"] == f"{STORY_PLAIN} {claim} [1]."
-    assert content["evidence"] == [cited.as_doc() | {"n": 1, "supports": claim}]
+    assert content["evidence"] == [_doc_of(cited) | {"n": 1, "supports": claim}]
     assert [item.supports for item in build_scenario_view(record).evidence] == [claim]
     assert (
         content["prompt_version"] == PromptVersion.SCENARIO_WRITER_EVIDENCE
         and content["evidence_mode"] == "source-documented"
     )
-    assert content["applicability"] == {str(a): 1 for a in [cited.applicability] if a}
+    assert content["applicability"] == {str(a): 1 for a in [_doc_of(cited).get("applicability")] if a}
     assert content["intel_search"] == {"query": "q"}
 
 
@@ -290,9 +273,7 @@ def test_the_story_ends_with_one_precedent_built_from_its_entrys_own_facts(
     ids=["none", "failed", "no-snapshot"],
 )
 def test_a_search_that_could_not_be_made_is_an_outage(search: dict[str, Any] | None) -> None:
-    assert isinstance(
-        find_evidence_outage({"intel_search": search, "evidence": [{"ref": "T1"}]}), Unavailable
-    )
+    assert isinstance(find_evidence_outage({"intel_search": search, "evidence": [{"ref": "T1"}]}), Unavailable)
 
 
 @pytest.mark.parametrize(
@@ -304,9 +285,7 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
     threat = _plan_threat(evidence=evidence, intel_search={"snapshot_id": "s"})
     assert find_evidence_outage(threat) is None
     path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
-    brief = build_writer_input(
-        {threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=WriterStyle.EVIDENCE_STORY
-    )
+    brief = build_writer_input({threat["key"]: threat}, path, CONTEXT, 30_000, _LIVE, style=WriterStyle.EVIDENCE_STORY)
     assert brief.cited_index is None and brief.evidence == ()
     assert "EVIDENCE (untrusted data)" not in build_writer_prompt([("SC1", brief, "")])[1]
     assert _codes(_with_statement(f"{STORY_PLAIN} (CVE-2024-0001) [1]."), brief) == [
@@ -328,21 +307,23 @@ def test_no_citable_source_is_written_without_evidence_never_failed(evidence: li
     [
         (_GROUPS, 'This attack is related to the "Valid Accounts" technique'),
         (
-            _KEV,
+            _OTHER_KIND,
             "A related record: CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks "
             "(added 2024-01-05)",
         ),
     ],
     ids=["technique", "other_kind"],
 )
-def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(item: Evidence, claim: str) -> None:
+def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(
+    item: Evidence | dict[str, Any], claim: str
+) -> None:
     """None met the threshold, so the nearest is cited, said to be related; the writer reads evidence_mode
     "nearest" and its prompt says it is only related context."""
-    nearest = dataclasses.replace(item, nearest=True)
+    nearest = _doc_of(item) | {"nearest": True}
     brief = _story_brief(nearest)
     assert _block_of(build_writer_prompt([("SC1", brief, "")])[1])["evidence_mode"] == EvidenceMode.NEAREST
     assert 'When evidence_mode is "nearest", use the entry as related context only' in WRITER_SYSTEM_PROMPT
-    threat = _plan_threat(evidence=[nearest.as_doc()], intel_search={"query": "q"})
+    threat = _plan_threat(evidence=[nearest], intel_search={"query": "q"})
     written = WrittenScenario(_DRAFT, ())
     run = {"_id": "r1", "entity_id": 86, "asset_id": 5, "context": {"systems": CONTEXT.systems}}
     path = {"path_id": "p1", "category": "Tampering", "steps": [threat["key"]], "systems": [321]}
@@ -353,9 +334,7 @@ def test_nearest_evidence_is_cited_as_related_and_its_mode_is_nearest(item: Evid
 
 
 def test_one_citable_source_lets_the_story_be_written() -> None:
-    assert (
-        find_evidence_outage({"intel_search": {"snapshot_id": "s"}, "evidence": [TECHNIQUE.as_doc()]}) is None
-    )
+    assert find_evidence_outage({"intel_search": {"snapshot_id": "s"}, "evidence": [TECHNIQUE.as_doc()]}) is None
 
 
 # D65: the writer gives the one step of its story the cited entry is about; code writes the sentence.
@@ -386,7 +365,9 @@ def test_codes_sentence_from_the_writers_step_ends_the_story_cited_in_one_call()
     assert content["statement"] == f"{STORY_PLAIN} {_SENTENCE} [1]."
     assert content["evidence"] == [_GROUPS.as_doc() | {"n": 1, "supports": _SENTENCE}]
     assert [(item.n, item.supports) for item in build_scenario_view(record).evidence] == [(1, _SENTENCE)]
-    assert read_statement_without_citation(content) == STORY_PLAIN
+    from tests.test_scorecard import scorecard  # the word count reads this card's statement format
+
+    assert scorecard.read_statement_without_citation(content) == STORY_PLAIN
     assert [task for task, _ in chat.calls] == [AiTask.WRITE_SCENARIO]
 
 
@@ -526,10 +507,7 @@ def test_a_gerund_titles_own_act_may_open_the_step() -> None:
     """Review, 30 Oct: "Phishing the operators ..." was refused for opening on the title "Phishing"."""
     phishing = dataclasses.replace(_GROUPS, title="Phishing")
     sentence, fault = _sentence_of("phishing the operators of the SCADA server", phishing.as_doc(), 0)
-    assert (fault, sentence) == (
-        "",
-        'Phishing the operators of the SCADA server matches the "Phishing" technique',
-    )
+    assert (fault, sentence) == ("", 'Phishing the operators of the SCADA server matches the "Phishing" technique')
 
 
 def test_codes_sentence_fits_the_evidence_word_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -543,34 +521,32 @@ def test_codes_sentence_fits_the_evidence_word_limit(monkeypatch: pytest.MonkeyP
     assert over == ("", Precedent.TOO_LONG.format(most=20))
 
 
-def test_a_vulnerability_or_advisory_is_tied_by_its_first_fact() -> None:
+def test_an_entry_that_is_no_technique_is_tied_by_its_first_fact() -> None:
     """A cited entry that is no technique is told by its own first fact, never as a technique someone used;
     nearest, by a related link."""
     step = "exploiting the WinCC web service on the SCADA server"
     fact = "CISA lists weaknesses in Siemens SIMATIC WinCC as exploited in real attacks (added 2024-01-05)"
-    assert _sentence_of(step, _KEV.as_doc(), 0) == (
+    assert _sentence_of(step, _OTHER_KIND, 0) == (
         f'Exploiting the WinCC web service on the SCADA server matches "Example flaw": {fact}',
         "",
     )
-    nearest = dataclasses.replace(_KEV, nearest=True).as_doc()
-    related = _sentence_of(step, nearest, 0)[0]
+    related = _sentence_of(step, _OTHER_KIND | {"nearest": True}, 0)[0]
     assert related.startswith("Exploiting the WinCC web service on the SCADA server is related to ")
 
 
 @pytest.mark.parametrize("title", ["Flaw reported by ops@example.com", "WinCC flaw. Patch now"])
 def test_a_title_that_would_break_the_marker_leaves_codes_precedent(title: str) -> None:
-    """A vulnerability's title is in no precedent, so it is checked here: a redaction ("[") or an inner
-    sentence end would break "<sentence> [1].", so code's precedent from its first fact is cited instead."""
+    """The title of an entry that is no technique is in no precedent, so it is checked here: a redaction ("[")
+    or an inner sentence end would break "<sentence> [1].", so code's precedent from its first fact is cited
+    instead."""
     step = "exploiting the WinCC web service on the SCADA server"
-    assert _sentence_of(step, dataclasses.replace(_KEV, title=title).as_doc(), 0) == ("", "")
+    assert _sentence_of(step, _OTHER_KIND | {"title": title}, 0) == ("", "")
 
 
 def test_the_writer_never_sees_who_used_a_technique() -> None:
     """No AI is shown who used a technique (an id-only campaign's included), so none can name them; the
     card's evidence entry keeps them."""
-    groups = dataclasses.replace(
-        _GROUPS, facts=(*_GROUPS.facts, *_ID_ONLY_CAMPAIGN.facts, "It is used widely.")
-    )
+    groups = dataclasses.replace(_GROUPS, facts=(*_GROUPS.facts, *_ID_ONLY_CAMPAIGN.facts, "It is used widely."))
     brief = _story_brief(groups)
     writer = build_writer_prompt([("SC1", brief, "")])[1]
     (entry,) = _block_of(writer)["evidence"]
@@ -606,17 +582,9 @@ def test_only_the_cited_entry_is_marked_and_no_entry_shows_an_attacker_goal_or_a
 
 
 def test_a_cited_record_that_is_no_technique_is_marked_about() -> None:
-    """A KEV or advisory entry can be the one cited: it shows under `about`, never as a technique."""
-    block = _block_of(build_writer_prompt([("SC1", _story_brief(_KEV), "")])[1])
+    """An entry that is no technique can be the one cited: it shows under `about` with its applicability,
+    never as a technique."""
+    block = _block_of(build_writer_prompt([("SC1", _story_brief(_OTHER_KIND), "")])[1])
     (cited,) = block["evidence"]
     assert cited["cited"] is True and "about" in cited and "technique" not in cited
-
-
-def test_the_narrative_is_the_statement_without_its_cited_passage() -> None:
-    """The word count reads the narrative: a passage of two sentences, code's precedent and a statement
-    citing nothing."""
-    passage = 'In real-world attacks, APT41 has used the technique "Valid Accounts". It could let one pass'
-    told = {"statement": f"{STORY_PLAIN} {passage} [1].", "evidence": [{"n": 1, "supports": passage}]}
-    claimed = {"statement": f"{STORY_PLAIN} {_GROUPS_CLAIM} [1].", "evidence": [{"supports": _GROUPS_CLAIM}]}
-    assert read_statement_without_citation(told) == read_statement_without_citation(claimed) == STORY_PLAIN
-    assert read_statement_without_citation({"statement": STORY_PLAIN, "evidence": []}) == STORY_PLAIN
+    assert cited["applicability"] == "unknown"

@@ -1,6 +1,6 @@
-"""Guards for the owner's code rules: no inline text for log event names or exception messages; one log field
-name per meaning; folders follow the architecture layers (BLUEPRINT §5) and calls go one way; database code
-only in data_access/; every data shape in models/; no god class, function or file."""
+"""Guards for the owner's code rules: log event names from LogEvent; one log field name per meaning; folders
+follow the FastAPI layout (ADR-004) and calls go one way; database calls only in crud/; Pydantic shapes in
+schemas/; no god class, function or file."""
 
 import ast
 import importlib
@@ -15,7 +15,7 @@ APP_SOURCES = sorted(APP.rglob("*.py"))
 #: The size rules also hold for the laptop scripts (no layers there).
 SIZE_CHECKED_SOURCES = APP_SOURCES + sorted((REPO / "scripts").glob("*.py"))
 #: The only modules outside a layer folder.
-TOP_LEVEL_FILES = {"__init__.py", "main.py", "container.py"}
+TOP_LEVEL_FILES = {"__init__.py", "main.py"}
 INLINE_LOG_EVENT = re.compile(r"\blog\.(debug|info|warning|error|exception)\(\s*[\"']")
 INLINE_RAISE_MESSAGE = re.compile(r"\braise\s+\w+\(\s*[\"']")
 #: The pod's own clock read directly: every "now" comes from app/core/clock.py, MongoDB's clock.
@@ -34,21 +34,26 @@ LOG_FIELD_SYNONYMS = {
     "reask_error": "error_type (its class name)",
 }
 
-#: Which layers each layer may import (BLUEPRINT §5): the diagram's arrows. A layer always may import itself.
+#: Which layers each layer may import. A layer always may import itself.
+_SHAPES = {"core", "schemas"}
+_STORES = _SHAPES | {"crud"}
+_LOGIC = _STORES | {"ai", "search"}
 ALLOWED_IMPORTS: dict[str, set[str]] = {
     "core": set(),
-    "models": {"core"},
-    "data_access": {"core", "models"},
-    "ai": {"core", "models", "data_access"},
-    "search": {"core", "models", "data_access", "ai"},
-    "domain": {"core", "models", "ai", "search"},
-    "realtime": {"core", "models", "data_access"},
-    "services": {"core", "models", "data_access", "ai", "search", "domain", "realtime"},
-    "worker": {"core", "models", "data_access", "ai", "search", "domain", "realtime", "container"},
-    "api": {"core", "models", "services", "realtime", "container"},
+    "schemas": _SHAPES,
+    "crud": _STORES,
+    "ai": _STORES,
+    "search": _STORES | {"ai"},
+    "realtime": _STORES,
+    # domain sends jobs (worker.send_job)
+    "domain": _LOGIC | {"realtime", "worker"},
+    "worker": _LOGIC | {"domain", "realtime"},
+    "api": _LOGIC | {"domain", "realtime"},
 }
-#: Calls that read or write MongoDB or SQL Server: only data_access/ (and the clients in core/database.py)
-#: make them.
+#: The layers whose exceptions may carry their message inline (remediation plan R3; a validator's text sits
+#: beside its field).
+INLINE_MESSAGE_LAYERS = frozenset({"crud", "domain", "schemas"})
+#: Calls that read or write MongoDB or SQL Server: only crud/ (and the clients in core/database.py) make them.
 DATABASE_CALLS = {
     "find",
     "find_one",
@@ -75,20 +80,28 @@ DATABASE_CALLS = {
     "execute_procedure",
 }
 MAX_PUBLIC_METHODS, MAX_CLASS_LINES, MAX_FUNCTION_LINES, MAX_FILE_LINES = 7, 150, 40, 500
-#: Owner decision of 2026-10-18: the scenario folders keep few files, and a module's one service file and its
-#: repositories may be long, as may the one file that builds every long-lived object; only the file cap is
-#: lifted there.
+#: Owner decision of 2026-10-18: the scenario logic keeps few files, so it and the remediation shapes may be
+#: long; only the file cap is lifted there.
 LONG_FILE_FOLDERS = (
     "app/domain/scenario/",
-    "app/models/scenario/",
+    "app/schemas/scenario_internal.py",
     "app/domain/remediation/",
-    "app/models/remediation/",
-    "app/services/",
-    "app/data_access/",
-    "app/container.py",
+    "app/schemas/remediation.py",
+    "app/crud/scenarios.py",
+    "app/schemas/scenarios.py",
 )
-#: X14: a module's one service class and each repository may be wide.
-WIDE_CLASS_FILES = ("_service.py", "_repository.py")
+#: X14: each repository class, and the two service classes still left, may be wide.
+WIDE_CLASS_FILES = (
+    "domain/scenario/runs.py",
+    "domain/intel/admin.py",
+    "crud/audit.py",
+    "crud/embeddings.py",
+    "crud/library.py",
+    "crud/scenarios.py",
+    "crud/jobs.py",
+    "crud/work_control.py",
+    "crud/admin_jobs.py",
+)
 
 
 def _layer(source: pathlib.Path) -> str:
@@ -120,13 +133,13 @@ def _tree(source: pathlib.Path) -> ast.Module:
     return ast.parse(source.read_text(encoding="utf-8"))
 
 
-def _offending_lines(pattern: re.Pattern[str]) -> list[str]:
+def _offending_lines(pattern: re.Pattern[str], skip: frozenset[str] = frozenset()) -> list[str]:
     offending = []
     for source in APP_SOURCES:
+        if _layer(source) in skip:
+            continue
         text = source.read_text(encoding="utf-8")
-        offending += [
-            f"{_name(source)}:{text[: match.start()].count(chr(10)) + 1}" for match in pattern.finditer(text)
-        ]
+        offending += [f"{_name(source)}:{text[: match.start()].count(chr(10)) + 1}" for match in pattern.finditer(text)]
     return offending
 
 
@@ -139,17 +152,13 @@ def _spread_keys(value: ast.expr) -> list[str]:
     if isinstance(value, ast.IfExp):
         return _spread_keys(value.body) + _spread_keys(value.orelse)
     if isinstance(value, ast.Dict):
-        return [
-            key.value for key in value.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)
-        ]
+        return [key.value for key in value.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
     return []
 
 
 def _log_field_names(call: ast.Call) -> list[str]:
     """The field names a log call writes: its keywords and the keys of the dict literals it spreads."""
-    spread = [
-        name for keyword in call.keywords if keyword.arg is None for name in _spread_keys(keyword.value)
-    ]
+    spread = [name for keyword in call.keywords if keyword.arg is None for name in _spread_keys(keyword.value)]
     return [keyword.arg for keyword in call.keywords if keyword.arg] + spread
 
 
@@ -158,11 +167,7 @@ def _is_log_call(call: ast.Call) -> bool:
     if isinstance(call.func, ast.Attribute) and call.func.attr in LOG_FIELD_CALLS:
         return True
     first = call.args[0] if call.args else None
-    return (
-        isinstance(first, ast.Attribute)
-        and isinstance(first.value, ast.Name)
-        and first.value.id.endswith("Event")
-    )
+    return isinstance(first, ast.Attribute) and isinstance(first.value, ast.Name) and first.value.id.endswith("Event")
 
 
 def test_every_log_field_has_one_name_per_meaning() -> None:
@@ -184,7 +189,7 @@ def test_every_log_field_has_one_name_per_meaning() -> None:
 
 
 def test_exception_messages_come_from_constants() -> None:
-    assert _offending_lines(INLINE_RAISE_MESSAGE) == [], "use ErrorMessage or a domain message enum"
+    assert _offending_lines(INLINE_RAISE_MESSAGE, INLINE_MESSAGE_LAYERS) == [], "use ErrorMessage"
 
 
 def test_every_now_comes_from_the_shared_clock() -> None:
@@ -200,9 +205,7 @@ def test_the_guards_see_the_code() -> None:
 def test_every_module_lives_in_a_layer_folder() -> None:
     """A module beside main.py has no layer, so no import rule would apply to it."""
     folders = {_layer(source) for source in APP_SOURCES} - {"main"}
-    assert folders <= set(ALLOWED_IMPORTS), (
-        f"folders outside the layers: {sorted(folders - set(ALLOWED_IMPORTS))}"
-    )
+    assert folders <= set(ALLOWED_IMPORTS), f"folders outside the layers: {sorted(folders - set(ALLOWED_IMPORTS))}"
     top_level = {source.name for source in APP_SOURCES if _layer(source) == "main"}
     assert top_level <= TOP_LEVEL_FILES, f"outside a layer folder: {sorted(top_level - TOP_LEVEL_FILES)}"
 
@@ -244,36 +247,27 @@ def test_shared_domain_steps_import_no_feature() -> None:
     assert offenders == [], "\n".join(offenders)
 
 
-def test_database_calls_live_only_in_data_access() -> None:
+def test_database_calls_live_only_in_crud() -> None:
     offenders = []
     for source in APP_SOURCES:
-        if _layer(source) == "data_access" or _name(source) == "app/core/database.py":
+        if _layer(source) == "crud" or _name(source) == "app/core/database.py":
             continue
         for node in ast.walk(_tree(source)):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in DATABASE_CALLS
-            ):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in DATABASE_CALLS:
                 offenders.append(f"{_name(source)}:{node.lineno} .{node.func.attr}()")
     assert offenders == [], "\n".join(offenders)
 
 
-def _is_model(node: ast.ClassDef) -> bool:
-    bases = {base.id if isinstance(base, ast.Name) else getattr(base, "attr", "") for base in node.bases}
-    decorators = {(d.func if isinstance(d, ast.Call) else d) for d in node.decorator_list}
-    is_dataclass = any(getattr(d, "id", getattr(d, "attr", "")) == "dataclass" for d in decorators)
-    return "BaseModel" in bases or is_dataclass
-
-
-def test_every_data_shape_lives_in_models() -> None:
-    """Pydantic models and public dataclasses are found in one place; a private helper (_Run) may stay put."""
+def test_every_pydantic_shape_lives_in_schemas() -> None:
+    """API shapes live in schemas/; an AI answer's shape may sit beside the domain code that parses it, and a
+    dataclass beside the code that uses it."""
     offenders = [
         f"{_name(source)}:{node.lineno} {node.name}"
         for source in APP_SOURCES
-        if _layer(source) != "models"
+        if _layer(source) not in {"schemas", "domain"}
         for node in ast.walk(_tree(source))
-        if isinstance(node, ast.ClassDef) and not node.name.startswith("_") and _is_model(node)
+        if isinstance(node, ast.ClassDef)
+        and "BaseModel" in {getattr(base, "id", getattr(base, "attr", "")) for base in node.bases}
     ]
     assert offenders == [], "\n".join(offenders)
 
@@ -290,11 +284,10 @@ def test_no_god_class_function_or_file() -> None:
                 public = [
                     item.name
                     for item in node.body
-                    if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
-                    and not item.name.startswith("_")
+                    if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef) and not item.name.startswith("_")
                 ]
                 wide = node.name == "MongoRepository"  # owner rule: the base holds every plain verb
-                owner = source.name.endswith(WIDE_CLASS_FILES)
+                owner = source.as_posix().endswith(WIDE_CLASS_FILES)
                 if not owner and ((len(public) > MAX_PUBLIC_METHODS and not wide) or size > MAX_CLASS_LINES):
                     offenders.append(
                         f"{_name(source)}:{node.lineno} class {node.name}: {len(public)} public, {size} lines"
@@ -329,46 +322,6 @@ def test_process_singletons_are_built_once() -> None:
         if _uses_functools_cache(node)
     ]
     assert offenders == [], "use @singleton (app/core/singletons.py):\n" + "\n".join(offenders)
-
-
-def test_singletons_live_only_in_the_container_and_core() -> None:
-    """Only app/container.py (and core's clients and settings) builds long-lived objects."""
-    offenders = [
-        f"{_name(source)}:{node.lineno} {node.name}"
-        for source in APP_SOURCES
-        if _name(source) != "app/container.py" and _layer(source) != "core"
-        for node in ast.walk(_tree(source))
-        if isinstance(node, ast.FunctionDef)
-        and any(getattr(d, "id", getattr(d, "attr", None)) == "singleton" for d in node.decorator_list)
-    ]
-    assert offenders == [], "\n".join(offenders)
-
-
-def test_the_worker_imports_the_container_only_inside_a_function() -> None:
-    """A worker module imports app.container only inside a function, so importing it builds nothing and makes
-    no import cycle."""
-    offenders = [
-        f"{_name(source)}:{node.lineno}"
-        for source in APP_SOURCES
-        if _layer(source) == "worker"
-        for node in _tree(source).body
-        if "container" in _imported_layers(node, source)
-    ]
-    assert offenders == [], "\n".join(offenders)
-
-
-def test_one_service_class_per_module() -> None:
-    """app/services/ holds one folder per module, each with one service class, in its *_service.py."""
-    services = APP / "services"
-    assert [path.name for path in services.glob("*.py")] == ["__init__.py"]
-    for folder in sorted(path for path in services.iterdir() if path.is_dir() and path.name != "__pycache__"):
-        classes = [
-            node.name
-            for source in folder.glob("*.py")
-            for node in _tree(source).body
-            if isinstance(node, ast.ClassDef)
-        ]
-        assert len(classes) == 1 and next(folder.glob("*_service.py"), None), f"{folder.name}: {classes}"
 
 
 def test_every_constant_is_imported_from_one_place_and_defined_once() -> None:

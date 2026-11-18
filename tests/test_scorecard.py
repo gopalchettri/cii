@@ -42,9 +42,7 @@ def test_a_card_as_the_app_writes_it_now_passes_every_check() -> None:
         "risk_statement": "Pumps stop.",
     }
     card = {"content": plain}
-    assert {name: check(card) for name, check in scorecard.CHECKS.items()} == dict.fromkeys(
-        scorecard.CHECKS, ""
-    )
+    assert {name: check(card) for name, check in scorecard.CHECKS.items()} == dict.fromkeys(scorecard.CHECKS, "")
 
 
 def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None:
@@ -57,16 +55,9 @@ def test_evidence_is_cited_with_intelligence_on_and_absent_with_it_off() -> None
     assert scorecard.evidence({"content": story | {"statement": "Abuse [2].", "evidence": [entry]}}) == (
         "markers [2] name no stored source"
     )
-    plain = {
-        "prompt_version": PromptVersion.SCENARIO_WRITER,
-        "statement": "Abuse.",
-        "risk_statement": "Stop.",
-    }
+    plain = {"prompt_version": PromptVersion.SCENARIO_WRITER, "statement": "Abuse.", "risk_statement": "Stop."}
     assert scorecard.evidence({"content": plain}) == ""
-    assert (
-        scorecard.evidence({"content": plain | {"statement": "Abuse [1]."}})
-        == "cites [1] with intelligence off"
-    )
+    assert scorecard.evidence({"content": plain | {"statement": "Abuse [1]."}}) == "cites [1] with intelligence off"
     assert scorecard.evidence({"content": plain | {"evidence": [entry]}}) == "cites [] with intelligence off"
 
 
@@ -81,11 +72,7 @@ def test_a_nearest_story_and_one_written_without_evidence_pass() -> None:
     for mode in ("nearest", "source-documented"):
         uncited = {"content": story | {"statement": "Abuse.", "evidence": [entry], "evidence_mode": mode}}
         assert scorecard.evidence(uncited) == "cites no evidence"
-    plain = {
-        "prompt_version": PromptVersion.SCENARIO_WRITER,
-        "statement": "Abuse.",
-        "risk_statement": "Stop.",
-    }
+    plain = {"prompt_version": PromptVersion.SCENARIO_WRITER, "statement": "Abuse.", "risk_statement": "Stop."}
     without = {"content": plain | {"evidence_mode": "inferred", "evidence": []}}
     assert scorecard.evidence(without) == "" and scorecard.evidence_note(without) == scorecard.WRITTEN_WITHOUT
     assert scorecard.WRITTEN_WITHOUT == "no evidence found: written without"
@@ -107,10 +94,21 @@ def test_each_text_is_within_its_configured_word_maximum(monkeypatch: pytest.Mon
     short = {"content": card["content"] | {"evidence": [{"n": 1, "supports": "A B C D"}]}}
     short["content"]["statement"] = "One two three four five A B C D [1]."
     assert scorecard.words(short) == ""
-    long = {
-        "content": short["content"] | {"statement": "1 2 3 4 5 6 A B C D [1].", "risk_statement": "a b c d"}
-    }
+    long = {"content": short["content"] | {"statement": "1 2 3 4 5 6 A B C D [1].", "risk_statement": "a b c d"}}
     assert scorecard.words(long) == "statement 6 words, over 5; risk 4 words, over 3"
+
+
+def test_the_narrative_is_the_statement_without_its_cited_passage() -> None:
+    """The word count reads the narrative: a passage of one or two sentences, code's precedent and a
+    statement citing nothing."""
+    plain, read = "An attacker stops the pumps.", scorecard.read_statement_without_citation
+    one = "Gaining entry, in line with how real-world attackers have used Valid Accounts"
+    two = 'In real-world attacks, APT41 has used the technique "Valid Accounts". It could let one pass'
+    claim = "An attacker could use Valid Accounts, a known technique"
+    for passage in (one, two):
+        assert read({"statement": f"{plain} {passage} [1].", "evidence": [{"n": 1, "supports": passage}]}) == plain
+    assert read({"statement": f"{plain} {claim} [1].", "evidence": [{"supports": claim}]}) == plain
+    assert read({"statement": plain, "evidence": []}) == plain
 
 
 def test_a_copy_of_an_accepted_replaced_version_is_a_duplicate_but_not_of_a_rejected_one() -> None:

@@ -5,15 +5,16 @@ API tests share (import api_key_fixture and world_fixture to use the fixtures)."
 import contextlib
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.constants import (
+    CONTROL_TIERS,
     Collection,
     ControlMatch,
     LibraryRowKind,
@@ -21,7 +22,11 @@ from app.core.constants import (
     StrideCategory,
     TaskName,
 )
-from app.models.library.library import (
+from app.core.database import get_mongodb
+from app.crud import admin as admin_crud
+from app.domain.remediation import plans
+from app.realtime.publisher import publish_remediation_status
+from app.schemas.library import (
     LibraryActor,
     LibraryControl,
     LibraryThreat,
@@ -33,12 +38,10 @@ from app.models.library.library import (
     ThreatLibrary,
     ThreatProposal,
 )
-from app.models.scenario.controls import ControlMapping, MappedControl
-from app.realtime.publisher import publish_remediation_status
-from app.services.remediation.remediation_plan_service import RemediationPlanService
+from app.search.library_cache import get_library_cache
 from app.worker import jobs
+from app.worker import remediation as remediation_worker
 from app.worker.celery_app import send_job
-from app.worker.remediation.remediation_plan_job import RemediationPlanJob
 from tests.fakes import FakeChatModel
 
 CREW = LibraryActor(3, "Organised crime group")
@@ -60,9 +63,7 @@ THREATS = ThreatLibrary(
 )
 #: The active controls by id: CII-CID-2 (IT) and CII-CID-5 (OT) are twins (the same name and text).
 CONTROLS = {
-    1: LibraryControl(
-        1, "CII-CID-1", "OT", "Integrity", "Firmware integrity verification", "Signed firmware."
-    ),
+    1: LibraryControl(1, "CII-CID-1", "OT", "Integrity", "Firmware integrity verification", "Signed firmware."),
     2: LibraryControl(2, "CII-CID-2", "IT", "Access", "Vendor remote-access approval", "Approves sessions."),
     5: LibraryControl(5, "CII-CID-5", "OT", "Access", "Vendor remote-access approval", "Approves sessions."),
 }
@@ -107,11 +108,7 @@ def _plan_action(action_id: str, depends_on: tuple[str, ...], codes: tuple[str, 
 
 #: The plan AI's check of every control the tests map (CII-CID-1 to 9): each one retained.
 RETAINED_ALL = [
-    {
-        "control_code": f"CII-CID-{n}",
-        "validation": "retained",
-        "reason": "It reduces the firmware tampering risk.",
-    }
+    {"control_code": f"CII-CID-{n}", "validation": "retained", "reason": "It reduces the firmware tampering risk."}
     for n in range(1, 10)
 ]
 
@@ -123,10 +120,7 @@ def plan_answer(*codes: str, **fields: Any) -> dict[str, Any]:
     return {
         "title": "Firmware Integrity Hardening",
         "control_validation": RETAINED_ALL,
-        "controls_to_be_implemented": {
-            "control_coverage": "gaps",
-            "controls": [plan_control(code) for code in codes],
-        },
+        "controls_to_be_implemented": {"control_coverage": "gaps", "controls": [plan_control(code) for code in codes]},
         "remediation_action_plan": actions,
         "action_plan": "A1, then A2 validates it.",
         "mitigation_owner": "OT Security",
@@ -135,7 +129,7 @@ def plan_answer(*codes: str, **fields: Any) -> dict[str, Any]:
 
 
 class FakeMapper:
-    """ControlMapper's surface: the scenarios it was asked for, one library control back each time."""
+    """map_controls and find_alternative_controls faked: the scenarios asked for, one library control each."""
 
     def __init__(self) -> None:
         self.asked: list[str] = []
@@ -147,7 +141,7 @@ class FakeMapper:
         ] = []  # what find_alternative_controls offers (library controls, scores)
         self.mapped: dict[str, Any] | None = None  # the controls record find_alternative_controls was given
 
-    def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> ControlMapping:
+    def map_controls(self, scenario: dict[str, Any], context: Any, snapshot: Any) -> dict[str, Any]:
         self.asked.append(scenario["_id"])
         if self.release is not None:
             self.release.wait(30)
@@ -155,8 +149,20 @@ class FakeMapper:
             failure, self.failure = self.failure, None
             raise failure
         control_id, code = self.control
-        control = MappedControl(control_id, code, "A control", None, "OT", 1, 87.4, ControlMatch.EXACT)
-        return ControlMapping(items=(control,), query="the scenario and its risk")
+        control = {
+            "control_id": control_id,
+            "code": code,
+            "name": "A control",
+            "domain": None,
+            "asset_type": "OT",
+            "description": None,
+            "rank": 1,
+            "score": 87.4,
+            "match": ControlMatch.EXACT,
+            "tier": CONTROL_TIERS[ControlMatch.EXACT],
+            "rationale": "",
+        }
+        return {"items": [control], "query": "the scenario and its risk", "shortlist": [], "made_with": {}}
 
     def find_alternative_controls(
         self,
@@ -213,71 +219,67 @@ def fake_library(controls: tuple[LibraryControl, ...]) -> Any:
     return SimpleNamespace(check_library_once=lambda: None, get_loaded_libraries=lambda: loaded)
 
 
-def remediation_plan_service(**changed: Any) -> RemediationPlanService:
-    """The remediation service on the app's own repositories and side effects, `changed` ones swapped in."""
-    dependencies: dict[str, Any] = {
-        "remediations": container.get_remediation_repository(),
-        "scenarios": container.get_threat_scenario_repository(),
-        "sessions": container.get_threat_scenario_session_repository(),
-        "assets": container.get_asset_repository(),
-        "library": container.get_library_cache(),
-        "audit": container.get_audit_repository(),
+def remediation_plan_service(**changed: Any) -> dict[str, Any]:
+    """The plan logic's swappable parts (library, send_job, publish_remediation_status): the app's own,
+    `changed` ones swapped in."""
+    parts = {
+        "library": get_library_cache(),
         "send_job": send_job,
         "publish_remediation_status": publish_remediation_status,
     }
-    return RemediationPlanService(**(dependencies | changed))
+    return parts | changed
 
 
-def remediation_plan_job(chat: Any, fakes: dict[str, Any], **changed: Any) -> RemediationPlanJob:
-    """The plan job on `chat`, the fakes' mapper, search and threats and the app's own repositories, `changed`
-    ones swapped in."""
-    dependencies: dict[str, Any] = {
-        "remediations": container.get_remediation_repository(),
-        "scenarios": container.get_threat_scenario_repository(),
-        "sessions": container.get_threat_scenario_session_repository(),
-        "threats": fakes["threats"],
-        "audit": container.get_audit_repository(),
-        "search": fakes["search"],
-        "mapper": fakes["mapper"],
-        "chat": chat,
-    }
-    return RemediationPlanJob(**(dependencies | changed))
+def use_plan_service(client: TestClient, monkeypatch: pytest.MonkeyPatch, parts: Callable[[], Any]) -> None:
+    """Routes the plan logic's parts through `parts()`, read at each call (pop the library override after)."""
+    client.app.dependency_overrides[get_library_cache] = lambda: parts()["library"]  # type: ignore[attr-defined]
+    monkeypatch.setattr(plans, "send_job", lambda *args: parts()["send_job"](*args))
+    monkeypatch.setattr(plans, "publish_remediation_status", lambda i: parts()["publish_remediation_status"](i))
+
+
+def remediation_plan_job(chat: Any, fakes: dict[str, Any], **changed: Any) -> dict[str, Any]:
+    """The plan job's parts: `chat` and the fakes' mapper, search and threats, `changed` ones swapped in."""
+    parts = {"chat": chat, "search": fakes["search"], "rerank": None, "threats": fakes["threats"]}
+    return parts | changed
 
 
 def deliver(remediation_id: str, version: int = 1) -> None:
-    """One delivery of the container's plan job, as tasks.py runs it; what it settles is on the record."""
-    task: Any = SimpleNamespace(
-        name=TaskName.WRITE_PLAN, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
-    )
-    write = container.get_remediation_plan_job().write_remediation_plan_version
+    """One delivery of the plan job, as the task runs it; what it settles is on the record."""
+    task: Any = SimpleNamespace(name=TaskName.WRITE_PLAN, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None)
+    write = partial(remediation_worker.write_plan_version, **remediation_worker.plan_job_parts())
     with contextlib.suppress(Exception):  # run_leased_job re-raises what it settled
         jobs.run_leased_job(
-            task, Collection.REMEDIATIONS, remediation_id, version, write, RemediationPlanJob.RECORD_FIELDS
+            task, Collection.REMEDIATIONS, remediation_id, version, write, remediation_worker.JOB_FIELDS
         )
 
 
 @pytest.fixture(scope="module", name="api_key")
 def api_key_fixture() -> str:
     """An API client's key for this test module."""
-    _, key = container.get_admin_service().create_api_client(f"plans-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = admin_crud.create_api_client(get_mongodb(), f"plans-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 @pytest.fixture(name="world")
 def world_fixture(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
-    """The app's remediation service (`service`) on fake_library(CONTROLS), what it sends and publishes, and
-    the plan job (`job`, the container's) on its chat and plan_job_fakes."""
+    """The plan logic's parts (`plans`) on fake_library(CONTROLS), what it sends and publishes, and the plan
+    job's parts (`job`) on its chat and plan_job_fakes."""
     state: dict[str, Any] = {"chat": FakeChatModel(), "sent": [], "published": []}
     state |= plan_job_fakes(tuple(CONTROLS.values()))
-    built = remediation_plan_service(
+    state["plans"] = remediation_plan_service(
         library=fake_library(tuple(CONTROLS.values())),
         send_job=lambda *args: state["sent"].append(args[:3]),  # (task, record id, epoch); not the priority
         publish_remediation_status=state["published"].append,
     )
-    state |= {"service": built, "job": remediation_plan_job(state["chat"], state)}
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_remediation_plan_service] = lambda: built
+    state["job"] = remediation_plan_job(state["chat"], state)
+    use_plan_service(client, monkeypatch, lambda: state["plans"])
     monkeypatch.setitem(jobs.JOB_COLLECTIONS, Collection.REMEDIATIONS, state["published"].append)
-    monkeypatch.setattr(container, "get_remediation_plan_job", lambda: state["job"])
+    monkeypatch.setattr(remediation_worker, "plan_job_parts", lambda: state["job"])
+    monkeypatch.setattr(remediation_worker, "map_controls", lambda _, *args: state["mapper"].map_controls(*args))
+    monkeypatch.setattr(
+        remediation_worker,
+        "find_alternative_controls",
+        lambda _, *args: state["mapper"].find_alternative_controls(*args),
+    )
     yield state
-    overrides.pop(container.get_remediation_plan_service, None)
+    client.app.dependency_overrides.pop(get_library_cache, None)  # type: ignore[attr-defined]

@@ -40,10 +40,7 @@ def test_only_the_evidence_the_text_cites_is_shown_in_marker_order_without_score
     assert [item.n for item in view.evidence] == [2, 1]  # the order the text cites them; 3 is not shown
     assert view.evidence[1].ref == "T0839" and view.evidence[1].url.startswith("https://")
     assert "score" not in view.evidence[0].model_dump()
-    assert view.evidence_mode == "source-documented" and view.evidence_search == {
-        "query": "q",
-        "considered": [],
-    }
+    assert view.evidence_mode == "source-documented" and view.evidence_search == {"query": "q", "considered": []}
 
 
 def test_a_scenario_with_no_evidence_shows_null_and_empty() -> None:

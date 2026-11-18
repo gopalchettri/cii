@@ -13,9 +13,9 @@ from app.domain.scenario.write import (
     build_scenario_card,
     find_duplicate_scenario_id,
 )
-from app.models.library.library import ThreatLibrary
-from app.models.scenario.write import Finding, PathFailure
-from app.worker.scenario.path_writing import PathWriter
+from app.schemas.library import ThreatLibrary
+from app.schemas.scenario_internal import Finding, PathFailure
+from app.worker.scenario.write_job import PathWriter
 from tests.fakes import brief_of
 from tests.planner_samples import ACTORS, THREATS
 from tests.scenario_goldens import GOLDENS, RecordingChat, check_golden
@@ -26,8 +26,7 @@ RUN = {"_id": "run-golden-1", "entity_id": 86, "asset_id": 103, "context": THREE
 #: The live library: threat 4 retired since the plan, so its path fails before any AI call.
 LIVE = ThreatLibrary(tuple(threat for threat in THREATS if threat.catalogue_id != 4), ACTORS)
 SAME_STORY = (
-    "A cybercriminal could tamper with the SCADA server at Grid Control Centre. "
-    "It could spread. It could stop."
+    "A cybercriminal could tamper with the SCADA server at Grid Control Centre. It could spread. It could stop."
 )
 
 
@@ -60,9 +59,7 @@ def _writer() -> Any:
         if threat.startswith("Phishing"):
             return _good(brief, action_sentences={}) if seen[threat] == 1 else {"scenario_title": "y"}
         if threat.startswith("Insider deletes"):
-            return _good(
-                brief, "An insider on SYS1 could delete the audit logs. It could hide. It could stop."
-            )
+            return _good(brief, "An insider on SYS1 could delete the audit logs. It could hide. It could stop.")
         if threat.startswith("Insider abuses"):
             return _good(brief, SAME_STORY)
         if threat.startswith("Ransomware encrypts"):
@@ -114,14 +111,11 @@ def test_golden_write_original_set_with_rewrites_blocks_a_failure_and_duplicates
     path, threat = INPUT["paths"][0], INPUT["threats"][0]
     again = RecordingChat()
     again.responders[AiTask.WRITE_SCENARIO] = _writer()
-    writer = PathWriter(
-        RUN | {"plan": {"threats": copy.deepcopy(INPUT["threats"])}}, again, LIVE, WriterStyle.ORIGINAL
-    )
+    writer = PathWriter(RUN | {"plan": {"threats": copy.deepcopy(INPUT["threats"])}}, again, LIVE, WriterStyle.ORIGINAL)
     (_, (brief, written)), *_ = list(writer.write_scenario_set([("SC1", path)], last_try=False, epoch=4))
     version_2 = build_scenario_card(RUN, path, threat, brief, written, replaced)
     check_golden(
-        "write_original",
-        {"asks": chat.asks, "cards": cards, "duplicates": _duplicates(cards), "version_2": version_2},
+        "write_original", {"asks": chat.asks, "cards": cards, "duplicates": _duplicates(cards), "version_2": version_2}
     )
 
 

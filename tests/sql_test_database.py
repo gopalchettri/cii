@@ -1,4 +1,4 @@
-"""The SQL test database (BLUEPRINT R-11): built fresh from tests/sql/schema.sql, tests/sql/seed.sql and
+"""The SQL test database: built fresh from tests/sql/schema.sql, tests/sql/seed.sql and
 every procedure file in scripts/sql/ (procedure_files), on the server CII_DB_DSN names but under a database
 of its own. The write procedures are tested here, never in DevTest5, whose library the laptop's TSG (and v1)
 read."""
@@ -39,11 +39,7 @@ def build_sql_test_database() -> Engine:
         connection.exec_driver_sql(f"CREATE DATABASE [{SQL_TEST_DATABASE}]")
     master.dispose()
     engine = create_engine(server.set(database=SQL_TEST_DATABASE), isolation_level="AUTOCOMMIT")
-    scripts = [
-        REPO / "tests" / "sql" / "schema.sql",
-        REPO / "tests" / "sql" / "seed.sql",
-        *procedure_files(),
-    ]
+    scripts = [REPO / "tests" / "sql" / "schema.sql", REPO / "tests" / "sql" / "seed.sql", *procedure_files()]
     with engine.connect() as connection:
         for script in scripts:
             for batch in _BATCH_SEPARATOR.split(script.read_text(encoding="utf-8")):

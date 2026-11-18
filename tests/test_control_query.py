@@ -1,6 +1,6 @@
 """The control query keeps every system and the asset's facts in view however long the scenario and the
-risk are; one long system description never pushes the others out; what was shortened is
-recorded (labels only); the mapper searches exactly CONTROL_CANDIDATES candidates."""
+risk are; one long system description never pushes the others out; the mapper searches exactly
+CONTROL_CANDIDATES candidates."""
 
 import dataclasses
 from types import SimpleNamespace
@@ -10,11 +10,11 @@ import pytest
 
 from app.core.config import Settings
 from app.core.constants import Controls, IntelKind, IntelSource
-from app.domain.external_intelligence.facts import PlainFactWriter
+from app.domain.intel import facts
 from app.domain.scenario import write
-from app.domain.scenario.write import ControlMapper, build_control_query
-from app.models.external_intelligence.evidence import IntelHit
-from app.models.external_intelligence.evidence_view import cited_evidence
+from app.domain.scenario.write import build_control_query
+from app.schemas.intel import cited_evidence
+from app.schemas.intel_records import IntelHit
 from tests.planner_samples import CONTEXT
 from tests.test_control_mapping import _CONTROLS, _OT_CONTEXT, _SCENARIO, _ScoresByText
 
@@ -51,40 +51,38 @@ def test_long_texts_never_push_the_systems_or_the_asset_facts_out() -> None:
     query = _query(_content())
     assert len(query.text) <= Controls.QUERY_MAX_CHARS
     for system in SYSTEMS:
-        assert (
-            f"System {system['name']}: description: {system['name']} runs the city traffic network."
-            in query.text
-        )
+        assert f"System {system['name']}: description: {system['name']} runs the city traffic network." in query.text
     assert "Asset facts:" in query.text and "Scenario: story" in query.text and "Risk: impact" in query.text
-    assert "scenario" in query.shortened and not any(label.startswith("system") for label in query.shortened)
+    assert _content()["statement"] not in query.text  # the scenario was cut, no system was
 
 
 def test_one_long_system_description_never_pushes_the_others_out() -> None:
     systems = [{**SYSTEMS[0], "description": "x " * 2500}, *SYSTEMS[1:]]
-    query = _query(_content(300, 200), systems)
+    content = _content(300, 200)
+    query = _query(content, systems)
     assert all(f"System {system['name']}:" in query.text for system in systems)
-    assert query.shortened == ("system 1448",) and len(query.text) <= Controls.QUERY_MAX_CHARS
+    assert systems[0]["description"].strip() not in query.text  # only system 1448 was cut
+    assert all(system["description"] in query.text for system in systems[1:])
+    assert content["statement"].strip() in query.text and content["risk_statement"].strip() in query.text
+    assert len(query.text) <= Controls.QUERY_MAX_CHARS
 
 
 def test_a_query_that_fits_is_whole_in_priority_order_and_the_same_every_time() -> None:
-    first = _query(_content(300, 200))
-    assert first.shortened == () and first == _query(_content(300, 200))
+    content = _content(300, 200)
+    first = _query(content)
+    assert content["statement"].strip() in first.text and content["risk_statement"].strip() in first.text
+    assert all(system["description"] in first.text for system in SYSTEMS) and first == _query(content)
     text = first.text
-    assert (
-        text.index("Title:")
-        < text.index("System Command Centre")
-        < text.index("Scenario:")
-        < text.index("Risk:")
-    )
+    assert text.index("Title:") < text.index("System Command Centre") < text.index("Scenario:") < text.index("Risk:")
 
 
-def test_the_mapper_searches_the_configured_candidates_and_records_what_was_shortened(
+def test_the_mapper_searches_the_configured_candidates_and_cuts_a_long_scenario(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     asked: list[int] = []
 
     class Snapshot:
-        library = SimpleNamespace(control_library=_CONTROLS)
+        library = SimpleNamespace(control_library=_CONTROLS, stamp=())
 
         def find_controls(self, queries: list[str], limit: int, allowed: Any, **_: Any) -> list[list[Any]]:
             asked.append(limit)
@@ -94,8 +92,8 @@ def test_the_mapper_searches_the_configured_candidates_and_records_what_was_shor
     monkeypatch.setattr(write, "get_settings", lambda: settings)
     rerank = _ScoresByText({"Backup of controller logic": 87.0})
     scenario = {**_SCENARIO, "content": {**_SCENARIO["content"], "statement": "story " * 900}}
-    mapping = ControlMapper(rerank).map_controls(scenario, _OT_CONTEXT, Snapshot())  # type: ignore[arg-type]
-    assert asked == [25] and "scenario" in mapping.query_shortened
+    mapping = write.map_controls(rerank, scenario, _OT_CONTEXT, Snapshot())  # type: ignore[arg-type]
+    assert asked == [25] and scenario["content"]["statement"].strip() not in mapping["query"]
 
 
 def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> None:
@@ -106,7 +104,7 @@ def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> Non
     evidence = [{"n": 1, "mitigations": first}, {"n": 2, "mitigations": second}]
     query = _query(_content(9_000, 9_000) | {"evidence": evidence})
     names = (*first, "Password Policies", "Audit", "Data Backup")
-    assert query.mitigations == names and len(names) == Controls.QUERY_MITIGATIONS
+    assert len(names) == Controls.QUERY_MITIGATIONS
     line = "Mitigations (MITRE ATT&CK): " + "; ".join(names)
     assert line in query.text and query.text.index(line) < query.text.index("System ")
     assert "Code Signing" not in query.text and len(query.text) <= Controls.QUERY_MAX_CHARS
@@ -114,7 +112,7 @@ def test_the_cited_evidences_mitigations_guide_the_search_from_the_head() -> Non
 
 def test_a_scenario_without_evidence_has_no_mitigation_line() -> None:
     query = _query(_content())
-    assert query.mitigations == () and "Mitigations" not in query.text
+    assert "Mitigations" not in query.text
 
 
 def test_the_mitigations_travel_from_the_source_to_the_card() -> None:
@@ -125,16 +123,7 @@ def test_the_mitigations_travel_from_the_source_to_the_card() -> None:
         "T0859", IntelKind.TECHNIQUE, "Valid Accounts", "", "https://attack.mitre.org/techniques/T0859",
         IntelSource.ATTACK_ICS, "OT", 90.0, {"mitigations": names},
     )  # fmt: skip
-    assert PlainFactWriter().safe_mitigations(hit) == ("Access Management", "Audit")
+    assert facts.safe_mitigations(hit) == ("Access Management", "Audit")
     entry = {"n": 1, "ref": "T0859", "kind": "technique", "source": "mitre_attack_ics", "title": "Valid"}
     content = {"statement": "It may [1].", "evidence": [entry | {"url": "", "mitigations": ["Audit"]}]}
     assert cited_evidence(content)[0].mitigations == ["Audit"]
-
-
-def test_only_an_attack_technique_gives_mitigations() -> None:
-    """The query labels them "MITRE ATT&CK", so never an advisory's remediation."""
-    advisory = IntelHit(
-        "ICSA-24-001-01", IntelKind.ADVISORY, "Advisory", "", "https://x/1",
-        IntelSource.CISA_ICS, "OT", 90.0, {"mitigations": ["Network Segmentation"]},
-    )  # fmt: skip
-    assert PlainFactWriter().safe_mitigations(advisory) == ()

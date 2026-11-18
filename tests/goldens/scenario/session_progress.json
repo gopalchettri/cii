@@ -7,8 +7,7 @@
   "abandoned": 1,
   "outage_cards": 1,
   "planned": 4,
-  "remaining": 2,
-  "replaced": 1
+  "remaining": 2
  },
  "next_batch": [
   {
@@ -167,16 +166,10 @@
    }
   ],
   "drops_total": 6,
-  "groups": {
-   "SCADA server": 1,
-   "SCADA server + Historian": 2
-  },
+  "groups": {},
   "landscape_cut": false,
   "session_id": "run-golden-1",
-  "turns": {
-   "Historian": 1,
-   "SCADA server": 2
-  },
+  "turns": {},
   "writing": {
    "given_up": 2,
    "given_up_paths": [

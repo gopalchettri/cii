@@ -1,0 +1,3 @@
+# architect: create-session-attack (17 Nov 2026)
+
+See ADR-008. The AI writes first; `tsg_attack` confirms (3 lookups an answer, at most 4 queries); a re-ask only for a scenario that would be lost, then drop and take a spare (ADR-009, 17 Nov). Existing tasks branch on `pipeline == "attack"`; one new task `tsg_link_mitigations` on the maintenance queue. New collections `tsg_attack` and `tsg_control_links`; the schedule is one document in `tsg_external_feed_status`. The control-links job kind is a constant, not an `AdminJobKind` member, and has its own `ControlLinksJobOut`: `AdminJobOut` and `AdminJobKind` are frozen shapes. No control id reaches the AI: labels C1, C2 ...

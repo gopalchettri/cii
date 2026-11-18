@@ -4,17 +4,15 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import structlog
 from fastapi import Request
 from fastapi.sse import ServerSentEvent
 
-from app.core.constants import Event, Header, Realtime
+from app.core.constants import Dependency, Event, LogEvent, Realtime
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, NotFound
 from app.realtime.event_hub import EventHub
-from app.services.admin.admin_service import AdminService
 
-
-def api_key_still_active(clients: AdminService, request: Request) -> bool:
-    return clients.get_api_client_id(request.headers.get(Header.API_KEY, "")) is not None
+log = structlog.get_logger(__name__)
 
 
 async def status_stream(
@@ -42,6 +40,9 @@ async def status_stream(
                 if gone is not None:
                     yield gone
                 return
+            except MONGO_UNAVAILABLE_ERRORS:
+                log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=Dependency.MONGO, exc_info=True)
+                status = None  # a MongoDB blip skips this read, the stream goes on
             if status is not None and status != last_sent:
                 yield ServerSentEvent(event=event, data=status, retry=Realtime.RETRY_MS)
                 last_sent = status

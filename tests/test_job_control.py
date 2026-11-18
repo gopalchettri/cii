@@ -5,14 +5,12 @@ never another organisation's. Runs, scenarios and plans are written straight int
 import random
 import re
 import uuid
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.constants import (
     ActionStatus,
     AiOutage,
@@ -33,23 +31,24 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, LeaseLost, NotFound
-from app.data_access.jobs.job_repository import JobLease, JobRepository
-from app.data_access.jobs.work_control_repository import WorkControlRepository
-from app.data_access.remediation.remediation_repository import RemediationRepository
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.data_access.service_mapper.mapping_repository import MappingRepository
-from app.models.admin.api_clients import Principal
-from app.services.jobs.job_service import JobService
+from app.core.security import Principal
+from app.crud import admin as admin_crud
+from app.crud import scenarios as scenario_crud
+from app.crud import work_control
+from app.crud.jobs import JobLease, JobRepository
+from app.crud.remediation import RemediationRepository
+from app.crud.scenarios import ThreatScenarioRepository, ThreatScenarioSessionRepository
+from app.domain.scenario import runs as scenario_runs
+from app.realtime import publisher
 from tests.plan_addresses import plan_url
-from tests.service_builders import threat_scenario_service
+from tests.service_builders import use_scenario_parts
 
 NOW = datetime.now(UTC)
 
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = container.get_admin_service().create_api_client(f"jobs-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = admin_crud.create_api_client(get_mongodb(), f"jobs-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -60,51 +59,38 @@ def entity() -> int:
 
 
 @pytest.fixture(autouse=True)
-def told(client: TestClient) -> Iterator[list[str]]:
+def told(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The job routes with no live update sent; the plans whose watchers were told."""
     plans: list[str] = []
-    service = JobService(
-        container.get_work_control_repository(),
-        container.get_threat_scenario_session_repository(),
-        container.get_audit_repository(),
-        publish_session_status=lambda _: None,
-        publish_remediation_status=plans.append,
-    )
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_job_service] = lambda: service
-    yield plans
-    overrides.pop(container.get_job_service, None)
+    monkeypatch.setattr(publisher, "publish_session_status", lambda _: None)
+    monkeypatch.setattr(publisher, "publish_remediation_status", plans.append)
+    return plans
 
 
 @pytest.fixture
-def sent(client: TestClient) -> Iterator[list[Any]]:
+def sent(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     """The scenario routes with their jobs kept here instead of sent, and no live update."""
     jobs: list[Any] = []
-    service = threat_scenario_service(
-        send_job=lambda *job: jobs.append(job), publish_session_status=lambda _: None
-    )
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_threat_scenario_service] = lambda: service
-    yield jobs
-    overrides.pop(container.get_threat_scenario_service, None)
+    use_scenario_parts(monkeypatch, send_job=lambda *job: jobs.append(job), publish_session_status=lambda _: None)
+    return jobs
 
 
-def _work_control(remediations: RemediationRepository | None = None) -> WorkControlRepository:
-    """A job control of the test's own on the test database, so a test can patch it."""
+def _work_control(
+    monkeypatch: pytest.MonkeyPatch, remediations: RemediationRepository | None = None
+) -> ThreatScenarioSessionRepository:
+    """Job control on repositories of the test's own on the test database, so a test can patch them; the
+    sessions one."""
     scenarios = ThreatScenarioRepository()
     sessions = ThreatScenarioSessionRepository(scenarios=scenarios)
-    return WorkControlRepository(
-        sessions, scenarios, remediations or RemediationRepository(), MappingRepository()
-    )
+    plans = remediations or RemediationRepository()
+    monkeypatch.setattr(work_control, "get_threat_scenario_session_repository", lambda: sessions)
+    monkeypatch.setattr(work_control, "get_threat_scenario_repository", lambda: scenarios)
+    monkeypatch.setattr(work_control, "get_remediation_repository", lambda: plans)
+    return sessions
 
 
 def _who(api_key: str, entity_id: int) -> dict[str, str]:
-    return {
-        Header.API_KEY: api_key,
-        Header.USER_ID: "u1",
-        Header.ENTITY_ID: str(entity_id),
-        Header.TENANT_ID: "T",
-    }
+    return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: str(entity_id), Header.TENANT_ID: "T"}
 
 
 def _run(entity_id: int, status: Status, task: TaskName = TaskName.WRITE_SCENARIOS, **fields: Any) -> str:
@@ -155,9 +141,7 @@ def test_the_list_shows_my_work_queued_or_running_oldest_first_and_never_another
 ) -> None:
     """One line per piece of work: finding threats, writing scenarios, matching controls (a finished run whose
     scenarios' controls are still being matched), writing a remediation plan."""
-    controls = _run(
-        entity, Status.DONE, counts={"controls_waiting": 2}, created_at=NOW - timedelta(minutes=9)
-    )
+    controls = _run(entity, Status.DONE, counts={"controls_waiting": 2}, created_at=NOW - timedelta(minutes=9))
     threats = _run(entity, Status.QUEUED, TaskName.FIND_THREATS, created_at=NOW - timedelta(minutes=5))
     writing = _run(entity, Status.RUNNING, created_at=NOW - timedelta(minutes=3))
     plan = _plan(entity, writing, Status.RUNNING)
@@ -171,19 +155,12 @@ def test_the_list_shows_my_work_queued_or_running_oldest_first_and_never_another
         (JobKind.SCENARIOS, writing),
         (JobKind.REMEDIATION, writing),
     ]
-    assert listed["jobs"][2]["progress"] == {
-        "planned": 16,
-        "written": 6,
-        "remaining": 10,
-        "controls_waiting": 0,
-    }
+    assert listed["jobs"][2]["progress"] == {"planned": 16, "written": 6, "remaining": 10, "controls_waiting": 0}
     assert listed["jobs"][3]["remediation_id"] == plan
     assert all(job["retrying"] is None for job in listed["jobs"])
 
 
-def test_the_list_says_why_a_job_waits_out_an_ai_outage(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_the_list_says_why_a_job_waits_out_an_ai_outage(client: TestClient, api_key: str, entity: int) -> None:
     """Owner 2026-10-20: a run or a plan given back after an AI outage is listed with its retry notice."""
     notice = {"reason": AiOutage.TIMED_OUT, "message": "The AI service timed out.", "attempt": 1,
               "max_attempts": 5, "retry_at": NOW}  # fmt: skip
@@ -206,18 +183,13 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
     run_id = _run(entity, Status.RUNNING)
     waiting = _scenario(run_id, Status.QUEUED)
     failed = _scenario(run_id, Status.FAILED, controls={"status": Status.FAILED, "attempts": 1})
-    spent = _scenario(
-        run_id, Status.FAILED, controls={"status": Status.FAILED, "attempts": Controls.MAX_ATTEMPTS}
-    )
+    spent = _scenario(run_id, Status.FAILED, controls={"status": Status.FAILED, "attempts": Controls.MAX_ATTEMPTS})
     sessions = get_mongodb()[Collection.SESSIONS]
     lease = JobLease(sessions, run_id, 1, "t1", 1)
     response = client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity))
     assert response.status_code == 200
     board = response.json()
-    assert (board["session_status"], board["progress"]["overall"]) == (
-        SessionState.CANCELLED,
-        RunOverall.CANCELLED,
-    )
+    assert (board["session_status"], board["progress"]["overall"]) == (SessionState.CANCELLED, RunOverall.CANCELLED)
     stopped_by = board["progress"]["error_message"]["scenarios"]
     assert re.fullmatch(r"Cancelled by user u1 at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\.", stopped_by)
     with pytest.raises(LeaseLost):
@@ -232,8 +204,8 @@ def test_a_cancelled_run_is_never_claimed_resent_or_retried_and_its_worker_stops
         Status.CANCELLED,
         Status.FAILED,  # every attempt used: nothing left to stop
     )
-    assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
-    assert container.get_threat_scenario_session_repository().claim_controls_delivery(run_id, "t3") is None
+    assert run_id not in work_control.sweep_stalled_controls()
+    assert scenario_crud.get_threat_scenario_session_repository().claim_controls_delivery(run_id, "t3") is None
     stored = sessions.find_one({"_id": run_id})
     assert "active" not in stored and stored["cancelled"]["user_id"] == "u1"
     audits = get_mongodb()[Collection.AUDIT].find({"target.id": run_id, "action": AuditAction.RUN_CANCELLED})
@@ -248,10 +220,8 @@ def test_a_scenario_saved_in_flight_after_a_cancel_never_has_its_controls_matche
     listed as work and refusing the delete)."""
     run_id = _run(entity, Status.RUNNING)
     client.post(f"/v1/sessions/{run_id}/cancel", headers=_who(api_key, entity))
-    late = _scenario(
-        run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)}
-    )
-    assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
+    late = _scenario(run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)})
+    assert run_id not in work_control.sweep_stalled_controls()
     assert _controls(late) == Status.CANCELLED
     counts = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})["counts"]
     assert (counts["controls_waiting"], counts["controls_cancelled"]) == (0, 1)  # the board and list follow
@@ -265,10 +235,7 @@ def test_nothing_to_cancel_another_organisations_run_and_an_unknown_one(
     assert (refused.status_code, refused.json()["reason"]) == (409, ConflictReason.NOTHING_TO_CANCEL)
     theirs = _run(entity + 1, Status.RUNNING)
     assert client.post(f"/v1/sessions/{theirs}/cancel", headers=_who(api_key, entity)).status_code == 403
-    assert (
-        client.post(f"/v1/sessions/{uuid.uuid4().hex}/cancel", headers=_who(api_key, entity)).status_code
-        == 404
-    )
+    assert client.post(f"/v1/sessions/{uuid.uuid4().hex}/cancel", headers=_who(api_key, entity)).status_code == 404
 
 
 def test_a_finished_run_whose_controls_are_still_matched_stops_only_its_controls(
@@ -311,10 +278,7 @@ def test_a_deleted_run_is_gone_for_good_with_its_scenarios_and_plans_and_audited
     assert db[Collection.SESSIONS].find_one({"_id": run_id}) is None
     assert db[Collection.SCENARIOS].count_documents({"_id": {"$in": scenarios}}) == 0
     assert db[Collection.REMEDIATIONS].count_documents({"session_id": run_id}) == 0
-    assert (
-        db[Collection.AUDIT].count_documents({"target.id": run_id, "action": AuditAction.SESSION_DELETED})
-        == 1
-    )
+    assert db[Collection.AUDIT].count_documents({"target.id": run_id, "action": AuditAction.SESSION_DELETED}) == 1
 
 
 def test_nothing_is_ever_deleted_under_a_worker(client: TestClient, api_key: str, entity: int) -> None:
@@ -334,9 +298,7 @@ def test_nothing_is_ever_deleted_under_a_worker(client: TestClient, api_key: str
     assert client.delete(f"/v1/sessions/{theirs}", headers=_who(api_key, entity)).status_code == 403
 
 
-def test_a_remediation_plan_being_written_can_be_cancelled(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_a_remediation_plan_being_written_can_be_cancelled(client: TestClient, api_key: str, entity: int) -> None:
     plan_id = _plan(entity, "run", Status.RUNNING)
     url = plan_url(plan_id, "cancel")  # v1's address: the plan's run and scenario
     response = client.post(url, headers=_who(api_key, entity))
@@ -348,12 +310,10 @@ def test_a_remediation_plan_being_written_can_be_cancelled(
     assert client.post(url, headers=_who(api_key, entity + 1)).status_code == 403
 
 
-def test_a_delivery_mapping_the_run_stops_at_the_cancel(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_a_delivery_mapping_the_run_stops_at_the_cancel(client: TestClient, api_key: str, entity: int) -> None:
     """The cancel ends the run's controls delivery lease: a delivery mapping it stops after the scenario in
     hand, never claiming one saved later (review)."""
-    sessions = container.get_threat_scenario_session_repository()
+    sessions = scenario_crud.get_threat_scenario_session_repository()
     for status in (Status.RUNNING, Status.DONE):  # a job at work; a finished run still matching controls
         run_id = _run(entity, status)
         _scenario(run_id, Status.QUEUED)
@@ -366,7 +326,7 @@ def test_a_deleted_runs_scenario_saved_meanwhile_goes_with_it(entity: int) -> No
     """A scenario whose run is gone is never queued again for ever: the sweep removes it."""
     gone = uuid.uuid4().hex
     stray = _scenario(gone, Status.QUEUED, entity_id=entity)
-    assert gone not in container.get_work_control_repository().sweep_stalled_controls()
+    assert gone not in work_control.sweep_stalled_controls()
     assert get_mongodb()[Collection.SCENARIOS].find_one({"_id": stray}) is None
 
 
@@ -381,16 +341,13 @@ def test_a_deleted_runs_failure_and_blocked_cards_go_too_and_a_live_runs_stay(en
         ]
         for run_id in (gone, live)
     }
-    container.get_work_control_repository().sweep_stalled_controls()
-    left = {
-        found["_id"]
-        for found in get_mongodb()[Collection.SCENARIOS].find({"session_id": {"$in": [gone, live]}})
-    }
+    work_control.sweep_stalled_controls()
+    left = {found["_id"] for found in get_mongodb()[Collection.SCENARIOS].find({"session_id": {"$in": [gone, live]}})}
     assert left == set(cards[live])
 
 
 def test_a_delete_cut_short_is_finished_by_calling_it_again(
-    client: TestClient, api_key: str, entity: int
+    client: TestClient, api_key: str, entity: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Children first, the run last: an outage between the steps leaves the run there to be found again."""
     run_id = _run(entity, Status.DONE)
@@ -405,17 +362,15 @@ def test_a_delete_cut_short_is_finished_by_calling_it_again(
         def delete_many(self, _: dict[str, Any]) -> None:
             raise ConnectionError("MongoDB went away")
 
-    records = _work_control(RemediationRepository(Down()))  # type: ignore[arg-type]
-    with pytest.raises(ConnectionError):
-        records.delete_scenario_session(run_id, entity)
+    with monkeypatch.context() as going_down, pytest.raises(ConnectionError):
+        _work_control(going_down, RemediationRepository(Down()))  # type: ignore[arg-type]
+        work_control.delete_scenario_session(run_id, entity)
     response = client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity))
     assert response.json() == {"session_id": run_id, "scenarios": 0, "remediation_plans": 1}
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id}) is None
 
 
-def test_a_replaced_versions_old_controls_never_count_as_work(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_a_replaced_versions_old_controls_never_count_as_work(client: TestClient, api_key: str, entity: int) -> None:
     """A version replaced while its controls waited is never mapped (MAPPED_VERSIONS): it neither refuses the
     delete nor gives a finished run something to cancel (review)."""
     run_id = _run(entity, Status.DONE)
@@ -425,9 +380,7 @@ def test_a_replaced_versions_old_controls_never_count_as_work(
     assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
 
 
-def test_a_run_cancelled_before_its_plan_says_start_a_new_run(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_a_run_cancelled_before_its_plan_says_start_a_new_run(client: TestClient, api_key: str, entity: int) -> None:
     """Cancelled while finding threats: no plan, so nothing to decide or resume (review: next set answered a
     misleading nothing_left)."""
     run_id = _run(entity, Status.RUNNING, TaskName.FIND_THREATS, step=Step.THREATS)
@@ -440,9 +393,7 @@ def test_a_cut_list_still_says_how_many_there_are(
     client: TestClient, api_key: str, entity: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(JobControl, "LIST_MAX", 2)
-    oldest = [
-        _run(entity, Status.QUEUED, created_at=NOW - timedelta(minutes=minutes)) for minutes in (3, 2, 1)
-    ]
+    oldest = [_run(entity, Status.QUEUED, created_at=NOW - timedelta(minutes=minutes)) for minutes in (3, 2, 1)]
     listed = client.get("/v1/jobs", headers=_who(api_key, entity)).json()
     assert ([job["session_id"] for job in listed["jobs"]], listed["total"]) == (oldest[:2], 3)
 
@@ -508,9 +459,7 @@ def test_a_finished_runs_stopped_controls_resume_with_a_next_set(
     assert board["progress"]["timings"] == {"threats": 0.0, "scenarios": 0.0, "controls": None}
 
 
-def test_a_deleted_runs_plan_watchers_are_told(
-    client: TestClient, api_key: str, entity: int, told: list[str]
-) -> None:
+def test_a_deleted_runs_plan_watchers_are_told(client: TestClient, api_key: str, entity: int, told: list[str]) -> None:
     run_id = _run(entity, Status.DONE)
     plan_id = _plan(entity, run_id, Status.DONE)
     assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
@@ -520,7 +469,7 @@ def test_a_deleted_runs_plan_watchers_are_told(
 def test_a_run_gone_under_a_reader_is_a_404_never_a_500() -> None:
     """A plan request or a job that reads a run deleted meanwhile (review: KeyError, a 500)."""
     with pytest.raises(NotFound):
-        container.get_threat_scenario_session_repository().get_scenario_session_context(uuid.uuid4().hex)
+        scenario_crud.get_threat_scenario_session_repository().get_scenario_session_context(uuid.uuid4().hex)
 
 
 def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
@@ -529,22 +478,22 @@ def test_a_next_set_racing_a_delete_is_told_the_run_is_being_deleted(
     """Owner 2026-10-12: a next set clicked as the run is deleted got 202, then its run vanished. The delete
     marks the run first; a next set landing between that mark and the end gets 409 run_being_deleted, and
     nothing is queued or sent."""
-    service = client.app.dependency_overrides[container.get_threat_scenario_service]()  # type: ignore[attr-defined]
+    service = scenario_runs
     path = {"path_id": "p1", "rank": 1, "selected": True, "served": None, "attempts": 0, "abandoned": False}
     run_id = _run(entity, Status.DONE, plan={"paths": [path]})
     principal = Principal(client_id="c1", user_id="u2", entity_id=entity, tenant_id="T")
     raced: list[BaseException] = []
-    work_left = WorkControlRepository._work_left
+    working_plans = work_control.list_working_plans
 
-    def next_set_lands_meanwhile(records: WorkControlRepository, session_id: str, entity_id: int) -> bool:
+    def next_set_lands_meanwhile(session_id: str, entity_id: int) -> list[Any]:
         try:
             run = service.get_threat_scenario_session_status(run_id, entity)
             service.write_next_threat_scenario_set(principal, run)
         except Conflict as exc:
             raced.append(exc)
-        return work_left(records, session_id, entity_id)
+        return working_plans(session_id, entity_id)
 
-    monkeypatch.setattr(WorkControlRepository, "_work_left", next_set_lands_meanwhile)
+    monkeypatch.setattr(work_control, "list_working_plans", next_set_lands_meanwhile)
     assert client.delete(f"/v1/sessions/{run_id}", headers=_who(api_key, entity)).status_code == 200
     assert [getattr(exc, "reason", None) for exc in raced] == [ConflictReason.RUN_BEING_DELETED]
     assert sent == []
@@ -569,15 +518,15 @@ def test_a_cancel_landing_during_a_resume_stands(entity: int, monkeypatch: pytes
     earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
     run_id = _run(entity, Status.DONE, cancelled=earlier)
     stopped = _scenario(run_id, Status.CANCELLED)
-    records = _work_control()
-    being_deleted = records._sessions.is_being_deleted
+    sessions = _work_control(monkeypatch)
+    being_deleted = sessions.is_being_deleted
 
     def cancel_lands_meanwhile(session_id: str) -> bool:
-        records.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
+        work_control.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
         return being_deleted(session_id)
 
-    monkeypatch.setattr(records._sessions, "is_being_deleted", cancel_lands_meanwhile)
-    assert records.resume_scenario_controls(run_id, earlier["at"]) == 0
+    monkeypatch.setattr(sessions, "is_being_deleted", cancel_lands_meanwhile)
+    assert work_control.resume_scenario_controls(run_id, earlier["at"]) == 0
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9" and _controls(stopped) == Status.CANCELLED
 
@@ -588,10 +537,9 @@ def test_a_cancel_landing_after_the_caller_read_the_run_stands(entity: int) -> N
     earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
     run_id = _run(entity, Status.DONE, cancelled=earlier)
     stopped, waiting = _scenario(run_id, Status.CANCELLED), _scenario(run_id, Status.QUEUED)
-    seen = container.get_threat_scenario_service().get_threat_scenario_session_status(run_id, entity)
-    records = container.get_work_control_repository()
-    records.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
-    assert records.resume_scenario_controls(run_id, (seen.cancelled or {}).get("at")) == 0
+    seen = scenario_runs.get_threat_scenario_session_status(run_id, entity)
+    work_control.cancel_scenario_session(run_id, entity, {"user_id": "u9"})
+    assert work_control.resume_scenario_controls(run_id, (seen.cancelled or {}).get("at")) == 0
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["cancelled"]["user_id"] == "u9"
     assert _controls(stopped) == _controls(waiting) == Status.CANCELLED
@@ -602,35 +550,31 @@ def test_a_plan_jobs_live_claim_on_a_cancelled_run_survives_the_sweep(entity: in
     a live lease, so the plan job's save still lands."""
     run_id = _run(entity, Status.CANCELLED)
     scenario_id = _scenario(run_id, Status.CANCELLED, controls={"status": Status.CANCELLED, "attempts": 1})
-    scenarios = container.get_threat_scenario_repository()
+    scenarios = scenario_crud.get_threat_scenario_repository()
     claimed = scenarios.claim_scenario_controls_by_id(scenario_id, "plan-job:plan")
     assert claimed is not None
-    container.get_work_control_repository().sweep_stalled_controls()
+    work_control.sweep_stalled_controls()
     assert _controls(scenario_id) == Status.RUNNING
     attempts = claimed["controls"]["attempts"]
     mapping = {"items": [{"control_id": 1}]}
-    assert scenarios.update_scenario_controls(
-        scenario_id, "plan-job:plan", attempts, Status.DONE, mapping=mapping
-    )
+    assert scenarios.update_scenario_controls(scenario_id, "plan-job:plan", attempts, Status.DONE, mapping=mapping)
 
 
-def test_a_sweep_landing_during_a_resume_keeps_the_resume(
-    entity: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_sweep_landing_during_a_resume_keeps_the_resume(entity: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """The resume takes the run out of cancelled before it queues the controls again, so a sweep landing in
     between never stops them as a cancelled run's."""
     earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
     run_id = _run(entity, Status.CANCELLED, cancelled=earlier)
     stopped = _scenario(run_id, Status.CANCELLED)
-    records = _work_control()
-    being_deleted = records._sessions.is_being_deleted
+    sessions = _work_control(monkeypatch)
+    being_deleted = sessions.is_being_deleted
 
     def sweep_lands_meanwhile(session_id: str) -> bool:
-        records.sweep_stalled_controls()
+        work_control.sweep_stalled_controls()
         return being_deleted(session_id)
 
-    monkeypatch.setattr(records._sessions, "is_being_deleted", sweep_lands_meanwhile)
-    assert records.resume_scenario_controls(run_id, earlier["at"]) == 1
+    monkeypatch.setattr(sessions, "is_being_deleted", sweep_lands_meanwhile)
+    assert work_control.resume_scenario_controls(run_id, earlier["at"]) == 1
     stored = get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})
     assert stored["status"] == Status.DONE and "cancelled" not in stored
     assert _controls(stopped) == Status.QUEUED
@@ -644,17 +588,15 @@ def test_a_resume_landing_after_the_sweep_read_the_run_keeps_its_requeued_contro
     earlier = {"user_id": "u1", "at": NOW - timedelta(hours=1)}
     run_id = _run(entity, Status.CANCELLED, cancelled=earlier)
     stopped = _scenario(run_id, Status.CANCELLED)
-    late = _scenario(
-        run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)}
-    )
-    records = _work_control()
-    read_states = records._sessions.list
+    late = _scenario(run_id, Status.QUEUED, controls={"status": Status.QUEUED, "queued_at": datetime.now(UTC)})
+    sessions = _work_control(monkeypatch)
+    read_states = sessions.list
 
     def resume_lands_meanwhile(**query: Any) -> list[dict[str, Any]]:
         states = read_states(**query)
-        assert records.resume_scenario_controls(run_id, earlier["at"]) == 1
+        assert work_control.resume_scenario_controls(run_id, earlier["at"]) == 1
         return states
 
-    monkeypatch.setattr(records._sessions, "list", resume_lands_meanwhile)
-    records.settle_stopped_scenario_sessions()
+    monkeypatch.setattr(sessions, "list", resume_lands_meanwhile)
+    work_control.settle_stopped_scenario_sessions()
     assert (_controls(stopped), _controls(late)) == (Status.QUEUED, Status.CANCELLED)

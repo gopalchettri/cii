@@ -7,17 +7,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
-from app.core.constants import (
-    AuditAction,
-    ConflictReason,
-    Decision,
-    ReviewMessage,
-    Status,
-    Step,
-    TargetProblem,
-)
-from app.models.scenario.views import AcceptRequest
+from app.core.constants import AuditAction, ConflictReason, Decision, ReviewMessage, Status, Step, TargetProblem
+from app.core.database import get_mongodb
+from app.crud import admin as admin_crud
+from app.schemas.scenarios import AcceptRequest
 from tests.test_review import PUBLISHED, _audits, _decision, _post, _run, _scenario, service  # noqa: F401
 
 IDS_ONLY_WITH_SUBSET = ReviewMessage.ONLY_WITH_SUBSET.format(field="scenario_ids")
@@ -26,9 +19,7 @@ REPLACE_ONLY_WITH_SUBSET = ReviewMessage.ONLY_WITH_SUBSET.format(field="replace_
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = container.get_admin_service().create_api_client(
-        f"accept-v1-{uuid.uuid4().hex[:8]}", None, "test"
-    )
+    _, key = admin_crud.create_api_client(get_mongodb(), f"accept-v1-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -89,9 +80,7 @@ def test_mode_none_decides_nothing_and_writes_nothing(client: TestClient, api_ke
     )
     assert [_decision(scenario_id) for scenario_id in scenario_ids] == [Decision.PENDING, Decision.PENDING]
     assert _audits(record_id, AuditAction.SCENARIOS_ACCEPTED) == [] and PUBLISHED == []
-    busy = _post(
-        client, api_key, f"/v1/sessions/{_run(Status.RUNNING, Step.SCENARIOS)}/accept", {"mode": "none"}
-    )
+    busy = _post(client, api_key, f"/v1/sessions/{_run(Status.RUNNING, Step.SCENARIOS)}/accept", {"mode": "none"})
     assert (busy.status_code, busy.json()["reason"]) == (409, ConflictReason.GENERATION_IN_PROGRESS)
 
 

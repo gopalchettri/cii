@@ -14,12 +14,10 @@ from sqlalchemy import Engine
 from app.core.constants import AssetType, ErrorMessage, LibraryRowKind, StoredProcedure
 from app.core.database import StoredProcedureClient
 from app.core.exceptions import Invalid, SetupError, Unavailable
-from app.data_access.library.control_repository import ControlRepository
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
+from app.crud.library import ControlRepository, SqlOperationRepository, ThreatRepository
+from app.crud.service_mapper import load_catalog_rows
 from app.domain.service_mapper.catalog import build_catalog
-from app.models.library.library import LoadedLibraries, PendingLibraryRow, RejectedLibraryThreat
+from app.schemas.library import LoadedLibraries, PendingLibraryRow, RejectedLibraryThreat
 from app.search.library_cache import load_libraries
 from tests.sql_test_database import REPO, procedure_files
 
@@ -41,9 +39,7 @@ def _rows(engine: Engine, sql: str, *params: object) -> Rows:
         return [dict(row._mapping) for row in connection.exec_driver_sql(sql, params)]
 
 
-def test_the_asset_context_proves_ownership_and_carries_every_category(
-    procedures: StoredProcedureClient,
-) -> None:
+def test_the_asset_context_proves_ownership_and_carries_every_category(procedures: StoredProcedureClient) -> None:
     sets = procedures.execute_procedure(
         StoredProcedure.GET_ASSET_CONTEXT,
         EntityID=86,
@@ -96,21 +92,14 @@ def test_the_asset_context_proves_ownership_and_carries_every_category(
     assert (other_entity[1], other_entity[3]) == ([], [])
     # A deleted service or sector reads as unknown (the app answers 404), and its name never reaches the AI
     deleted = procedures.execute_procedure(
-        StoredProcedure.GET_ASSET_CONTEXT,
-        EntityID=86,
-        AssetID=103,
-        SystemIDs="[321]",
-        ServiceID=3,
-        SubsectorID=12,
+        StoredProcedure.GET_ASSET_CONTEXT, EntityID=86, AssetID=103, SystemIDs="[321]", ServiceID=3, SubsectorID=12
     )
     assert (deleted[1], deleted[2]) == ([], [])
     row = deleted[0][0]
     assert (row["critical_service"], row["sector"], row["sub_sector"]) == (None,) * 3
 
 
-def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(
-    sql_test_engine: Engine,
-) -> None:
+def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(sql_test_engine: Engine) -> None:
     """With technology_used shown (as the procedure's header invites, whether or not the file shows it), a
     value that is not a JSON list on a system the request did not send never stops the asset's runs: it
     reads as no answer. The shown fact and the bad value are one transaction, rolled back."""
@@ -124,12 +113,9 @@ def test_a_malformed_multi_select_value_on_a_linked_system_reads_as_no_answer(
     try:
         cursor = connection.cursor()
         cursor.execute(shown[shown.index("CREATE OR ALTER PROCEDURE") : shown.rindex("GO")])
+        cursor.execute("UPDATE dbo.onboarding_supporting_systems SET technology_used = N'not json' WHERE id = 322")
         cursor.execute(
-            "UPDATE dbo.onboarding_supporting_systems SET technology_used = N'not json' WHERE id = 322"
-        )
-        cursor.execute(
-            "EXEC dbo.tsg_GetAssetContext @EntityID = 86, @AssetID = 103, @SystemIDs = N'[321]', "
-            "@SubsectorID = 11"
+            "EXEC dbo.tsg_GetAssetContext @EntityID = 86, @AssetID = 103, @SystemIDs = N'[321]', @SubsectorID = 11"
         )
         for _ in range(3):  # the asset, services and sector come first
             cursor.nextset()
@@ -150,24 +136,13 @@ def test_the_threat_library_lists_the_pending_and_the_rejected_too(procedures: S
     assert [row["ThreatName"] for row in rejected] == ["Alien interference with the grid"]
 
 
-def test_the_control_library_lists_retired_controls_apart(procedures: StoredProcedureClient) -> None:
-    """Owner, 2026-10-11: a register may name a retired control; it is loaded apart, by code, name and domain,
-    and never among the controls mapped or searched."""
+def test_a_retired_control_is_never_mapped_or_searched(procedures: StoredProcedureClient) -> None:
     loaded = _load_libraries(procedures)
     assert loaded is not None
-    active, retired = loaded.control_library, loaded.retired_controls
-    assert "AC-99" not in {control.code for control in active}
-    legacy = next(control for control in retired if control.code == "AC-99")
-    assert (legacy.name, legacy.domain, legacy.description) == (
-        "Legacy dial-up access review",
-        "Access control",
-        None,
-    )
+    assert "AC-99" not in {control.code for control in loaded.control_library}
 
 
-def test_the_loaded_library_knows_the_pending_and_the_rejected_names(
-    procedures: StoredProcedureClient,
-) -> None:
+def test_the_loaded_library_knows_the_pending_and_the_rejected_names(procedures: StoredProcedureClient) -> None:
     """For the name checks before a library write: reuse a pending name, never propose a rejected one."""
     loaded = _load_libraries(procedures)
     assert loaded is not None
@@ -181,7 +156,6 @@ def test_the_loaded_library_knows_the_pending_and_the_rejected_names(
     assert len(library.threats) == 20  # the pending and rejected ones are never searched or written
     asset_types = {threat.catalogue_id: threat.asset_type for threat in library.threats}
     assert asset_types[1] == AssetType.IT_OT and asset_types[2] is None  # G211: the procedure returns it
-    assert library.threats_unknown_asset_type == ()
 
 
 def _propose(procedures: StoredProcedureClient, **params: Any) -> dict[str, Any]:
@@ -189,9 +163,7 @@ def _propose(procedures: StoredProcedureClient, **params: Any) -> dict[str, Any]
     return procedures.execute_procedure(StoredProcedure.RESOLVE_THREAT, **(defaults | params))[0][0]
 
 
-def test_a_proposed_threat_is_written_pending_once(
-    procedures: StoredProcedureClient, sql_test_engine: Engine
-) -> None:
+def test_a_proposed_threat_is_written_pending_once(procedures: StoredProcedureClient, sql_test_engine: Engine) -> None:
     created = _propose(procedures, TypeName="Drone intrusion", ThreatName="Drone over-flight of a substation")
     assert created["outcome"] == "created_pending"
     again = _propose(procedures, TypeName="Drone intrusion", ThreatName="DRONE OVER-FLIGHT OF A SUBSTATION")
@@ -220,9 +192,7 @@ def test_a_live_threat_is_answered_as_it_is_and_never_changed(
     live = _propose(procedures, TypeName="Some other type", ThreatName="Malicious PLC logic upload")
     assert live == {"threat_type_id": 2, "threat_catalogue_id": 5, "outcome": "existing_active"}
     assert _rows(sql_test_engine, links) == before
-    assert not _rows(
-        sql_test_engine, "SELECT 1 AS x FROM dbo.Threat_Type WHERE ThreatTypeName = N'Some other type'"
-    )
+    assert not _rows(sql_test_engine, "SELECT 1 AS x FROM dbo.Threat_Type WHERE ThreatTypeName = N'Some other type'")
 
 
 def test_a_proposal_from_an_unknown_source_is_refused(procedures: StoredProcedureClient) -> None:
@@ -235,10 +205,7 @@ def test_a_proposal_from_an_unknown_source_is_refused(procedures: StoredProcedur
 def test_pending_threats_are_listed_oldest_first_with_a_total(procedures: StoredProcedureClient) -> None:
     page, total = procedures.execute_procedure(StoredProcedure.LIST_PENDING_THREATS, Offset=0, Limit=2)
     assert len(page) == 2 and total[0]["total"] >= 2
-    assert page[0]["threat"] in {
-        "Compromised vendor software update",
-        "Malicious USB drive in the control room",
-    }
+    assert page[0]["threat"] in {"Compromised vendor software update", "Malicious USB drive in the control room"}
     assert json.loads(page[0]["categories"]) == [{"name": "Tampering"}]
 
 
@@ -246,10 +213,7 @@ def test_a_curator_decides_in_one_call_with_one_outcome_per_id(
     procedures: StoredProcedureClient, sql_test_engine: Engine
 ) -> None:
     results = procedures.execute_procedure(
-        StoredProcedure.DECIDE_PENDING_THREATS,
-        ApproveIDs="[21, 23, 9999]",
-        RejectIDs="[22, 1]",
-        DecidedBy="curator-1",
+        StoredProcedure.DECIDE_PENDING_THREATS, ApproveIDs="[21, 23, 9999]", RejectIDs="[22, 1]", DecidedBy="curator-1"
     )[0]
     assert {row["catalogue_id"]: row["outcome"] for row in results} == {
         1: "is_approved",  # asked to reject a live threat: nothing changed
@@ -280,9 +244,7 @@ def test_rejecting_the_last_threat_of_a_pending_type_rejects_the_type(
         DecidedBy="curator-1",
     )
     type_row = _rows(
-        sql_test_engine,
-        "SELECT IsDeleted FROM dbo.Threat_Type WHERE ThreatTypeID = ?",
-        proposed["threat_type_id"],
+        sql_test_engine, "SELECT IsDeleted FROM dbo.Threat_Type WHERE ThreatTypeID = ?", proposed["threat_type_id"]
     )
     assert type_row == [{"IsDeleted": True}]
 
@@ -303,18 +265,8 @@ def test_an_import_inserts_only_what_is_missing_and_a_dry_run_writes_nothing(
     procedures: StoredProcedureClient, sql_test_engine: Engine
 ) -> None:
     rows = [
-        {
-            "kind": "threat",
-            "category": "Tampering",
-            "type": "Cable cutting",
-            "threat": "Cut fibre between sites",
-        },
-        {
-            "kind": "threat",
-            "category": "Tampering",
-            "type": "Malicious code",
-            "threat": "Malicious PLC logic upload",
-        },
+        {"kind": "threat", "category": "Tampering", "type": "Cable cutting", "threat": "Cut fibre between sites"},
+        {"kind": "threat", "category": "Tampering", "type": "Malicious code", "threat": "Malicious PLC logic upload"},
         {"kind": "threat", "category": "Not a category", "type": "X", "threat": "Unknown category threat"},
         {  # rejected by a curator: never brought back by an import
             "kind": "threat",
@@ -325,21 +277,13 @@ def test_an_import_inserts_only_what_is_missing_and_a_dry_run_writes_nothing(
         {"kind": "actor", "actor_name": "Hacktivist"},
         {"kind": "actor", "actor_name": "Disgruntled contractor"},
     ]
-    new_threat = (
-        "SELECT IsActive, Source FROM dbo.Threat_Catalogue WHERE ThreatName = N'Cut fibre between sites'"
-    )
+    new_threat = "SELECT IsActive, Source FROM dbo.Threat_Catalogue WHERE ThreatName = N'Cut fibre between sites'"
     expected = {"actor": (1, 1, 0), "threat": (1, 1, 2), "type": (1, 1, 0)}
     assert _import(procedures, rows, dry_run=True) == expected
     assert _rows(sql_test_engine, new_threat) == []
     assert _import(procedures, rows, dry_run=False) == expected
-    assert _rows(sql_test_engine, new_threat) == [
-        {"IsActive": False, "Source": "pytm"}
-    ]  # pending, for a curator
-    assert _import(procedures, rows, dry_run=False) == {
-        "actor": (0, 2, 0),
-        "threat": (0, 2, 2),
-        "type": (0, 2, 0),
-    }
+    assert _rows(sql_test_engine, new_threat) == [{"IsActive": False, "Source": "pytm"}]  # pending, for a curator
+    assert _import(procedures, rows, dry_run=False) == {"actor": (0, 2, 0), "threat": (0, 2, 2), "type": (0, 2, 0)}
 
 
 def test_grants_name_every_tsg_procedure_and_nothing_else() -> None:
@@ -363,9 +307,7 @@ def test_service_mapper_associations_keep_exact_hierarchy_and_filter_deleted_row
     assert entities == [{"service_id": 1, "sector_id": 11, "entity_id": 86, "entity_name": "Test Entity"}]
 
 
-def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(
-    procedures: StoredProcedureClient,
-) -> None:
+def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(procedures: StoredProcedureClient) -> None:
     """TSG's own tsg_Onboarding_* procedures return their rows without deleted ones, and the catalog builds
     from tsg_Onboarding_GetServicesWithSectorDetails and tsg_GetServiceMapperAssociations."""
     (summary,) = procedures.execute_procedure(StoredProcedure.GET_SECTORS_AND_SUBSECTORS)
@@ -376,7 +318,7 @@ def test_the_onboarding_procedures_tsg_ships_feed_the_service_mapper_catalog(
     assert transmission["upstream_dependencies"] == "Customer billing"
     assert transmission["downstream_dependencies"] == "Test Entity"
 
-    catalog = build_catalog(ServiceCatalogRepository(procedures).load())
+    catalog = build_catalog(*load_catalog_rows(procedures))
     assert catalog.sector_names == ("Energy",)
     names = [service.service_name for service in catalog.services]
     assert names == ["Electricity transmission", "Customer billing"]

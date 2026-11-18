@@ -15,7 +15,7 @@ from app import worker
 from app.core import readiness
 from app.core.constants import Dependency, ErrorCode, Header, LogEvent, Timeouts
 from app.core.exceptions import Conflict, Invalid, NotFound
-from app.worker import heartbeat
+from app.worker import lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def fresh_checks() -> Iterator[None]:
 @pytest.fixture
 def every_queue_has_a_worker() -> Iterator[None]:
     """A heartbeat on every routed queue, as a running worker pod would write it; removed afterwards."""
-    beating = heartbeat.WorkerHeartbeat(worker.ROUTED_QUEUES, f"celery@test-{uuid.uuid4().hex}")
+    beating = lifecycle.WorkerHeartbeat(worker.ROUTED_QUEUES, f"celery@test-{uuid.uuid4().hex}")
     beating.beat()
     yield
     beating.stop()
@@ -103,7 +103,7 @@ def test_a_missing_key_says_how_to_authenticate(client: TestClient) -> None:
 def test_the_public_probes_hold_no_request_thread_while_they_wait() -> None:
     """Before: /ready and /metrics were sync handlers, each holding one of the threads every route shares for
     up to 5 s during a slow outage; anyone could call them until authentication itself stalled."""
-    from app.api.routers import health
+    from app.api.routes import health
 
     assert inspect.iscoroutinefunction(health.report_readiness)
     assert inspect.iscoroutinefunction(health.export_prometheus_metrics)
@@ -150,9 +150,7 @@ def test_a_hanging_check_answers_in_time_and_is_never_started_twice(
         release.set()
 
 
-def test_a_scrape_reports_the_stores_as_they_are_now(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_scrape_reports_the_stores_as_they_are_now(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: tsg_dependency_up changed only when /ready ran, so on a laptop (no probe) it stayed stale."""
     monkeypatch.setattr(Timeouts, "READY_CHECK_REUSE_SECONDS", 0)
     client.get("/metrics")
@@ -170,9 +168,7 @@ def test_a_burst_of_public_calls_runs_each_check_once_and_logs_an_outage_once(
 ) -> None:
     """/ready and /metrics are public: before, every call pinged every store and logged every failure, so a
     caller could multiply database load and log volume at will."""
-    monkeypatch.setattr(
-        Timeouts, "READY_CHECK_REUSE_SECONDS", 3600
-    )  # one run for the whole burst, however slow
+    monkeypatch.setattr(Timeouts, "READY_CHECK_REUSE_SECONDS", 3600)  # one run for the whole burst, however slow
     calls: list[int] = []
     warnings: list[str] = []
 
@@ -243,9 +239,7 @@ def test_a_refreshed_check_does_not_wait_again_for_a_store_still_hanging(
         release.set()
 
 
-def test_an_unreadable_worker_count_is_logged_once(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_unreadable_worker_count_is_logged_once(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: Redis answered PING but counting failed (a key of the wrong type): /ready said 503 and nothing
     said why."""
     monkeypatch.setattr(Timeouts, "READY_CHECK_REUSE_SECONDS", 3600)

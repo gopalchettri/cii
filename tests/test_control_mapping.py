@@ -1,4 +1,4 @@
-"""Controls for written scenarios (Step 13, BUILD_PLAN S31-S34): T-CTL-01..10, with fake AI models."""
+"""Controls for written scenarios: T-CTL-01..10, with fake AI models."""
 
 import dataclasses
 import threading
@@ -12,21 +12,13 @@ import pytest
 from pymongo.errors import DuplicateKeyError
 from structlog.testing import capture_logs
 
-from app import container
-from app.ai import reranks_in_background
-from app.core.asset_types import (
-    asset_type_fits,
-    compatible_asset_types,
-    place_asset_types,
-    unknown_asset_type,
-)
+from app.core.asset_types import asset_type_fits, compatible_asset_types, place_asset_types, unknown_asset_type
 from app.core.config import get_settings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AiOutage,
     Collection,
     ControlMatch,
-    ControlMessage,
     Controls,
     ErrorCode,
     RunKind,
@@ -37,15 +29,15 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, LeaseLost, Unavailable
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.write import ControlMapper, build_control_query
-from app.models.library.library import LibraryControl, ThreatLibrary
-from app.models.scenario.views import session_status_from_record
+from app.crud import scenarios as scenario_crud
+from app.crud import work_control
+from app.crud.scenarios import ThreatScenarioRepository, ThreatScenarioSessionRepository, TitleTaken
+from app.domain.scenario.write import build_control_query, find_alternative_controls, map_controls
+from app.schemas.library import LibraryControl, ThreatLibrary
+from app.schemas.scenarios import session_status_from_record
 from app.search.service import LibrarySearch
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
-from app.worker.scenario.controls_job import ControlsJob
 from tests.fakes import FakeEmbeddings
 from tests.planner_samples import CONTEXT
 
@@ -157,11 +149,9 @@ class _ScoresByText:
     def __init__(self, scores: dict[str, float]) -> None:
         self.scores = scores
         self.asked: list[tuple[str, list[str]]] = []
-        self.in_background: list[bool] = []  # G222: was each call marked background work?
 
     def score_relevance(self, query: str, documents: list[str]) -> list[float]:
         self.asked.append((query, documents))
-        self.in_background.append(reranks_in_background())
         return [self.scores.get(document.split(":")[0], 0.0) for document in documents]
 
 
@@ -183,20 +173,18 @@ _CONTROLS = (
 def test_controls_come_from_the_scenario_and_risk_and_only_compatible_ones_are_kept() -> None:
     """T-CTL-01/02/03 (S32): the query holds both statements; an OT scenario on its OT system gets no IT
     control; every control at or above the cut-off is kept, best first, ranks 1..n."""
-    rerank = _ScoresByText(
-        {"Offline backup": 95.0, "Backup of controller logic": 87.0, "Backup policy": 70.0}
-    )
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [(item.code, item.rank, item.match) for item in mapping.items] == [
+    rerank = _ScoresByText({"Offline backup": 95.0, "Backup of controller logic": 87.0, "Backup policy": 70.0})
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [(item["code"], item["rank"], item["match"]) for item in mapping["items"]] == [
         ("C-OT", 1, ControlMatch.EXACT),
         ("C-ANY", 2, ControlMatch.EXACT),
     ]
     # Kept with the mapping: the results show it without reading the library.
-    assert mapping.items[0].to_record()["description"] == "Back up PLC and SCADA logic"
+    assert mapping["items"][0]["description"] == "Back up PLC and SCADA logic"
     query = rerank.asked[0][0]
     content = _SCENARIO["content"]
     assert content["statement"] in query and content["risk_statement"] in query
-    assert "Attacker: Ransomware gang" in query and mapping.warning is None and mapping.query == query
+    assert "Attacker: Ransomware gang" in query and mapping["query"] == query
 
 
 def test_a_scenarios_controls_follow_its_own_place_not_the_whole_asset() -> None:
@@ -205,11 +193,11 @@ def test_a_scenarios_controls_follow_its_own_place_not_the_whole_asset() -> None
     "Control system")."""
     rerank = _ScoresByText({"Backup of controller logic": 90.0, "Offline backup": 80.0})
     on_historian = {"content": _SCENARIO["content"] | {"systems": [{"id": 322, "name": "Historian"}]}}
-    mapping = ControlMapper(rerank).map_controls(on_historian, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-IT"]
+    mapping = map_controls(rerank, on_historian, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [item["code"] for item in mapping["items"]] == ["C-IT"]
     on_asset = {"content": _SCENARIO["content"] | {"systems": []}}
-    mapping = ControlMapper(rerank).map_controls(on_asset, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-OT"]
+    mapping = map_controls(rerank, on_asset, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [item["code"] for item in mapping["items"]] == ["C-OT"]
 
 
 def test_each_system_whose_type_is_not_recorded_takes_the_assets_among_recorded_ones() -> None:
@@ -226,28 +214,30 @@ def test_a_system_whose_type_is_not_recorded_takes_the_assets() -> None:
         _OT_CONTEXT, systems=[_OT_CONTEXT.systems[0] | {"category_code": None}, _OT_CONTEXT.systems[1]]
     )
     rerank = _ScoresByText({"Backup of controller logic": 90.0, "Offline backup": 80.0})
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, untyped_system, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-OT"]
+    mapping = map_controls(rerank, _SCENARIO, untyped_system, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [item["code"] for item in mapping["items"]] == ["C-OT"]
 
 
-def test_none_at_the_cut_off_keeps_the_single_nearest_with_a_warning() -> None:
+def test_none_at_the_cut_off_keeps_the_single_nearest_and_says_so() -> None:
     """T-CTL-04 (S32): never empty while a compatible control exists; the reviewer is told it is nearest."""
     rerank = _ScoresByText({"Backup of controller logic": 41.0, "Backup policy": 22.0})
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    nearest = [(item.code, item.match, item.score) for item in mapping.items]
-    assert nearest == [("C-OT", ControlMatch.NEAREST, 41.0)] and mapping.warning and "60" in mapping.warning
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    nearest = [(item["code"], item["match"], item["score"]) for item in mapping["items"]]
+    assert nearest == [("C-OT", ControlMatch.NEAREST, 41.0)]
+    reason = mapping["items"][0]["rationale"]
+    assert "threshold of 60" in reason and "no control reached it" in reason
 
 
 def test_the_control_threshold_is_the_owners_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     """CONTROL_SIMILARITY_THRESHOLD decides "exact"; 87 and 70 both pass the default 60, neither passes
-    88 (the nearest alone is kept, the warning naming 88)."""
+    88 (the nearest alone is kept, its reason naming 88)."""
     rerank = _ScoresByText({"Backup of controller logic": 87.0, "Backup policy": 70.0})
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [item.match for item in mapping.items] == [ControlMatch.EXACT, ControlMatch.EXACT]
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [item["match"] for item in mapping["items"]] == [ControlMatch.EXACT, ControlMatch.EXACT]
     monkeypatch.setattr(get_settings(), "control_similarity_threshold", 88.0)
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert [(item.code, item.match) for item in mapping.items] == [("C-OT", ControlMatch.NEAREST)]
-    assert mapping.warning and "88" in mapping.warning
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert [(item["code"], item["match"]) for item in mapping["items"]] == [("C-OT", ControlMatch.NEAREST)]
+    assert "threshold of 88" in mapping["items"][0]["rationale"]
 
 
 def test_an_it_and_an_ot_twin_are_one_control_and_the_higher_score_stays() -> None:
@@ -259,9 +249,9 @@ def test_an_it_and_an_ot_twin_are_one_control_and_the_higher_score_stays() -> No
     on_both = dataclasses.replace(_OT_CONTEXT, asset=_OT_CONTEXT.asset | {"category_code": r"IT\OT"})
     on_asset = {"content": _SCENARIO["content"] | {"systems": []}}  # an IT\OT asset: both twins compete
     rerank = _ScoresByText({"Network segmentation": 80.0})
-    mapping = ControlMapper(rerank).map_controls(on_asset, on_both, _snapshot(*twins))  # type: ignore[arg-type]
+    mapping = map_controls(rerank, on_asset, on_both, _snapshot(*twins))  # type: ignore[arg-type]
     assert len(rerank.asked[0][1]) == 2
-    assert [item.control_id for item in mapping.items] == [7]
+    assert [item["control_id"] for item in mapping["items"]] == [7]
 
 
 def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_another(
@@ -269,9 +259,9 @@ def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_
 ) -> None:
     """control_library_empty only when
     the library is empty; with no control of the scenario's type, the nearest of another type is kept
-    (NEAREST_CONTROLS at most, never a strong set of another type), and the warning says so."""
+    (NEAREST_CONTROLS at most, never a strong set of another type), and each control's reason says so."""
     with pytest.raises(ControlsNotMapped) as empty:
-        ControlMapper(_ScoresByText({})).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot())  # type: ignore[arg-type]
+        map_controls(_ScoresByText({}), _SCENARIO, _OT_CONTEXT, _snapshot())  # type: ignore[arg-type]
     assert empty.value.code == ErrorCode.CONTROL_LIBRARY_EMPTY
     it_only = _snapshot(
         LibraryControl(1, "C-IT", "IT", None, "Offline backup", None),
@@ -279,16 +269,14 @@ def test_an_empty_library_fails_and_no_control_of_the_type_keeps_the_nearest_of_
     )
     monkeypatch.setattr(get_settings(), "nearest_controls", 2)  # apart from MIN_CONTROLS (1): its own rule
     rerank = _ScoresByText({"Offline backup": 90.0, "Email filtering": 85.0})
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
-    assert [item.control_id for item in mapping.items] == [1, 2]
-    expected = ControlMessage.OTHER_TYPE.format(types=r"IT\OT, OT")
-    assert mapping.warning == expected and mapping.left_out == 0 and mapping.shortfall is None
-    # whatever their score, another type's controls are never strong: nearest, said so, counted after the cut
-    assert {item.match for item in mapping.items} == {ControlMatch.NEAREST}
-    assert mapping.items[0].rationale.startswith("Score 90, asset type IT: another type than the scenario's")
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
+    assert [item["control_id"] for item in mapping["items"]] == [1, 2]
+    # whatever their score, another type's controls are never strong: nearest, said so on each
+    assert {item["match"] for item in mapping["items"]} == {ControlMatch.NEAREST}
+    assert mapping["items"][0]["rationale"].startswith("Score 90, asset type IT: another type than the scenario's")
     monkeypatch.setattr(get_settings(), "nearest_controls", 3)
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
-    assert mapping.shortfall == ControlMessage.SHORTFALL.format(kept=2, least=3)
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, it_only)  # type: ignore[arg-type]
+    assert [item["control_id"] for item in mapping["items"]] == [1, 2]  # 3 nearest asked, 2 exist
 
 
 def test_a_reranker_outage_is_raised_and_a_long_query_is_cut() -> None:
@@ -299,11 +287,11 @@ def test_a_reranker_outage_is_raised_and_a_long_query_is_cut() -> None:
             raise Unavailable("rerank down")
 
     with pytest.raises(Unavailable):
-        ControlMapper(_Down({})).map_controls(_SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+        map_controls(_Down({}), _SCENARIO, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
     long = {"content": _SCENARIO["content"] | {"statement": "backup " * 2_000}}
     rerank = _ScoresByText({"Backup policy": 70.0})
-    mapping = ControlMapper(rerank).map_controls(long, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
-    assert len(mapping.query) <= 4_000 and mapping.query.startswith("Category: Tampering")
+    mapping = map_controls(rerank, long, _OT_CONTEXT, _snapshot(*_CONTROLS))  # type: ignore[arg-type]
+    assert len(mapping["query"]) <= 4_000 and mapping["query"].startswith("Category: Tampering")
 
 
 def _waiting_scenario(**controls: Any) -> tuple[str, str]:
@@ -327,7 +315,7 @@ def _waiting_scenario(**controls: Any) -> tuple[str, str]:
 
 
 def _session_repository() -> ThreatScenarioSessionRepository:
-    return container.get_threat_scenario_session_repository()
+    return scenario_crud.get_threat_scenario_session_repository()
 
 
 def _controls_of(scenario_id: str) -> dict[str, Any]:
@@ -339,7 +327,7 @@ def test_a_claimed_scenario_carries_the_evidence_facts_its_ai_check_reads() -> N
     statement = "In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique."
     facts = ["The Anthropic AI-orchestrated Campaign used this technique."]
     content = {"title": "t", "statement": statement, "evidence": [{"facts": facts, "mitigations": []}]}
-    leases = container.get_threat_scenario_repository()
+    leases = scenario_crud.get_threat_scenario_repository()
     for claim in ("run", "id"):
         session_id, scenario_id = _waiting_scenario()
         get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"content": content}})
@@ -353,7 +341,7 @@ def test_a_claimed_scenario_carries_the_evidence_facts_its_ai_check_reads() -> N
 
 def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish() -> None:
     """T-CTL-06 (S33): one conditional update per claim; every later write fenced on the claim's task id."""
-    leases = container.get_threat_scenario_repository()
+    leases = scenario_crud.get_threat_scenario_repository()
     session_id, scenario_id = _waiting_scenario()
     first = leases.claim_scenario_controls(session_id, "worker-a")
     assert first is not None and first["_id"] == scenario_id and first["controls"]["attempts"] == 1
@@ -362,7 +350,7 @@ def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish(
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": expired})
     assert leases.claim_scenario_controls(session_id, "worker-b") is not None  # worker-a died: lease ran out
     assert not leases.update_scenario_controls(scenario_id, "worker-a", 1, Status.DONE, mapping={"items": []})
-    mapping = {"items": [{"control_id": 1}], "warning": None}
+    mapping = {"items": [{"control_id": 1}]}
     assert leases.update_scenario_controls(scenario_id, "worker-b", 2, Status.DONE, mapping=mapping)
     assert (_controls_of(scenario_id)["status"], _controls_of(scenario_id)["attempts"]) == (Status.DONE, 2)
 
@@ -370,13 +358,9 @@ def test_one_scenario_is_claimed_by_one_worker_and_a_stale_worker_cannot_finish(
 def test_a_claim_drops_the_last_outage_so_a_lost_worker_never_shows_it_again() -> None:
     """Owner 2026-10-20: the card tells the outage its controls wait out; once claimed again, that attempt's
     own outcome says why (a worker lost meanwhile requeues them with nothing stale on the card)."""
-    leases = container.get_threat_scenario_repository()
+    leases = scenario_crud.get_threat_scenario_repository()
     session_id, scenario_id = _waiting_scenario()
-    down = {
-        "code": ErrorCode.UNAVAILABLE,
-        "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN],
-        "reason": AiOutage.DOWN,
-    }
+    down = {"code": ErrorCode.UNAVAILABLE, "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN], "reason": AiOutage.DOWN}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"controls.error": down}})
     assert leases.claim_scenario_controls(session_id, "worker-a") is not None
     assert _controls_of(scenario_id).get("error") is None
@@ -385,7 +369,7 @@ def test_a_claim_drops_the_last_outage_so_a_lost_worker_never_shows_it_again() -
 def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
     """Celery reuses the task id on a redelivery: a hung copy and the copy that claimed again after its lease
     ran out share it, so only the attempts the newer claim counted let a write through."""
-    leases = container.get_threat_scenario_repository()
+    leases = scenario_crud.get_threat_scenario_repository()
     session_id, scenario_id = _waiting_scenario()
     hung = leases.claim_scenario_controls(session_id, "task-1")
     expired = {"controls.lease_until": datetime.now(UTC) - timedelta(seconds=1)}
@@ -396,14 +380,14 @@ def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> N
     assert not leases.update_scenario_controls(scenario_id, "task-1", stale, Status.RUNNING)
     late = {"code": "x", "message": "late"}
     assert not leases.update_scenario_controls(scenario_id, "task-1", stale, Status.FAILED, error=late)
-    mapping = {"items": [{"control_id": 1}], "warning": None}
+    mapping = {"items": [{"control_id": 1}]}
     assert leases.update_scenario_controls(scenario_id, "task-1", fresh, Status.DONE, mapping=mapping)
     assert _controls_of(scenario_id)["status"] == Status.DONE
 
 
 def test_an_outage_queues_the_mapping_again_until_its_last_attempt_fails_it() -> None:
     """T-CTL-07 (S33)."""
-    leases = container.get_threat_scenario_repository()
+    leases = scenario_crud.get_threat_scenario_repository()
     error = {"code": "unavailable", "message": "busy"}
     session_id, scenario_id = _waiting_scenario()
     leases.claim_scenario_controls(session_id, "w")
@@ -412,12 +396,8 @@ def test_an_outage_queues_the_mapping_again_until_its_last_attempt_fails_it() ->
     last = {"controls.attempts": Controls.MAX_ATTEMPTS - 1}
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": last})
     leases.claim_scenario_controls(session_id, "w")
-    assert leases.update_scenario_controls(
-        scenario_id, "w", Controls.MAX_ATTEMPTS, Status.QUEUED, error=error
-    )
-    assert (
-        _controls_of(scenario_id)["status"] == Status.FAILED and _controls_of(scenario_id)["error"] == error
-    )
+    assert leases.update_scenario_controls(scenario_id, "w", Controls.MAX_ATTEMPTS, Status.QUEUED, error=error)
+    assert _controls_of(scenario_id)["status"] == Status.FAILED and _controls_of(scenario_id)["error"] == error
 
 
 def test_the_sweep_never_maps_a_hand_written_scenario() -> None:
@@ -425,7 +405,7 @@ def test_the_sweep_never_maps_a_hand_written_scenario() -> None:
     long_ago = datetime.now(UTC) - timedelta(hours=1)
     run_id, scenario_id = _waiting_scenario(status=Status.FAILED, last_attempt_at=long_ago, attempts=1)
     get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"source": RunKind.MANUAL}})
-    assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
+    assert run_id not in work_control.sweep_stalled_controls()
     assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
@@ -441,7 +421,7 @@ def test_the_sweep_requeues_lost_dead_and_long_failed_mappings_only() -> None:
     )
     recent_failure = _waiting_scenario(status=Status.FAILED, last_attempt_at=now, attempts=1)
     fresh = _waiting_scenario()
-    touched = container.get_work_control_repository().sweep_stalled_controls()
+    touched = work_control.sweep_stalled_controls()
     assert {lost[0], dead[0], old_failure[0]} <= set(touched)
     assert not {recent_failure[0], fresh[0]} & set(touched)
     assert (
@@ -457,7 +437,7 @@ def test_the_sweep_never_requeues_a_failure_that_used_its_last_attempt() -> None
     run_id, scenario_id = _waiting_scenario(
         status=Status.FAILED, last_attempt_at=long_ago, attempts=Controls.MAX_ATTEMPTS
     )
-    assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
+    assert run_id not in work_control.sweep_stalled_controls()
     assert _controls_of(scenario_id)["status"] == Status.FAILED
 
 
@@ -465,20 +445,18 @@ def test_a_mapping_that_keeps_stopping_its_worker_is_given_up_after_its_last_att
     """Its lease expired on its last attempt: never claimed again, and the sweep fails it (job_abandoned)
     instead of queueing it for ever."""
     expired = datetime.now(UTC) - timedelta(seconds=1)
-    run_id, scenario_id = _waiting_scenario(
-        status=Status.RUNNING, lease_until=expired, attempts=Controls.MAX_ATTEMPTS
-    )
-    scenarios = container.get_threat_scenario_repository()
+    run_id, scenario_id = _waiting_scenario(status=Status.RUNNING, lease_until=expired, attempts=Controls.MAX_ATTEMPTS)
+    scenarios = scenario_crud.get_threat_scenario_repository()
     assert scenarios.claim_scenario_controls(run_id, "w") is None
     assert scenarios.claim_scenario_controls_by_id(scenario_id, "w:plan") is None
-    assert run_id not in container.get_work_control_repository().sweep_stalled_controls()
+    assert run_id not in work_control.sweep_stalled_controls()
     controls = _controls_of(scenario_id)
     assert (controls["status"], controls["error"]["code"]) == (Status.FAILED, ErrorCode.JOB_ABANDONED)
     assert get_mongodb()[Collection.SESSIONS].find_one({"_id": run_id})["counts"]["controls_failed"] == 1
 
 
 def test_an_older_count_never_overwrites_a_newer_one() -> None:
-    """T-CTL-07 (S33, BLUEPRINT Rule S12): two jobs refresh one run's counts; the later computation wins."""
+    """T-CTL-07 (S33): two jobs refresh one run's counts; the later computation wins."""
     sessions = get_mongodb()[Collection.SESSIONS]
     session_id, _ = _waiting_scenario()
     sessions.update_one({"_id": session_id}, {"$set": {"counts": {"written": 0}}})
@@ -508,35 +486,17 @@ def mapping_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {"record_id": record_id, "published": [], "sent": []}
     state["rerank"] = _ScoresByText({"Backup of controller logic": 87.0, "Backup policy": 70.0})
     state["search"] = SimpleNamespace(snapshot=lambda: _snapshot(*_CONTROLS))
-    monkeypatch.setattr(
-        container, "get_controls_job", lambda: _controls_job(state["search"], state["rerank"])
-    )
+    monkeypatch.setattr(controls_job, "get_library_search", lambda: state["search"])
+    monkeypatch.setattr(controls_job, "get_rerank_model", lambda: state["rerank"])
     monkeypatch.setattr(controls_job, "publish_session_status", state["published"].append)
     monkeypatch.setattr(controls_job, "send_job", lambda *args: state["sent"].append(args))
     return state
 
 
-def _controls_job(search: Any, rerank: Any) -> ControlsJob:
-    """The controls job as the app builds it, searching `search` and scoring with `rerank`."""
-    return ControlsJob(
-        container.get_threat_scenario_session_repository(),
-        container.get_threat_scenario_repository(),
-        container.get_work_control_repository(),
-        search,
-        rerank,
-    )
-
-
 def _deliver(record_id: str, task_id: str) -> int:
     """One tsg_map_controls delivery as the task makes it: the run's delivery lease first, then its turn. 0
     when another delivery holds the run (the message ends at once)."""
-    return container.get_controls_job().map_threat_scenario_controls(record_id, task_id)
-
-
-def test_the_control_mapping_job_reranks_as_background_work(mapping_run: dict[str, Any]) -> None:
-    """G222: on the laptop's CPU reranker a waiting scenario goes before the mapping job's reranks."""
-    assert _deliver(mapping_run["record_id"], "task-1") == 2
-    assert mapping_run["rerank"].in_background == [True, True]
+    return controls_job.map_threat_scenario_controls(record_id, task_id)
 
 
 def _run_record(record_id: str) -> dict[str, Any]:
@@ -553,21 +513,16 @@ def test_every_written_scenario_gets_its_controls_and_the_run_stops_waiting(
     assert session_status_from_record(waiting).step == "controls"
     mapping = controls_job.RunControls._map_one
     monkeypatch.setattr(  # each mapping takes 20 ms at least: the status adds up its controls time
-        controls_job.RunControls,
-        "_map_one",
-        lambda self, scenario: (time.sleep(0.02), mapping(self, scenario))[1],
+        controls_job.RunControls, "_map_one", lambda self, scenario: (time.sleep(0.02), mapping(self, scenario))[1]
     )
     assert _deliver(record_id, "task-1") == 2
     mapped = _controls_of(f"{record_id}-1")
     assert mapped["status"] == Status.DONE and [item["code"] for item in mapped["items"]] == ["C-OT", "C-ANY"]
-    # G200: the threshold "exact" meant for this mapping is kept with it.
+    # made_with keeps what the shortlist reuse check compares.
     assert set(mapped["made_with"]) == {
-        "rerank_model", "embedding_model", "query_instruction", "library", "threshold",
-        "candidates", "min_controls", "max_controls", "nearest_controls", "query_shortened", "mitigations",
-        "ai_controls",
+        "rerank_model", "embedding_model", "query_instruction", "library", "candidates", "ai_controls",
     }  # fmt: skip
-    assert mapped["made_with"]["mitigations"] == []  # G234: written without intelligence, none guided it
-    assert mapped["made_with"]["threshold"] == 60.0 and mapped["query"]
+    assert "Mitigations" not in mapped["query"]  # G234: written without intelligence, none guided it
     assert _run_record(record_id)["counts"]["controls_waiting"] == 0
     assert _run_record(record_id)["timings"]["controls_s"] >= 0.04  # the two mappings, added up
     assert mapping_run["published"] == [record_id] * 2
@@ -583,21 +538,17 @@ def test_the_controls_time_counts_the_latest_actions_scenarios_only(
     record_id = mapping_run["record_id"]
     now = datetime.now(UTC)
     scenarios = get_mongodb()[Collection.SCENARIOS]
-    scenarios.update_one(
-        {"_id": f"{record_id}-1"}, {"$set": {"controls.queued_at": now - timedelta(hours=1)}}
-    )
+    scenarios.update_one({"_id": f"{record_id}-1"}, {"$set": {"controls.queued_at": now - timedelta(hours=1)}})
     get_mongodb()[Collection.SESSIONS].update_one(
-        {"_id": record_id},
-        {"$set": {"last_action": {"kind": "next_set", "started_at": now - timedelta(minutes=1)}}},
+        {"_id": record_id}, {"$set": {"last_action": {"kind": "next_set", "started_at": now - timedelta(minutes=1)}}}
     )
     mapping = controls_job.RunControls._map_one
     monkeypatch.setattr(
         controls_job.RunControls,
         "_map_one",
-        lambda self, scenario: (
-            time.sleep(0.3 if scenario["_id"].endswith("-1") else 0.02),
-            mapping(self, scenario),
-        )[1],
+        lambda self, scenario: (time.sleep(0.3 if scenario["_id"].endswith("-1") else 0.02), mapping(self, scenario))[
+            1
+        ],
     )
     assert _deliver(record_id, "task-1") == 2
     assert 0.02 <= _run_record(record_id)["timings"]["controls_s"] < 0.3  # the next set's scenario alone
@@ -619,11 +570,7 @@ def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps
         _deliver(record_id, "task-1")
     first = _controls_of(f"{record_id}-1")
     assert (first["status"], first["attempts"]) == (Status.QUEUED, 1)
-    down = {
-        "code": ErrorCode.UNAVAILABLE,
-        "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN],
-        "reason": AiOutage.DOWN,
-    }
+    down = {"code": ErrorCode.UNAVAILABLE, "message": AI_OUTAGE_MESSAGES[AiOutage.DOWN], "reason": AiOutage.DOWN}
     assert first["error"] == down
     mapping_run["rerank"] = _ScoresByText({"Backup policy": 70.0})
     mapping_run["search"] = SimpleNamespace(
@@ -634,7 +581,7 @@ def test_an_outage_gives_the_scenario_back_and_no_control_of_the_type_still_maps
     for number in (1, 2):
         controls = _controls_of(f"{record_id}-{number}")
         assert (controls["status"], [item["code"] for item in controls["items"]]) == (Status.DONE, ["C-IT"])
-        assert controls["warning"].startswith("No control of asset type(s) ")
+        assert "another type than the scenario's" in controls["items"][0]["rationale"]
     assert _controls_of(f"{record_id}-1").get("error") is None  # mapped: the outage is no longer told
 
 
@@ -667,17 +614,13 @@ def test_the_sweep_sends_one_message_per_run_it_requeued(mapping_run: dict[str, 
     assert mapping_run["sent"].count((TaskName.MAP_CONTROLS, record_id, 0)) == 1
 
 
-def test_an_accepted_version_a_regenerate_replaced_still_gets_its_controls(
-    mapping_run: dict[str, Any],
-) -> None:
+def test_an_accepted_version_a_regenerate_replaced_still_gets_its_controls(mapping_run: dict[str, Any]) -> None:
     """G139 (S41 review): a regenerate may replace an accepted version while its controls still wait; the
     reviewer still works with it, so it is mapped (and counted as waiting until then). A replaced pending
     version is not: nobody is shown it."""
     record_id = mapping_run["record_id"]
     scenario_collection = get_mongodb()[Collection.SCENARIOS]
-    scenario_collection.update_one(
-        {"_id": f"{record_id}-1"}, {"$set": {"superseded_by": "v2", "decision": "accepted"}}
-    )
+    scenario_collection.update_one({"_id": f"{record_id}-1"}, {"$set": {"superseded_by": "v2", "decision": "accepted"}})
     # G148: a replaced rejected version is not mapped either (nobody works with it).
     scenario_collection.update_one(
         {"_id": f"{record_id}-2"}, {"$set": {"superseded_by": "v2b", "decision": "rejected"}}
@@ -765,8 +708,7 @@ def _two_queries_kept(mapping_run: dict[str, Any], monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(get_settings(), "rerank_base_url", "http://rerank.invalid")
     for number in (1, 2):
         get_mongodb()[Collection.SCENARIOS].update_one(
-            {"_id": f"{mapping_run['record_id']}-{number}"},
-            {"$set": {"content.title": f"Backup lost {number}"}},
+            {"_id": f"{mapping_run['record_id']}-{number}"}, {"$set": {"content.title": f"Backup lost {number}"}}
         )
     embeddings = _KeptQueryVectors()
     snapshot = _snapshot(*_CONTROLS, embeddings=embeddings)
@@ -926,9 +868,7 @@ def test_alternatives_are_the_next_best_fitting_controls_never_an_identified_one
     the scenario's place, best first, at most `count`, none identified and none an identified one's twin."""
     controls = (
         *_CONTROLS,
-        LibraryControl(
-            4, "C-OT-2", "OT", "BCDR", "Offline backup", "Keep an offline backup copy"
-        ),  # C-IT's twin
+        LibraryControl(4, "C-OT-2", "OT", "BCDR", "Offline backup", "Keep an offline backup copy"),  # C-IT's twin
         LibraryControl(5, "C-OT-3", "OT", "Network", "Network segmentation", "Separate the OT network"),
         LibraryControl(6, "C-OT-4", "OT", "Access", "Access review", "Review who can reach the PLC"),
     )
@@ -940,9 +880,13 @@ def test_alternatives_are_the_next_best_fitting_controls_never_an_identified_one
             "Access review": 40.0,
         }
     )
-    mapper = ControlMapper(rerank)  # type: ignore[arg-type]
-    found = mapper.find_alternative_controls(
-        _SCENARIO, _OT_CONTEXT, _snapshot(*controls), identified=[2, 1], count=2
+    found = find_alternative_controls(
+        rerank,  # type: ignore[arg-type]
+        _SCENARIO,
+        _OT_CONTEXT,
+        _snapshot(*controls),
+        identified=[2, 1],
+        count=2,
     )
     assert [(control.code, score) for control, score in found] == [("C-OT-3", 70.0), ("C-OT-4", 40.0)]
-    assert mapper.find_alternative_controls(_SCENARIO, _OT_CONTEXT, _snapshot(), identified=[], count=2) == []
+    assert find_alternative_controls(rerank, _SCENARIO, _OT_CONTEXT, _snapshot(), identified=[], count=2) == []  # type: ignore[arg-type]

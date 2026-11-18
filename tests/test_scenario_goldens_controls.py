@@ -11,8 +11,9 @@ import pytest
 
 from app.core.constants import Controls
 from app.core.exceptions import ControlsNotMapped
-from app.domain.scenario.write import ControlMapper, build_controls_record
-from app.models.library.library import LibraryControl, ThreatLibrary
+from app.domain.scenario.write import find_alternative_controls, map_controls
+from app.schemas.library import LibraryControl, ThreatLibrary
+from app.schemas.scenario_internal import FrozenContext
 from app.search.service import LibrarySearch
 from app.worker.scenario.controls_job import RunControls
 from tests.scenario_goldens import GOLDENS, RecordingEmbeddings, check_golden
@@ -62,8 +63,8 @@ def _snapshot(controls: tuple[LibraryControl, ...]) -> tuple[Any, RecordingEmbed
 
 def _map(card: dict[str, Any], rerank: _Reranker, controls: tuple[LibraryControl, ...] = CONTROLS) -> Any:
     snapshot, embeddings = _snapshot(controls)
-    mapping = ControlMapper(rerank).map_controls(card, THREE_SYSTEMS, snapshot)  # type: ignore[arg-type]
-    return {"record": build_controls_record(mapping, snapshot), "embeddings": embeddings.texts}
+    record = map_controls(rerank, card, THREE_SYSTEMS, snapshot)  # type: ignore[arg-type]
+    return {"record": record, "embeddings": embeddings.texts}
 
 
 def test_golden_controls_for_every_card() -> None:
@@ -74,20 +75,14 @@ def test_golden_controls_for_every_card() -> None:
 
 def _about_ai(card: dict[str, Any]) -> dict[str, Any]:
     card = copy.deepcopy(card)
-    card["content"]["threat"] |= {
-        "name": "Poisoning of the AI model that forecasts load",
-        "type": "AI misuse",
-    }
+    card["content"]["threat"] |= {"name": "Poisoning of the AI model that forecasts load", "type": "AI misuse"}
     return card
 
 
 def test_golden_controls_nearest_other_type_ai_and_empty() -> None:
     card, low = CARDS[0], _Reranker(dict.fromkeys(SCORES, 30.0))
     it_only = tuple(control for control in CONTROLS if control.asset_type == "IT")
-    outcomes: dict[str, Any] = {
-        "nearest_only": _map(card, low),
-        "other_type": _map(card, _Reranker(SCORES), it_only),
-    }
+    outcomes: dict[str, Any] = {"nearest_only": _map(card, low), "other_type": _map(card, _Reranker(SCORES), it_only)}
     ai_rerank = _Reranker(SCORES)
     outcomes["about_ai"] = _map(_about_ai(card), ai_rerank) | {"reranks": ai_rerank.calls}
     with pytest.raises(ControlsNotMapped) as empty:
@@ -100,27 +95,22 @@ def test_golden_controls_nearest_other_type_ai_and_empty() -> None:
 def test_golden_control_alternatives_reused_and_searched_again() -> None:
     card, rerank = CARDS[1], _Reranker(SCORES)
     snapshot, _ = _snapshot(CONTROLS)
-    mapper = ControlMapper(rerank)  # type: ignore[arg-type]
-    record = build_controls_record(mapper.map_controls(card, THREE_SYSTEMS, snapshot), snapshot)
+    record = map_controls(rerank, card, THREE_SYSTEMS, snapshot)  # type: ignore[arg-type]
     before = len(rerank.calls)
-    reused = mapper.find_alternative_controls(card, THREE_SYSTEMS, snapshot, {2}, 3, record)
+    reused = find_alternative_controls(rerank, card, THREE_SYSTEMS, snapshot, {2}, 3, record)  # type: ignore[arg-type]
     reused_calls = len(rerank.calls) - before
     stale = copy.deepcopy(record)
     stale["made_with"]["candidates"] = 1
-    searched = mapper.find_alternative_controls(card, THREE_SYSTEMS, snapshot, {2, 4}, 2, stale)
+    searched = find_alternative_controls(rerank, card, THREE_SYSTEMS, snapshot, {2, 4}, 2, stale)  # type: ignore[arg-type]
     plain = [[(control.control_id, score) for control, score in found] for found in (reused, searched)]
-    outcome = {
-        "reused": plain[0],
-        "reused_calls": reused_calls,
-        "searched": plain[1],
-        "reranks": rerank.calls,
-    }
+    outcome = {"reused": plain[0], "reused_calls": reused_calls, "searched": plain[1], "reranks": rerank.calls}
     check_golden("controls_alternatives", outcome)
 
 
 def test_golden_control_queries_embedded_in_one_call() -> None:
     snapshot, embeddings = _snapshot(CONTROLS)
-    run = RunControls("run", "task", THREE_SYSTEMS.to_record(), None, None, snapshot, None)  # type: ignore[arg-type]
+    run = RunControls("run", "task", snapshot, None)  # type: ignore[arg-type]
+    run._context = FrozenContext.from_record(THREE_SYSTEMS.to_record())
     # each claimed scenario has its own id; the fixture's original and evidence cards share theirs
     run._embed_queries([card | {"_id": f"{card['_id']}-{place}"} for place, card in enumerate(CARDS)])
     check_golden("controls_embedded", {"embeddings": embeddings.texts})

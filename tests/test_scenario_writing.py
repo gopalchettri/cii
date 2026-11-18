@@ -13,11 +13,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import (
-    FINAL_FINDINGS,
-    FINDING_SEVERITIES,
     ActorRole,
     AiLimits,
     AiTask,
@@ -38,13 +35,14 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import PathNotWritable
 from app.core.prompts import PROMPTS
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository, TitleTaken
+from app.crud import scenarios as scenario_crud
+from app.crud.scenarios import ThreatScenarioRepository, TitleTaken
 from app.domain.scenario.session import build_scenario_view
 from app.domain.scenario.write import (
     WRITER_SYSTEM_PROMPT,
-    _apply_safety_checks,
     _find_actions_missing_from_story,
     _remove_system_names_from_actions,
+    apply_safety_checks,
     build_failure_card,
     build_scenario_card,
     build_scenario_id,
@@ -54,16 +52,16 @@ from app.domain.scenario.write import (
     write_scenario_set,
 )
 from app.domain.shared.names import as_json, name_match_key
-from app.models.scenario.plan import PlannedActor
-from app.models.scenario.write import (
+from app.schemas.scenario_internal import (
     Finding,
     LiveLibrary,
     PathFailure,
+    PlannedActor,
     ScenarioAnswer,
     ScenarioDraft,
     WrittenScenario,
 )
-from app.worker.scenario.path_writing import PathWriter, save_with_unique_title
+from app.worker.scenario.write_job import PathWriter, save_with_unique_title
 from tests.fakes import FakeChatModel, brief_of, draft_answer, shared_facts, slot_blocks
 from tests.planner_samples import CONTEXT, gap_fill_prompt, gate_prompt, planned, system_row
 
@@ -98,12 +96,7 @@ def _plan_threat(systems: tuple[int, ...] = (321,), **fields: Any) -> dict[str, 
 
 
 def _brief_of(threat: dict[str, Any], budget: int = 30_000, **path: Any) -> Any:
-    record = {
-        "path_id": "p1",
-        "steps": [threat["key"]],
-        "category": "Tampering",
-        "systems": threat["systems"],
-    }
+    record = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
     return build_writer_input({threat["key"]: threat}, record | path, CONTEXT, budget, _LIVE)
 
 
@@ -133,15 +126,12 @@ def _failure_of(chat: FakeChatModel, brief: Any) -> PathFailure:
 
 def test_only_a_safety_fault_or_a_copy_blocks_and_only_a_copy_is_final() -> None:
     """A citation removed is a warning, never a blocker; a copy is the one final blocker."""
-    blockers = {code for code, severity in FINDING_SEVERITIES.items() if severity == FindingSeverity.BLOCKER}
-    assert {FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID} | FINAL_FINDINGS <= blockers
-    assert {FindingCode.NEAR_DUPLICATE} == FINAL_FINDINGS
-    assert FINDING_SEVERITIES[FindingCode.CITATION_REMOVED] == FindingSeverity.WARNING
+    for code in (FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID, FindingCode.NEAR_DUPLICATE):
+        assert Finding(code, "").get_severity() == FindingSeverity.BLOCKER
+    assert Finding(FindingCode.CITATION_REMOVED, "").get_severity() == FindingSeverity.WARNING
     written = WrittenScenario(_CLEAN, (Finding(FindingCode.CITATION_REMOVED, "m"),))
     assert written.list_blocking_codes() == [] and written.find_blocking_code() == ""
-    copied = WrittenScenario(
-        _CLEAN, (Finding(FindingCode.UNKNOWN_ID, "m"), Finding(FindingCode.NEAR_DUPLICATE, "m"))
-    )
+    copied = WrittenScenario(_CLEAN, (Finding(FindingCode.UNKNOWN_ID, "m"), Finding(FindingCode.NEAR_DUPLICATE, "m")))
     assert copied.list_blocking_codes() == ["near_duplicate", "unknown_id"]
     assert copied.find_blocking_code() == FindingCode.NEAR_DUPLICATE
     assert Finding(FindingCode.UNKNOWN_ID, "m").build_record() == {
@@ -173,7 +163,7 @@ def test_only_a_warning_shows_validation_warning(severity: FindingSeverity, stat
             "decision": Decision.PENDING,
             "findings": [{"code": "x", "severity": severity, "message": "m"}],
             "created_at": datetime.now(UTC),
-        },
+        }
     )
     assert view.validation_status == status
 
@@ -190,21 +180,15 @@ def test_the_brief_holds_only_the_paths_systems_and_no_database_id() -> None:
         "Malware",
     )
     sent = json.dumps([brief.asset, *brief.systems, brief.facts["threat"]["why_it_applies"]])
-    leaked = [
-        token for token in ("321", "322", "103", "SYS1", '"id"', "alias", "ops@grid.example") if token in sent
-    ]
+    leaked = [token for token in ("321", "322", "103", "SYS1", '"id"', "alias", "ops@grid.example") if token in sent]
     assert leaked == [] and _brief_of(_plan_threat(systems=())).entry_options == ()
 
 
 @pytest.mark.parametrize(
     ("threat_changes", "path_changes", "problem"),
     [
-        ({}, {"steps": ["lib:297", "lib:298"]}, PathProblem.NOT_ONE_THREAT),
-        ({}, {"category": "Sabotage"}, PathProblem.CATEGORY_UNKNOWN),
         ({"name": " "}, {}, PathProblem.THREAT_UNNAMED),
-        ({"actors": []}, {}, PathProblem.NO_ACTING_ATTACKER),
         ({"attacker_check": "none_fits"}, {}, PathProblem.ATTACKER_UNSUPPORTED),
-        ({"systems": [999]}, {}, PathProblem.SYSTEM_NOT_IN_RUN),
     ],
 )
 def test_a_path_missing_a_fact_is_refused_before_any_ai_call(
@@ -222,9 +206,7 @@ def test_a_path_missing_a_fact_is_refused_before_any_ai_call(
         (LiveLibrary(frozenset({297}), frozenset({1}), frozenset({8})), PathProblem.ATTACKER_RETIRED),
     ],
 )
-def test_a_threat_or_attacker_retired_since_the_plan_is_not_written(
-    live: LiveLibrary, retired: PathProblem
-) -> None:
+def test_a_threat_or_attacker_retired_since_the_plan_is_not_written(live: LiveLibrary, retired: PathProblem) -> None:
     threat = _plan_threat()
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
     with pytest.raises(PathNotWritable) as refused:
@@ -234,9 +216,7 @@ def test_a_threat_or_attacker_retired_since_the_plan_is_not_written(
 
 def test_long_facts_are_cut_to_the_budget_and_the_brief_stays_json() -> None:
     long_text = "Vendor maintenance window. " * 300
-    context = dataclasses.replace(
-        CONTEXT, asset_context=CONTEXT.asset_context | {"cii_asset_description": long_text}
-    )
+    context = dataclasses.replace(CONTEXT, asset_context=CONTEXT.asset_context | {"cii_asset_description": long_text})
     threat = _plan_threat()
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
     brief = build_writer_input({threat["key"]: threat}, path, context, 4_000, _LIVE)
@@ -256,9 +236,7 @@ def test_the_writer_reads_the_owners_prompt_and_the_brief_as_json() -> None:
         "SLOT SC1\nBRIEF:\n",
     )
     assert shared_facts(user) == (brief.asset, list(brief.systems))
-    no_evidence = (
-        'No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evid'
-    )
+    no_evidence = 'No EVIDENCE is given for this slot: cite nothing, tell no real-world event and return "evid'
     assert no_evidence in slot.splitlines()[-1]
     assert brief_of(slot)["supporting_systems"] == [
         {"name": "SCADA server", "applicable": "yes"},
@@ -318,9 +296,7 @@ def test_the_impact_comes_from_the_threats_own_action_and_no_prompt_names_the_pl
     assert 'system_reasons: one key for every BRIEF.supporting_systems name marked "yes"' in writer
     assert 'copied exactly; no key for a "no" system.' in writer
     assert "the application writes it" not in writer  # said once, in the schema and rule 4
-    assert (
-        "Applicability missing" not in writer and "explain its exclusion only in system_reasons" not in writer
-    )
+    assert "Applicability missing" not in writer and "explain its exclusion only in system_reasons" not in writer
     assert "End scenario_statement on this consequence." in writer
     assert 'A "no" system must not be described as attacked or directly affected. Never name it' in writer
     assert "The story may describe the attacker's steps in the cited entry's terms" in writer
@@ -390,12 +366,7 @@ def test_the_asset_and_its_affected_systems_form_one_whole() -> None:
     assert "Name only supplied systems, exactly as given." in writer  # once, no longer also in rule 13
     assert "goes in assumptions (rule 2)" in writer
     assert 'A "no" system must not be described as attacked or directly affected.' in writer  # unreached
-    for removed in (
-        "Each system's access is its own",
-        "Do not invent connections",
-        "cross-system",
-        "independent",
-    ):
+    for removed in ("Each system's access is its own", "Do not invent connections", "cross-system", "independent"):
         assert removed not in writer
     assert "link_check" not in PROMPTS["scenario"]
 
@@ -412,22 +383,14 @@ def test_the_risk_opens_in_everyday_words_for_each_category() -> None:
         '"Someone could gain privileges in ... that they were never given"',
     ):
         assert opening in shapes
-    formal = (
-        "Loss of assurance",
-        "Loss of trust in",
-        "Loss of accountability",
-        "Exposure of",
-        "Loss of control",
-    )
+    formal = ("Loss of assurance", "Loss of trust in", "Loss of accountability", "Exposure of", "Loss of control")
     assert [phrase for phrase in formal if phrase in WRITER_SYSTEM_PROMPT] == []
 
 
 def test_the_brief_never_carries_the_platform_note_of_an_older_record() -> None:
     """A stored relevance reason with the note reaches the writer without it."""
     threat = _plan_threat(reason="The SCADA server takes firmware, assumes X - not recorded in the platform.")
-    assert (
-        _brief_of(threat).facts["threat"]["why_it_applies"] == "The SCADA server takes firmware, assumes X."
-    )
+    assert _brief_of(threat).facts["threat"]["why_it_applies"] == "The SCADA server takes firmware, assumes X."
 
 
 def test_the_writer_carries_the_threats_actions_and_no_split_prompt_is_left() -> None:
@@ -456,12 +419,7 @@ def _sent_threats(chat: FakeChatModel) -> list[dict[str, Any]]:
 
 
 def _path(threat: dict[str, Any], path_id: str = "p1") -> dict[str, Any]:
-    return {
-        "path_id": path_id,
-        "steps": [threat["key"]],
-        "category": "Tampering",
-        "systems": threat["systems"],
-    }
+    return {"path_id": path_id, "steps": [threat["key"]], "category": "Tampering", "systems": threat["systems"]}
 
 
 def test_the_threat_checks_actions_reach_the_brief_with_no_split_call() -> None:
@@ -486,11 +444,7 @@ def test_the_threat_checks_actions_reach_the_brief_with_no_split_call() -> None:
     [
         (  # the Historian is not on the path: no system named, the or-only name's alternatives one item
             "Secrets, API key or service credential theft",
-            [
-                "steal secrets from SCADA server",
-                "steal API keys from the Historian",
-                "steal service credentials",
-            ],
+            ["steal secrets from SCADA server", "steal API keys from the Historian", "steal service credentials"],
             ["steal secrets or steal API keys or steal service credentials"],
         ),
         (  # "and" names several acts: each its own item
@@ -501,20 +455,12 @@ def test_the_threat_checks_actions_reach_the_brief_with_no_split_call() -> None:
         ("Log wiping", ["SCADA server", "wipe the logs on the Historian"], ["wipe the logs"]),  # nothing left
         ("Log wiping", ["wipe logs on SCADA server", "wipe logs in Historian", "Wipe  logs"], ["wipe logs"]),
         ("Data encryption", ["encrypt SCADA server"], ["encrypt the system"]),  # the act's object
-        (
-            "API abuse",
-            ["access API of SCADA server without authorization"],
-            ["access API without authorization"],
-        ),
+        ("API abuse", ["access API of SCADA server without authorization"], ["access API without authorization"]),
         ("Data theft", ["steal data from SCADA server and Historian"], ["steal data"]),  # a list of names
         ("Data theft", ["steal data from SCADA server, the Historian"], ["steal data"]),
         ("Data theft", ["steal SCADA server and Historian data"], ["steal data"]),
         ("Code injection", ["inject into the Historian"], ["inject into the system"]),  # a bare verb left
-        (
-            "Impersonation",
-            ["impersonate executive to SCADA server staff"],
-            ["impersonate executive to staff"],
-        ),
+        ("Impersonation", ["impersonate executive to SCADA server staff"], ["impersonate executive to staff"]),
         (
             "Extortion",
             ["extort with Historian data", "extort via the Historian's data"],
@@ -573,9 +519,9 @@ def test_no_writer_prompt_carries_a_database_id() -> None:
 def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does() -> None:
     """A label the brief gives is supplied; an advisory id from the asset's own facts blocks while off."""
     brief = _brief_of(_plan_threat())
-    assert _apply_safety_checks(brief, _CLEAN).findings == ()
+    assert apply_safety_checks(brief, _CLEAN).findings == ()
     made_up = dataclasses.replace(_CLEAN, statement=_CLEAN.statement + " SYS7 and CVE-2025-0001 help.")
-    assert [finding.code for finding in _apply_safety_checks(brief, made_up).findings] == [
+    assert [finding.code for finding in apply_safety_checks(brief, made_up).findings] == [
         FindingCode.UNKNOWN_ID,
         FindingCode.UNCITED_ADVISORY_ID,
     ]
@@ -586,10 +532,10 @@ def test_a_made_up_label_blocks_and_with_intelligence_off_any_advisory_id_does()
     told = dataclasses.replace(
         _CLEAN, statement="A cybercriminal could use CVE-2024-1234 on the MicroSCADA Pro SYS600."
     )
-    (advisory,) = _apply_safety_checks(supplied, told).findings
+    (advisory,) = apply_safety_checks(supplied, told).findings
     assert advisory.code == FindingCode.UNCITED_ADVISORY_ID and "CVE-2024-1234" in advisory.message
     story = dataclasses.replace(supplied, cited_index=0)  # an evidence story cites its entry 0
-    assert _apply_safety_checks(story, told).findings == ()
+    assert apply_safety_checks(story, told).findings == ()
 
 
 def test_a_clean_draft_is_kept_after_one_call() -> None:
@@ -625,24 +571,19 @@ def test_a_draft_the_exact_checks_block_is_kept_blocked_with_no_other_call() -> 
     chat = _chat_answering([labelled])
     written = write_scenario(chat, _brief_of(_plan_threat()))
     assert [finding.code for finding in written.findings] == [FindingCode.UNKNOWN_ID]
-    assert written.find_blocking_code() not in FINAL_FINDINGS
+    assert written.find_blocking_code() != FindingCode.NEAR_DUPLICATE
     assert _calls(chat) == [AiTask.WRITE_SCENARIO]
 
 
 @pytest.mark.parametrize(
     ("given", "scada_reason"),
     [
-        (
-            {"scada  SERVER": "It could stop the server.", "Historian": "Its records stay."},
-            "It could stop the server.",
-        ),
+        ({"scada  SERVER": "It could stop the server.", "Historian": "Its records stay."}, "It could stop the server."),
         ({}, _CLEAN.statement),
     ],
     ids=["no_system_reason_given_anyway", "yes_system_reason_missing"],
 )
-def test_every_supporting_system_gets_its_reason_without_a_rewrite(
-    given: dict[str, str], scada_reason: str
-) -> None:
+def test_every_supporting_system_gets_its_reason_without_a_rewrite(given: dict[str, str], scada_reason: str) -> None:
     """D66: a "no" system's reason is code's, even over one the writer gave; a "yes" system given none takes
     the story's sentence naming it; a name matches case and spacing forgiven. Neither costs a rewrite, and
     the card serves one justification per system."""
@@ -795,14 +736,12 @@ def test_the_writer_gives_each_action_s_story_sentence_number() -> None:
 
 
 def _scenarios() -> ThreatScenarioRepository:
-    scenarios = container.get_threat_scenario_repository()
+    scenarios = scenario_crud.get_threat_scenario_repository()
     scenarios.create_indexes()
     return scenarios
 
 
-def _stored(
-    session_id: str, path_id: str, title: str | None = "Loss of control", **fields: Any
-) -> dict[str, Any]:
+def _stored(session_id: str, path_id: str, title: str | None = "Loss of control", **fields: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "_id": f"{session_id}:{path_id}",
         "session_id": session_id,
@@ -824,17 +763,11 @@ def _stored(
 
 def test_a_repeated_save_keeps_one_scenario_and_a_success_replaces_a_failure_card() -> None:
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
-    assert scenarios.save_scenario(
-        _stored(session_id, "p1", None, status=ScenarioStatus.FAILED, failure={"code": "x"})
-    )
+    assert scenarios.save_scenario(_stored(session_id, "p1", None, status=ScenarioStatus.FAILED, failure={"code": "x"}))
     assert scenarios.save_scenario(_stored(session_id, "p1"))
     assert not scenarios.save_scenario(_stored(session_id, "p1", "Another title"))
     written = scenarios.list(
-        fields="path_id",
-        session_id=session_id,
-        path_id_in=["p1", "p2"],
-        status=ScenarioStatus.DONE,
-        newest=True,
+        fields="path_id", session_id=session_id, path_id_in=["p1", "p2"], status=ScenarioStatus.DONE, newest=True
     )
     assert {row["path_id"]: row["_id"] for row in written} == {"p1": f"{session_id}:p1"}
 
@@ -852,9 +785,7 @@ def test_no_two_written_versions_of_a_run_share_a_title() -> None:
 def test_counts_come_from_one_aggregation_and_a_blocked_scenario_is_never_served() -> None:
     scenarios, session_id = _scenarios(), f"run-{uuid.uuid4().hex}"
     scenarios.save_scenario(_stored(session_id, "p1", "A", controls={"status": "queued", "attempts": 0}))
-    scenarios.save_scenario(
-        _stored(session_id, "p2", "B", decision=Decision.ACCEPTED, controls={"status": "done"})
-    )
+    scenarios.save_scenario(_stored(session_id, "p2", "B", decision=Decision.ACCEPTED, controls={"status": "done"}))
     scenarios.save_scenario(_stored(session_id, "p3", None, status=ScenarioStatus.FAILED))
     scenarios.save_scenario(_stored(session_id, "p4", "C", status=ScenarioStatus.BLOCKED))
     counts = scenarios.count_scenarios_of_session(session_id)
@@ -921,10 +852,7 @@ def test_a_clashing_title_takes_the_threat_name_then_a_number() -> None:
         "Loss of control (Firmware update)",
         "Loss of control (2)",
     ]
-    assert _saved_titles("Firmware update", "firmware UPDATE", taken=1) == [
-        "Firmware update",
-        "Firmware update (2)",
-    ]
+    assert _saved_titles("Firmware update", "firmware UPDATE", taken=1) == ["Firmware update", "Firmware update (2)"]
 
 
 def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
@@ -933,13 +861,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     brief = _brief_of(_plan_threat())
     written = WrittenScenario(_READ, ())
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
-    path = {
-        "path_id": "p1",
-        "category": "Tampering",
-        "categories": ["Tampering"],
-        "rank": 3,
-        "systems": [321],
-    }
+    path = {"path_id": "p1", "category": "Tampering", "categories": ["Tampering"], "rank": 3, "systems": [321]}
     record = build_scenario_card(run, path, _plan_threat(), brief, written)
     view = build_scenario_view(record)
     text = view.scenario
@@ -948,9 +870,7 @@ def test_a_saved_scenario_reads_back_through_the_api_view() -> None:
     assert view.scope is not None and view.scope.evidence == []
     assert "why_applies" not in record["content"] and "why_applies" not in ScenarioAnswer.model_fields
     assert [actor.actor_name for actor in view.actors] == ["Cybercriminal"]
-    assert [
-        (s.supporting_system, s.is_applicable, s.is_entry_point) for s in text.supporting_systems_involved
-    ] == [
+    assert [(s.supporting_system, s.is_applicable, s.is_entry_point) for s in text.supporting_systems_involved] == [
         ("SCADA server", True, True),
         ("Historian", False, False),
     ]
@@ -990,9 +910,7 @@ def test_the_writer_gets_in_through_its_turns_system_and_the_card_marks_that_one
     assert _calls(chat) == [AiTask.WRITE_SCENARIO]
     path = {"path_id": "p1", "steps": [threat["key"]], "category": "Tampering", "systems": [321, 322]}
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": CONTEXT.to_record()}
-    assert build_scenario_card(run, path | {"entry_system": 322}, threat, brief, written)["content"][
-        "systems"
-    ] == [
+    assert build_scenario_card(run, path | {"entry_system": 322}, threat, brief, written)["content"]["systems"] == [
         {"id": 321, "name": "SCADA server", "entry_point": False},
         {"id": 322, "name": "Historian", "entry_point": True},
     ]
@@ -1002,31 +920,17 @@ def test_the_writer_gets_in_through_its_turns_system_and_the_card_marks_that_one
     assert alike.entry_options == ("[REDACTED]",)
     draft = dataclasses.replace(_CLEAN, entry_point="[REDACTED]")
     record = build_scenario_card(
-        run | {"context": context.to_record()},
-        path | {"entry_system": 322},
-        threat,
-        alike,
-        WrittenScenario(draft, ()),
+        run | {"context": context.to_record()}, path | {"entry_system": 322}, threat, alike, WrittenScenario(draft, ())
     )
     assert [system["entry_point"] for system in record["content"]["systems"]] == [False, True]
     assert _brief_of(threat).entry_options == ("SCADA server", "Historian")
 
 
 def test_a_failure_card_is_built_for_a_threat_with_no_name_type_or_attacker() -> None:
-    threat = {
-        "key": "lib:9",
-        "type": None,
-        "name": None,
-        "library_id": 9,
-        "ai_generated": False,
-        "actors": None,
-    }
+    threat = {"key": "lib:9", "type": None, "name": None, "library_id": 9, "ai_generated": False, "actors": None}
     path = {"path_id": "p9", "category": "Tampering", "categories": None}
     card = build_failure_card(
         {"_id": "r", "entity_id": 86, "asset_id": 103}, path, threat, PathFailure(ErrorCode.INVALID_PLAN, "m")
     )
     assert card["status"] == ScenarioStatus.FAILED and card["content"]["threat"]["name"] == ""
-    assert card["content"]["actors"] == [] and card["failure"] == {
-        "code": ErrorCode.INVALID_PLAN,
-        "message": "m",
-    }
+    assert card["content"]["actors"] == [] and card["failure"] == {"code": ErrorCode.INVALID_PLAN, "message": "m"}

@@ -7,7 +7,7 @@ paths, no login.
     python scripts/monitoring.py stop      stop them all
 
 Then open http://localhost:3000/grafana/ — the TSG dashboard is the home page.
-For logs in Grafana, run the API and the worker with CII_LOG_DIR=logs (docs/RUNNING.md).
+For logs in Grafana, run the API and the worker with CII_LOG_DIR=logs (run.ps1 sets it).
 Grafana's admin password (user admin, only needed to change Grafana): a GRAFANA_ADMIN_PASSWORD line in .env;
 without one, a random one kept in grafana-admin-password.txt next to the tools.
 Versions come from the `image:` lines of deploy/deploy_common.yaml, so the laptop runs what UAT runs.
@@ -175,9 +175,7 @@ def start() -> int:
     stop(quiet=True)
     busy = _busy_ports_after(5)
     if busy:
-        raise SystemExit(
-            f"ports in use by another program: {busy} (v1's monitoring uses the same: stop it first)"
-        )
+        raise SystemExit(f"ports in use by another program: {busy} (v1's monitoring uses the same: stop it first)")
     for folder in ("logs", "data/grafana", "data/loki", "data/prometheus", "data/alertmanager", "data/alloy"):
         (ROOT / folder).mkdir(parents=True, exist_ok=True)  # Grafana does not create its own on Windows
     reset_grafana_password()
@@ -199,12 +197,7 @@ def _install() -> int:
 
 def main(argv: list[str]) -> int:
     # Every command returns the exit code: `install` alone returns nothing, so it is wrapped.
-    commands: dict[str, Callable[[], int]] = {
-        "install": _install,
-        "start": start,
-        "stop": stop,
-        "status": status,
-    }
+    commands: dict[str, Callable[[], int]] = {"install": _install, "start": start, "stop": stop, "status": status}
     command = commands.get(argv[0] if argv else "")
     if command is None:
         print(__doc__)

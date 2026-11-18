@@ -10,12 +10,10 @@ class Writing:
     OTHER_SYSTEM: Final = "another supporting system"  # a system this scenario is not on, in "why it applies"
     OTHER_SYSTEMS: Final = "other supporting systems"  # two or more of them in a row
     PLATFORM_NOTE: Final = " - not recorded in the platform"  # code's note on each assumption the API shows
-    #: A "no" system's reason: code's, never the writer's; it claims no immunity to other threats.
     NOT_REACHED_REASON: Final = (
         "This threat's actions in this scenario do not reach this system; that does not make it immune to "
         "other threats."
     )
-    #: A "yes" system's reason when the writer gave none and no story sentence names it.
     REACHED_REASON: Final = "This threat's actions may reach this system as part of the same event."
     SCENARIO_WORDS_SLOT: Final = "<scenario words>"  # the prompts' slot for THREAT_SCENARIO_WORD_LIMIT
     RISK_WORDS_SLOT: Final = "<risk words>"  # the prompts' slot for RISK_STATEMENT_WORD_LIMIT
@@ -72,35 +70,11 @@ class FindingMessage(StrEnum):
     )
 
 
-#: How strongly each finding is enforced: a blocker keeps the scenario from being served.
-FINDING_SEVERITIES: Final[dict[FindingCode, FindingSeverity]] = {
-    FindingCode.UNKNOWN_ID: FindingSeverity.BLOCKER,
-    FindingCode.UNCITED_ADVISORY_ID: FindingSeverity.BLOCKER,
-    FindingCode.PLAN_CHECK: FindingSeverity.NOTE,
-    FindingCode.PLAN_CHECK_NOT_MADE: FindingSeverity.WARNING,
-    FindingCode.SCENARIO_MISMATCH: FindingSeverity.BLOCKER,
-    FindingCode.CITATION_REMOVED: FindingSeverity.WARNING,
-    FindingCode.NO_EVIDENCE_CITED: FindingSeverity.BLOCKER,
-    FindingCode.NEAR_DUPLICATE: FindingSeverity.BLOCKER,
-}
-
-#: The blocker named first when a scenario has several (any blocked draft gives its path up at once).
-FINAL_FINDINGS: Final[frozenset[FindingCode]] = frozenset({FindingCode.NEAR_DUPLICATE})
-
-
 class Route(StrEnum):
     """content.route.status: the platform records no link between two systems."""
 
     STANDALONE = "standalone"  # the scenario claims no link between systems
     UNKNOWN = "unknown"  # it relies on a system-to-system link the platform does not record
-
-
-class PlanCheckStatus(StrEnum):
-    """plan_check.status as stored on older scenarios; nothing writes it."""
-
-    CONSISTENT = "consistent"
-    INCONSISTENT = "inconsistent"  # its problems are notes on the scenario
-    UNCHECKED = "unchecked"  # not made: an exact check blocks, or its answer stayed unusable (a warning)
 
 
 class PathProblem(StrEnum):
@@ -134,9 +108,7 @@ class TargetProblem(StrEnum):
     DUPLICATE_VERSION = "duplicate_version"  # two versions of one path, or another version already accepted
     LIBRARY_INACTIVE = "library_inactive"  # its library threat was retired after it was written
     VERSION_NOT_CURRENT = "version_not_current"  # a newer version replaced it: regenerate the newest one
-    CHANGED_CONCURRENTLY = (
-        "changed_concurrently"  # another call decided it between this call's read and write
-    )
+    CHANGED_CONCURRENTLY = "changed_concurrently"  # another call decided it between this call's read and write
     HAND_WRITTEN = "hand_written"  # a person wrote it: there is no plan path to write it again
 
 
@@ -155,9 +127,7 @@ class ReviewMessage(StrEnum):
     MODE_VALUES = "mode is 'all', 'subset' or 'none': leave it out to send the v2 body."
     GENERATION_IN_PROGRESS = "Run '{session_id}' is still generating: try again once it is done."
     RUN_FAILED = "Run '{session_id}' failed before any scenario was written."
-    RUN_CANCELLED = (
-        "Run '{session_id}' was cancelled before its scenarios were planned: start a new run for its asset."
-    )
+    RUN_CANCELLED = "Run '{session_id}' was cancelled before its scenarios were planned: start a new run for its asset."
     NOT_DECIDABLE = "Some scenarios cannot be {decision}."
     NOT_REGENERABLE = "Some scenarios cannot be regenerated."
     NOTHING_TO_ACCEPT = "Run '{session_id}' has no written scenario to accept."
@@ -166,8 +136,7 @@ class ReviewMessage(StrEnum):
     )
     NOTHING_LEFT = "Every selected attack path of run '{session_id}' is written."
     TARGET_REACHED = (
-        "Every selected attack path of run '{session_id}' is written; the others were left out by "
-        "TOTAL_SCENARIO_COUNT."
+        "Every selected attack path of run '{session_id}' is written; the others were left out by TOTAL_SCENARIO_COUNT."
     )
     SCENARIOS_ABANDONED = "Every attack path of run '{session_id}' left to write was given up."
     SCENARIO_NOT_ACCEPTED = "Scenario '{scenario_id}' is not accepted: accept it before promoting its threat."
@@ -255,9 +224,7 @@ class PlanLoss(StrEnum):
     TYPE_FITS_NO_PLACE = "type_fits_no_place"
     NO_LINKED_ACTOR = "no_linked_actor"
     NOT_JUDGED = "not_judged"  # its gate batch was skipped
-    NEEDS_UNRECORDED_ELSEWHERE = "needs_unrecorded_elsewhere"  # older plans only: a need under another kind
     MERGED = "merged"
-    ALREADY_HELD = "already_held"
     LIBRARY_REPEAT = "library_repeat"  # a gap-fill proposal that is a library threat already judged
     TYPE_UNMATCHED = "type_unmatched"  # a gap-fill proposal whose type matches no library type
 
@@ -265,7 +232,6 @@ class PlanLoss(StrEnum):
 class PlanTraceLimits:
     MAX_DROPS: Final = 300  # drops listed on a trace; its counts are always whole
     DETAIL_MAX_CHARS: Final = 160
-    ASSET_ITSELF: Final = "the asset itself"  # the turn and group of a path on no supporting system
 
 
 class PlanTraceMessage(StrEnum):
@@ -275,7 +241,6 @@ class PlanTraceMessage(StrEnum):
     )
 
 
-#: content.route.status in results words: a route on an unrecorded link between systems is ASSUMED.
 ROUTE_WORDS: Final[dict[str, str]] = {"standalone": "STANDALONE", "unknown": "ASSUMED"}
 CONTROLS_EXHAUSTED: Final = "retry_budget_exhausted"  # the controls job gave up after its tries
 SCOPE_ASSET_KEY: Final = "A"

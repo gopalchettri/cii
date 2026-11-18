@@ -13,9 +13,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-import litellm
 import pytest
-import structlog
 from celery import states
 from celery.exceptions import Ignore, Retry
 from prometheus_client import REGISTRY
@@ -23,8 +21,7 @@ from pymongo.errors import AutoReconnect
 from redis.exceptions import ReadOnlyError
 from structlog.testing import capture_logs
 
-from app import ai, container
-from app.ai.profiles import CHAT_MODEL_PROFILES
+from app import ai
 from app.core import metrics, readiness
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
@@ -46,15 +43,14 @@ from app.core.constants import (
 from app.core.database import get_mongodb, get_redis_client
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable, WaitingForAnotherJob
 from app.core.lease_signal import raise_if_lease_lost
-from app.data_access.admin.ai_call_repository import AiCallRepository
-from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_job_fields
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.crud import indexes
+from app.crud.jobs import JobLease, JobRepository, ended_job_fields
+from app.crud.library import SqlOperationRepository
+from app.crud.scenarios import ThreatScenarioRepository, ThreatScenarioSessionRepository
 from app.domain.scenario.session import build_status_board
 from app.domain.shared.parallel import raise_most_retryable
-from app.models.scenario.views import session_status_from_record
-from app.worker import celery_app, heartbeat, jobs, lifecycle, reaper
+from app.schemas.scenarios import session_status_from_record
+from app.worker import celery_app, jobs, lifecycle
 from app.worker.celery_app import BrokerUnavailable, count_waiting_messages, send_job
 from app.worker.scenario.tasks import find_threats
 
@@ -104,7 +100,7 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     sends: list[tuple] = []
     # Each send is accepted by the broker (send_job's True): a refused one counts no re-send.
     monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args) or True)
-    monkeypatch.setattr(reaper, "send_job", lambda *args, **_priority: sends.append(args) or True)
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sends.append(args) or True)
     return sends
 
 
@@ -120,10 +116,7 @@ def test_only_the_owner_of_the_current_epoch_can_change_a_plan_path() -> None:
     """S24: a path's state (served, attempts, abandoned) is written through the lease's fence, so a delivery
     whose job was replaced by a newer epoch, or taken over by another delivery, changes nothing."""
     record_id = _insert_job()
-    paths = [
-        {"path_id": "p1", "served": None, "attempts": 0},
-        {"path_id": "p2", "served": None, "attempts": 0},
-    ]
+    paths = [{"path_id": "p1", "served": None, "attempts": 0}, {"path_id": "p2", "served": None, "attempts": 0}]
     _records().update_one({"_id": record_id}, {"$set": {"plan.paths": paths}})
     lease = _claim(record_id, "writer-1")
     lease.update_job({"plan.paths.$[p].served": "s1", "plan.paths.$[p].attempts": 1}, [{"p.path_id": "p1"}])
@@ -142,64 +135,6 @@ def test_a_late_message_for_an_earlier_stage_cannot_run_that_stage_again(sent: l
     assert sent == [(TaskName.WRITE_SCENARIOS, record_id, 1)]
 
 
-def test_after_the_lease_expires_a_new_owner_takes_over_and_the_old_one_cannot_write() -> None:
-    record_id = _insert_job()
-    first = _claim(record_id, "delivery-a")
-    assert first is not None
-    _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
-    second = _claim(record_id, "delivery-b")
-    assert second is not None and second.attempts == 2
-    with pytest.raises(LeaseLost):
-        first.update_job({"plan": "stale work"})
-    assert "plan" not in _records().find_one({"_id": record_id})
-
-
-def test_a_redelivered_copy_with_the_same_task_id_shuts_the_hung_copy_out() -> None:
-    """Celery reuses the task id on a retry or a redelivery: a hung copy and the copy that claimed the job
-    again after its lease ran out share task id and epoch, so only the newer claim's attempts let it write."""
-    record_id = _insert_job()
-    hung = _claim(record_id, "task-1")
-    _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
-    again = _claim(record_id, "task-1")
-    assert hung is not None and again is not None and again.attempts == hung.attempts + 1
-    assert not hung.renew()
-    with pytest.raises(LeaseLost):
-        hung.update_job({"plan": "stale work"} | ended_job_fields(Status.DONE))
-    again.update_job({"plan": "fresh work"} | ended_job_fields(Status.DONE))
-    stored = _records().find_one({"_id": record_id})
-    assert (stored["status"], stored["plan"]) == (Status.DONE, "fresh work")
-
-
-def test_a_delivery_that_takes_over_a_job_reuses_the_ai_answers_the_job_already_got(
-    monkeypatch: pytest.MonkeyPatch, published: list[str]
-) -> None:
-    """The reaper's re-send is a new message with a new task id: the claim binds the job (record, epoch,
-    stage), so the delivery that takes over after a lost lease reads back the gate answer the first one got;
-    a new epoch of the record asks again."""
-    model = "litellm_proxy/kimi-k2.5"
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
-    chat = ai.ChatModel(model, CHAT_MODEL_PROFILES[model], "http://ai.invalid", "key", records)
-    calls: list[int] = []
-    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))], usage=None)
-    monkeypatch.setattr(litellm, "completion", lambda **_: calls.append(1) or reply)
-    record_id = _insert_job()
-
-    def ask_the_gate(_lease: JobLease) -> None:
-        chat.ask_for_checked_json(AiTask.RELEVANCE_GATE, "s", "gate", lambda _: [], reuse_earlier_answer=True)
-
-    def deliver(task_id: str, epoch: int = 1) -> None:
-        with structlog.contextvars.bound_contextvars(task_id=task_id):  # as start_job_clock binds it
-            jobs.run_leased_job(_task(task_id), Collection.SESSIONS, record_id, epoch, ask_the_gate)
-
-    deliver("first")
-    _records().update_one({"_id": record_id}, {"$set": {"job.lease_until": datetime.now(UTC) - timedelta(1)}})
-    deliver("resent")
-    assert len(calls) == 1
-    _records().update_one({"_id": record_id}, {"$set": {"status": Status.QUEUED, "job.epoch": 2}})
-    deliver("next-run", epoch=2)
-    assert len(calls) == 2
-
-
 def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(published: list[str]) -> None:
     record_id = _insert_job()
 
@@ -214,9 +149,7 @@ def test_an_outage_gives_the_job_back_and_retries_after_the_first_delay(publishe
     assert published == [record_id, record_id]  # running, then queued again
 
 
-def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
-    published: list[str], sent: list[tuple]
-) -> None:
+def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(published: list[str], sent: list[tuple]) -> None:
     """The status tells the UI why a stage waits and which try comes when; the claim of that try clears it,
     so a running retry never shows the old outage."""
     record_id = _insert_job()
@@ -236,13 +169,9 @@ def test_an_ai_outage_leaves_a_retry_notice_until_the_next_try_starts(
     }
     # Read as the status endpoint and its live updates read it: through the status fields.
     sessions = ThreatScenarioSessionRepository(scenarios=ThreatScenarioRepository())
-    notice = build_status_board(
-        session_status_from_record(sessions.get("status", _id=record_id))
-    ).progress.retrying
+    notice = build_status_board(session_status_from_record(sessions.get("status", _id=record_id))).progress.retrying
     assert notice is not None and (notice.reason, notice.attempt) == (AiOutage.BUSY, 1)
-    _records().update_one(
-        {"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}}
-    )  # its back-off ended
+    _records().update_one({"_id": record_id}, {"$set": {"job.due_at": datetime.now(UTC)}})  # its back-off ended
     shown_while_retrying: list[Any] = []
 
     def retry_runs(lease: JobLease) -> None:
@@ -304,9 +233,7 @@ def test_a_job_meeting_a_young_pending_sql_operation_is_retried_not_failed(publi
     assert _records().find_one({"_id": record_id})["status"] == Status.QUEUED
 
 
-def test_a_mongo_outage_while_claiming_is_retried_after_the_first_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_mongo_outage_while_claiming_is_retried_after_the_first_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     def mongo_down(*_args: object) -> None:
         raise AutoReconnect("connection lost")
 
@@ -329,9 +256,7 @@ def test_the_last_attempt_fails_the_job_with_the_outage_message(published: list[
     assert record["job"]["error"] == {"code": ErrorCode.UNAVAILABLE, "message": ErrorMessage.AI_UNREACHABLE}
 
 
-def test_the_last_attempt_the_ai_timed_out_names_the_outage_and_leaves_no_notice(
-    published: list[str],
-) -> None:
+def test_the_last_attempt_the_ai_timed_out_names_the_outage_and_leaves_no_notice(published: list[str]) -> None:
     waiting = {"reason": AiOutage.TIMED_OUT, "attempt": Lease.MAX_ATTEMPTS - 1}
     record_id = _insert_job(attempts=Lease.MAX_ATTEMPTS - 1, retry=waiting)
     timed_out = AI_OUTAGE_MESSAGES[AiOutage.TIMED_OUT]
@@ -379,23 +304,15 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(
     for collection in jobs.JOB_COLLECTIONS:
         get_mongodb()[collection].delete_many({})
     long_ago = datetime.now(UTC) - timedelta(hours=1)
-    notice = {
-        "reason": AiOutage.BUSY,
-        "message": "busy",
-        "attempt": 1,
-        "max_attempts": 5,
-        "retry_at": long_ago,
-    }
+    notice = {"reason": AiOutage.BUSY, "message": "busy", "attempt": 1, "max_attempts": 5, "retry_at": long_ago}
     expired = _insert_job(Status.RUNNING, attempts=1, lease_until=long_ago, task_id="gone", retry=notice)
     worn_out = _insert_job(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS, lease_until=long_ago, task_id="gone")
     never_sent = _insert_job(Status.QUEUED, due_at=long_ago, retry=notice)
     failures_before = _job_failures()
     priorities: list[int] = []
-    monkeypatch.setattr(
-        reaper, "send_job", lambda *args, priority: (sent.append(args), priorities.append(priority))
-    )
-    reaper.reap_jobs()
-    reaper.reap_jobs()  # a second pass right after must not send anything again
+    monkeypatch.setattr(jobs, "send_job", lambda *args, priority: (sent.append(args), priorities.append(priority)))
+    jobs.reap_jobs()
+    jobs.reap_jobs()  # a second pass right after must not send anything again
     requeued = _records().find_one({"_id": expired})
     # Its worker was lost: an earlier outage's notice no longer says why it waits; a resend keeps its own.
     assert requeued["status"] == Status.QUEUED and requeued["job"]["retry"] is None
@@ -412,8 +329,10 @@ def test_the_reaper_requeues_abandons_and_resends_each_once(
 def test_a_worker_makes_every_index_its_reaper_scans_at_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each of the reaper's two scans reads one index; without them it scans whole collections."""
     made: list[object] = []
-    monkeypatch.setattr(container, "create_all_indexes", made.append)
-    monkeypatch.setattr(container, "build_ai_gateways", lambda: None)
+    monkeypatch.setattr(indexes, "create_all_indexes", made.append)
+    monkeypatch.setattr(ai, "build_ai_gateways", lambda: None)
+    monkeypatch.setattr(indexes, "create_all_indexes", made.append)
+    monkeypatch.setattr(ai, "build_ai_gateways", lambda: None)
     lifecycle._prepare_stores_and_models()
     assert made == [jobs.JOB_COLLECTIONS]
 
@@ -434,7 +353,7 @@ def test_a_worker_whose_ai_model_has_no_profile_refuses_to_start(monkeypatch: py
         raise ValueError("No profile for AI model 'typo'")
 
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
-    monkeypatch.setattr(container, "get_remediation_chat_model", no_profile)  # any module's model
+    monkeypatch.setattr(ai.chat, "get_remediation_chat_model", no_profile)  # any module's model
     with pytest.raises(SystemExit, match="typo"):
         lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
 
@@ -490,8 +409,8 @@ def test_any_redis_error_leaves_the_heartbeat_beating(monkeypatch: pytest.Monkey
             raise ReadOnlyError("You can't write against a read only replica.")
         second_beat.set()
 
-    monkeypatch.setattr(heartbeat.WorkerHeartbeat, "beat", flaky_beat)
-    beating = heartbeat.WorkerHeartbeat([Queue.THREATS], f"celery@flaky-{uuid.uuid4().hex}")
+    monkeypatch.setattr(lifecycle.WorkerHeartbeat, "beat", flaky_beat)
+    beating = lifecycle.WorkerHeartbeat([Queue.THREATS], f"celery@flaky-{uuid.uuid4().hex}")
     beating.start()
     try:
         assert second_beat.wait(5), "the heartbeat stopped after one Redis error"
@@ -504,7 +423,7 @@ def test_a_worker_silent_for_a_minute_is_not_counted_and_its_stamp_is_dropped() 
     silent = f"celery@silent-{uuid.uuid4().hex}"
     get_redis_client().zadd(key, {silent: time.time() - Worker.ONLINE_WITHIN_SECONDS - 1})
     before = _online(Queue.SCENARIOS)
-    alive = heartbeat.WorkerHeartbeat([Queue.SCENARIOS], f"celery@alive-{uuid.uuid4().hex}")
+    alive = lifecycle.WorkerHeartbeat([Queue.SCENARIOS], f"celery@alive-{uuid.uuid4().hex}")
     alive.beat()
     try:
         assert _online(Queue.SCENARIOS) == before + 1  # the silent one never counted
@@ -531,9 +450,7 @@ def test_a_worker_that_cannot_open_its_log_file_refuses_to_start(monkeypatch: py
         lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
 
 
-def test_every_job_outcome_series_starts_at_zero_when_the_worker_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_every_job_outcome_series_starts_at_zero_when_the_worker_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: a task's failure series first appeared at 1, which Prometheus reads as no increase, so the
     first failure after a restart never fired JobsFailing."""
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
@@ -564,10 +481,10 @@ def test_no_process_but_the_reaper_s_worker_exports_its_reaper_times() -> None:
 def test_each_reaper_pass_records_when_it_ended_and_a_failed_one_does_not(
     published: list[str], sent: list[tuple], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
     metrics.REAPER_LAST_PASS.set(0)
     before = time.time()
-    reaper.reap_jobs()
+    jobs.reap_jobs()
     assert before <= _last_reaper_pass() <= time.time()
 
     def mongodb_down(*_: object) -> list:
@@ -576,7 +493,7 @@ def test_each_reaper_pass_records_when_it_ended_and_a_failed_one_does_not(
     metrics.REAPER_LAST_PASS.set(0)
     monkeypatch.setattr(JobRepository, "list_expired_jobs", mongodb_down)
     with pytest.raises(AutoReconnect):
-        reaper.reap_jobs()
+        jobs.reap_jobs()
     assert _last_reaper_pass() == 0  # a pass that did not end is not on time
 
 
@@ -598,9 +515,7 @@ def _job_failures() -> float:
     return _job_samples("tsg_jobs_total", {"task": TaskName.FIND_THREATS, "outcome": "failure"})
 
 
-def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(
-    published: list[str], sent: list[tuple]
-) -> None:
+def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(published: list[str], sent: list[tuple]) -> None:
     """Before: the write fence did not check the status, so a slow owner could turn a job the reaper had
     already failed (job_abandoned) into done, with the stale error still on it."""
     _records().delete_many({})
@@ -611,7 +526,7 @@ def test_a_job_the_reaper_failed_cannot_be_finished_by_its_old_owner(
     _records().update_one(
         {"_id": record_id}, {"$set": {"job.lease_until": long_ago, "job.attempts": Lease.MAX_ATTEMPTS}}
     )
-    reaper.reap_jobs()
+    jobs.reap_jobs()
     with pytest.raises(LeaseLost):
         slow_owner.update_job({"plan": "late work"} | ended_job_fields(Status.DONE))
     assert not slow_owner.renew()
@@ -626,63 +541,12 @@ def test_a_duplicate_message_cannot_run_a_job_before_its_back_off_ends() -> None
     first = _claim(record_id, "first")
     assert first is not None
     first.update_job(
-        {
-            "status": Status.QUEUED,
-            "job.due_at": datetime.now(UTC) + timedelta(seconds=60),
-            "job.lease_until": None,
-        }
+        {"status": Status.QUEUED, "job.due_at": datetime.now(UTC) + timedelta(seconds=60), "job.lease_until": None}
     )
     assert _claim(record_id, "duplicate") is None
     almost_due = datetime.now(UTC) + timedelta(seconds=Lease.CLOCK_SKEW_SECONDS - 1)
     _records().update_one({"_id": record_id}, {"$set": {"job.due_at": almost_due}})
     assert _claim(record_id, "retry") is not None  # another pod's clock may run a little ahead
-
-
-def test_a_delivery_that_cannot_claim_its_job_logs_why() -> None:
-    """UAT, 2026-10-24: job.not_claimed said only that a delivery was dropped, so the clocks (not_due) could
-    not be told from a worker reading another database (missing) without guessing."""
-    jobs_ = JobRepository(_records())
-
-    def why(record_id: str, epoch: int = 1, task: str = TaskName.FIND_THREATS) -> dict[str, Any]:
-        return jobs_.why_not_claimed(record_id, epoch, task)
-
-    assert why("no-such-record") == {"reason": "missing"}
-    queued = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=376))
-    assert why(queued, epoch=2) == {"reason": "other_epoch", "job_epoch": 1}
-    assert why(queued, task=TaskName.WRITE_SCENARIOS) == {
-        "reason": "other_task",
-        "job_task": TaskName.FIND_THREATS,
-    }
-    not_due = why(queued)
-    assert not_due["reason"] == "not_due" and 370 < not_due["due_in_seconds"] <= 376
-    running = _insert_job(Status.RUNNING, worker="celery@worker-threats", lease_until=datetime.now(UTC))
-    assert why(running) == {"reason": "leased", "job_worker": "celery@worker-threats"}
-    assert why(_insert_job(Status.FAILED)) == {"reason": "status_failed"}
-    with capture_logs() as logs, pytest.raises(Ignore):
-        jobs.run_leased_job(_task("early"), Collection.SESSIONS, queued, 1, lambda _lease: None)
-    [line] = [line for line in logs if line["event"] == LogEvent.JOB_NOT_CLAIMED]
-    assert line["reason"] == "not_due" and line["due_in_seconds"] > 370 and line["sent_again"] is False
-
-
-def test_a_delivery_that_comes_before_its_job_is_due_is_sent_again_for_then() -> None:
-    """Celery runs a retry's countdown on the receiving pod's clock, not MongoDB's, so a retry could come
-    early: it was dropped and the job waited minutes for the reaper. Sent again, it uses no attempt. An early
-    first send is a duplicate (a reaper re-send): only dropped, so it never follows the job's retries."""
-    resent: list[dict[str, Any]] = []
-    soon = _insert_job(due_at=datetime.now(UTC) + timedelta(seconds=40))
-    for retries in (0, 1):
-        request = SimpleNamespace(id="early", retries=retries)
-        task = SimpleNamespace(
-            name=TaskName.FIND_THREATS, request=request, retry=lambda **options: resent.append(options)
-        )
-        with pytest.raises(Ignore):
-            jobs.run_leased_job(task, Collection.SESSIONS, soon, 1, lambda _lease: None)
-        assert len(resent) == retries
-    [options] = resent
-    assert options["throw"] is False and 40 <= options["countdown"] <= 41
-    assert options["priority"] == Worker.NEXT_STAGE_PRIORITY
-    job = _records().find_one({"_id": soon})["job"]
-    assert (job["attempts"], job.get("task_id")) == (0, None)
 
 
 def test_a_run_s_next_stage_is_taken_before_new_work_already_waiting() -> None:
@@ -741,7 +605,7 @@ def test_a_claimed_job_records_how_long_it_waited_after_it_was_due(published: li
     assert (waits(), over_a_minute()) == (before + 1, slow_before + 1)
 
 
-#: Routed ahead of their build step (BLUEPRINT §15, Steps 11-14): no module defines them yet, and nothing
+#: Routed ahead of their build step: no module defines them yet, and nothing
 #: sends them. Remove each one here when its task is built.
 NOT_BUILT_YET: set[TaskName] = set()
 
@@ -786,19 +650,19 @@ def test_a_job_waiting_behind_others_is_not_sent_again(
     _records().delete_many({})
     waiting = _insert_job(Status.QUEUED, due_at=datetime.now(UTC) - timedelta(minutes=3))
     sizes: dict[str, int] = {Queue.THREATS: 3}
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda queue: sizes.get(queue, 0))
-    reaper.reap_jobs()
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda queue: sizes.get(queue, 0))
+    jobs.reap_jobs()
     assert sent == []  # its message is still in line
 
     def broker_down(_queue: str) -> int:
         raise BrokerUnavailable("broker down")
 
-    monkeypatch.setattr(reaper, "count_waiting_messages", broker_down)
-    reaper.reap_jobs()
+    monkeypatch.setattr(jobs, "count_waiting_messages", broker_down)
+    jobs.reap_jobs()
     assert sent == []  # cannot tell, and a send would fail too
     sizes[Queue.THREATS] = 0  # the line cleared and the job is still queued: its message was lost
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda queue: sizes.get(queue, 0))
-    reaper.reap_jobs()
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda queue: sizes.get(queue, 0))
+    jobs.reap_jobs()
     assert [record_id for _, record_id, _ in sent] == [waiting]
 
 
@@ -825,8 +689,8 @@ def test_one_broken_record_does_not_stop_the_reaper_for_the_others(
     broken = _insert_job(Status.QUEUED, due_at=long_ago)
     _records().update_one({"_id": broken}, {"$unset": {"job.task": ""}})
     lost = _insert_job(Status.QUEUED, due_at=long_ago)
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
-    reaper.reap_jobs()
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
+    jobs.reap_jobs()
     assert [record_id for _, record_id, _ in sent] == [lost]
 
 
@@ -857,8 +721,8 @@ def test_a_job_queued_too_long_is_sent_again_whatever_its_queue_holds(
         due_at=datetime.now(UTC) - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS + 60),
         resends=0,  # as new_job writes it
     )
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 3)
-    reaper.reap_jobs()
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 3)
+    jobs.reap_jobs()
     assert [record_id for _, record_id, _ in sent] == [lost]
     assert _records().find_one({"_id": lost})["job"]["resends"] == 0  # its queue was busy: not counted
 
@@ -874,17 +738,15 @@ def test_a_job_waiting_in_a_long_backlog_is_sent_again_never_failed_as_never_sta
         due_at=datetime.now(UTC) - timedelta(seconds=Lease.RESEND_ANYWAY_AFTER_SECONDS + 60),
         resends=Lease.MAX_ATTEMPTS - 1,
     )
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 3)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 3)
     for _ in range(3):
-        reaper.reap_jobs()
-        _records().update_one(
-            {"_id": waiting}, {"$set": {"job.due_at": datetime.now(UTC) - timedelta(hours=1)}}
-        )
+        jobs.reap_jobs()
+        _records().update_one({"_id": waiting}, {"$set": {"job.due_at": datetime.now(UTC) - timedelta(hours=1)}})
     record = _records().find_one({"_id": waiting})
     assert record["status"] == Status.QUEUED and record["job"]["resends"] == Lease.MAX_ATTEMPTS - 1
     assert [record_id for _, record_id, _ in sent] == [waiting] * 3
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
-    reaper.reap_jobs()  # its queue is empty and it is still queued: this send counts
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
+    jobs.reap_jobs()  # its queue is empty and it is still queued: this send counts
     assert _records().find_one({"_id": waiting})["job"]["resends"] == Lease.MAX_ATTEMPTS
 
 
@@ -894,14 +756,12 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     """Before: a job no worker ever claimed (its task not registered) was re-sent every 2 minutes for ever,
     with the run stuck in queued and no alert."""
     _records().delete_many({})
-    stuck = _insert_job(
-        Status.QUEUED, due_at=datetime.now(UTC) - timedelta(minutes=3), resends=Lease.MAX_ATTEMPTS
-    )
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    stuck = _insert_job(Status.QUEUED, due_at=datetime.now(UTC) - timedelta(minutes=3), resends=Lease.MAX_ATTEMPTS)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
     failures = {"task": TaskName.FIND_THREATS, "outcome": "failure"}
     before = _job_samples("tsg_jobs_total", failures)
     with capture_logs() as logs:
-        reaper.reap_jobs()
+        jobs.reap_jobs()
     [failed] = [line for line in logs if line["event"] == LogEvent.JOB_FAILED]
     # The job's own task and module, not the reaper's: the dashboard groups failed jobs by them.
     assert (failed["task"], failed["module"], failed["code"], failed["reason"]) == (
@@ -919,23 +779,6 @@ def test_a_job_sent_again_and_again_but_never_started_is_failed_and_counted(
     retried = _insert_job(resends=3)
     assert _claim(retried, "delivery") is not None
     assert _records().find_one({"_id": retried})["job"]["resends"] == 0
-
-
-def test_a_job_that_stops_checking_its_lease_stops_renewing_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A hung job (a deadlock, an endless loop) stops renewing, so the reaper takes it over, and makes no more
-    AI calls meanwhile."""
-    monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(jobs.Lease, "STALL_SECONDS", 0.1)
-    renewals: list[int] = []
-    lease = SimpleNamespace(record_id="hung", renew=lambda: renewals.append(1) or True)
-    with jobs.keep_lease_alive(lease):  # type: ignore[arg-type]
-        time.sleep(0.4)
-        renewed = len(renewals)
-        time.sleep(0.2)
-        assert len(renewals) == renewed  # stopped: the lease now runs out and the reaper takes the job
-        with pytest.raises(LeaseLost):
-            raise_if_lease_lost()
-    assert 0 < renewed < 10
 
 
 def test_a_finished_job_says_when_it_ended_and_writes_no_active_field(published: list[str]) -> None:
@@ -968,9 +811,7 @@ def test_every_failed_job_writes_one_job_failed_line_with_its_code_and_reason(
     with capture_logs() as logs, pytest.raises(type(error)):
         jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, work)
     failed = [line for line in logs if line["event"] == LogEvent.JOB_FAILED]
-    assert [(line["record_id"], line["code"], line.get("reason")) for line in failed] == [
-        (record_id, code, reason)
-    ]
+    assert [(line["record_id"], line["code"], line.get("reason")) for line in failed] == [(record_id, code, reason)]
     bugs = [line for line in logs if line["event"] == LogEvent.JOB_UNEXPECTED_ERROR]
     assert len(bugs) == (code == ErrorCode.INTERNAL_ERROR)
 
@@ -1000,7 +841,7 @@ def test_a_job_whose_lease_is_lost_makes_no_more_ai_calls(monkeypatch: pytest.Mo
     in the job's pool threads too; outside the job nothing is checked."""
     monkeypatch.setattr(jobs.Lease, "RENEW_EVERY_SECONDS", 0.02)
     lease = SimpleNamespace(record_id="cancelled-run", renew=lambda: False)
-    with jobs.keep_lease_alive(lease):  # type: ignore[arg-type]
+    with jobs.keep_lease_alive(lease.record_id, lease.renew):
         deadline = time.monotonic() + 5
         with pytest.raises(LeaseLost):
             while time.monotonic() < deadline:

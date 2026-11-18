@@ -1,5 +1,5 @@
 {
-  // TSG tasks for debugging: Terminal > Run Task (docs/DEBUGGING.md). All run from the project folder.
+  // TSG tasks for debugging: Terminal > Run Task. All run from the project folder.
   "version": "2.0.0",
   "options": {
     "cwd": "${workspaceFolder}",

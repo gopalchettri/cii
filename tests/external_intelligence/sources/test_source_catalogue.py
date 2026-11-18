@@ -1,31 +1,17 @@
-"""The catalogue: six sources, in the order they must run, wired to the record store for the CVE ids."""
+"""The catalogue: the two ATT&CK sources, Enterprise first, at the owner's URLs."""
 
 from app.core.constants import IntelSource
-from app.worker.external_intelligence.sources.source_catalogue import SourceCatalogue
+from app.domain.intel.sources.attack import DATASETS, MitreAttackSource
 
 
-class _Store:
-    def __init__(self) -> None:
-        self.asked: list[IntelSource] = []
-
-    def list(self, fields: object = None, **where: IntelSource) -> list[dict[str, str]]:
-        self.asked.append(where["source"])
-        return [{"external_id": "CVE-2024-0001"}]
+def test_both_attack_sources_are_built_enterprise_first() -> None:
+    assert list(IntelSource) == [IntelSource.ATTACK_ENTERPRISE, IntelSource.ATTACK_ICS] == list(DATASETS)
+    assert all(MitreAttackSource(source).source_id == source for source in IntelSource)
 
 
-def test_every_source_is_built_kev_first_and_nvd_last() -> None:
-    fetchers = SourceCatalogue(_Store()).fetchers()  # type: ignore[arg-type]
-    order = list(fetchers)
-    assert (
-        set(order) == set(IntelSource)
-        and order[0] == IntelSource.CISA_KEV
-        and order[-1] == IntelSource.NIST_NVD
-    )
-    assert order.index(IntelSource.CISA_KEV) < order.index(IntelSource.FIRST_EPSS)
-    assert all(fetcher.source_id == source for source, fetcher in fetchers.items())
-
-
-def test_the_store_is_asked_when_a_source_runs_not_when_it_is_built() -> None:
-    store = _Store()
-    SourceCatalogue(store).fetchers()  # type: ignore[arg-type]
-    assert store.asked == []
+def test_the_datasets_are_the_owners_urls() -> None:
+    base = "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/"
+    assert {
+        "mitre_attack_enterprise": base + "enterprise-attack/enterprise-attack.json",
+        "mitre_attack_ics": base + "ics-attack/ics-attack.json",
+    } == DATASETS

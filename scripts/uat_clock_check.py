@@ -278,9 +278,7 @@ def pod_is_off(pod: Pod, max_skew: float) -> bool:
 def reading(label: str, offset: Offset, standard: float, max_skew: float) -> str:
     """'[GAP] MongoDB server 10.228.146.3:27018 shows 09:15:13 UTC: 11 s ahead of UTC'."""
     tag = "[GAP]" if offset.is_off(max_skew) else "[OK] "
-    return (
-        f"{tag} {label} shows {clock_time(standard + offset.seconds, standard)}: {from_utc(offset.seconds)}"
-    )
+    return f"{tag} {label} shows {clock_time(standard + offset.seconds, standard)}: {from_utc(offset.seconds)}"
 
 
 def reading_lines(pods: list[Pod], standard: float, max_skew: float) -> list[str]:
@@ -333,9 +331,7 @@ def summary_lines(pods: list[Pod], max_skew: float) -> list[str]:
     """The gaps, numbered, with who fixes each; the clocks without a gap; and what could not be read."""
     gaps, fine = gaps_and_fine(pods, max_skew)
     missing, unread = not_checked(pods), sum(pod.pod_minus_here is None for pod in pods)
-    lines = [
-        f"SUMMARY: {len(gaps)} gap{'' if len(gaps) == 1 else 's'} found (more than {max_skew:g} s from UTC)"
-    ]
+    lines = [f"SUMMARY: {len(gaps)} gap{'' if len(gaps) == 1 else 's'} found (more than {max_skew:g} s from UTC)"]
     for number, (what, *how) in enumerate(gaps, 1):
         lines += [f"{number}. {what}", *(f"   {line}" for line in how)]
     if fine:
@@ -351,15 +347,11 @@ def summary_lines(pods: list[Pod], max_skew: float) -> list[str]:
 
 def tsg_lines(pods: list[Pod], max_skew: float) -> list[str]:
     """Why pods share their node's gap, and what the gaps mean for TSG, which takes MongoDB's time."""
-    lines = [
-        "Why a pod shows its node's gap: a pod has no clock of its own; it uses its OpenShift node's clock."
-    ]
+    lines = ["Why a pod shows its node's gap: a pod has no clock of its own; it uses its OpenShift node's clock."]
     mongo = store_minus_here(pods, "mongo")
     if mongo and mongo.is_off(max_skew):
         saved = from_utc(mongo.seconds)
-        lines.append(
-            f"Impact on TSG: TSG takes MongoDB's time for its jobs, so every time it saves is {saved}."
-        )
+        lines.append(f"Impact on TSG: TSG takes MongoDB's time for its jobs, so every time it saves is {saved}.")
     tsg = [pod for pod in pods if "mongo" in pod.store_minus_pod]
     if tsg:
         alerting = sum(abs(pod.store_minus_pod["mongo"].seconds) > CLOCK_SKEW_ALERT_SECONDS for pod in tsg)
@@ -377,9 +369,7 @@ def not_checked(pods: list[Pod]) -> list[str]:
 def report(pods: list[Pod], max_skew: float, standard: float) -> list[str]:
     """The log at one moment (`standard`, UTC by this computer): header, a line per clock, summary, impact."""
     errors = [pod.pod_minus_here.error for pod in pods if pod.pod_minus_here]
-    accuracy = (
-        f"Each reading is accurate to within {max(errors):.1f} s." if errors else "Nothing could be read."
-    )
+    accuracy = f"Each reading is accurate to within {max(errors):.1f} s." if errors else "Nothing could be read."
     namespaces = ", ".join(sorted({pod.namespace for pod in pods})) or "none"
     computer = socket.gethostname()
     header = [
@@ -389,12 +379,7 @@ def report(pods: list[Pod], max_skew: float, standard: float) -> list[str]:
         f"Checked: MongoDB, Redis, and {len(pods)} pods in namespaces {namespaces}.",
         "",
     ]
-    return (
-        header
-        + reading_lines(pods, standard, max_skew)
-        + summary_lines(pods, max_skew)
-        + tsg_lines(pods, max_skew)
-    )
+    return header + reading_lines(pods, standard, max_skew) + summary_lines(pods, max_skew) + tsg_lines(pods, max_skew)
 
 
 def anything_off(pods: list[Pod], max_skew: float) -> bool:

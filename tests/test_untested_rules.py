@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.constants import (
     AiTask,
     ConflictReason,
@@ -25,8 +24,9 @@ from app.core.constants import (
     TaskName,
 )
 from app.core.exceptions import Unavailable
-from app.data_access.jobs.job_repository import JobRepository
-from app.domain.scenario.write import _apply_safety_checks, build_scenario_id
+from app.crud import scenarios as scenario_crud
+from app.crud.jobs import JobRepository
+from app.domain.scenario.write import apply_safety_checks, build_scenario_id
 from app.domain.shared.ask_ai import answers_for_asked_slots
 from tests.external_intelligence.evidence.test_evidence_finder import finder_of, one, refs
 from tests.external_intelligence.evidence_fakes import ScoredBy, request_of, technique_doc
@@ -57,21 +57,21 @@ _ADVISORIES = ("GHSA-4f8r-qwrm-9x2c", "MS17-010", "VU#123456", "ICSMA-23-334-01"
 )
 def test_a_made_up_label_or_advisory_id_is_caught_in_every_served_text(where: dict[str, Any]) -> None:
     """THR<n> and GHSA, MS bulletin, CERT/CC VU# and ICS medical advisory ids the brief never gave."""
-    findings = _apply_safety_checks(_brief_of(_plan_threat()), dataclasses.replace(_CLEAN, **where)).findings
+    findings = apply_safety_checks(_brief_of(_plan_threat()), dataclasses.replace(_CLEAN, **where)).findings
     assert [finding.code for finding in findings] == [FindingCode.UNKNOWN_ID, FindingCode.UNCITED_ADVISORY_ID]
     assert "THR7" in findings[0].message
     assert all(advisory in findings[1].message for advisory in _ADVISORIES)
 
 
-def test_a_score_equal_to_the_threshold_is_kept() -> None:
-    finder, _ = finder_of([technique_doc("T1")], ScoredBy(default=5.0), threshold=5.0)
-    assert refs(one(finder, request_of())[0]) == {"T1"}
+def test_a_score_equal_to_the_threshold_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    finder_of(monkeypatch, [technique_doc("T1")], ScoredBy(default=5.0), threshold=5.0)
+    assert refs(one(request_of())) == {"T1"}
 
 
 def test_no_scenario_of_another_run_of_the_same_asset_is_offered_as_a_copy() -> None:
     """D15 (owner 2026-10-20): another run's versions never block a new scenario, whatever their decision;
     only the run's own finished ones are held against it."""
-    session_id, scenarios = f"run-{uuid.uuid4().hex}", container.get_threat_scenario_repository()
+    session_id, scenarios = f"run-{uuid.uuid4().hex}", scenario_crud.get_threat_scenario_repository()
     scenarios.create_indexes()
     asset = int(uuid.uuid4().hex[:12], 16)
     for decision in (Decision.REJECTED, Decision.ACCEPTED, Decision.PENDING):

@@ -7,17 +7,18 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.constants import Collection, ConflictReason, Decision, Status, TaskName
 from app.core.database import get_mongodb
-from app.data_access.scenario.threat_scenario_session_repository import DELETING_MARK
+from app.crud.remediation import get_remediation_repository
+from app.crud.scenarios import DELETING_MARK
+from app.domain.remediation import plans as plans_logic
 from tests.plan_job_fakes import api_key_fixture, world_fixture  # noqa: F401 — fixtures
 from tests.test_remediation_api import _done_plan, _post, _record, _result, _status
 
 
 def _overall(client: TestClient, api_key: str, world: dict[str, Any], remediation_id: str) -> list[str]:
     """progress.overall as the status route, the result route and the live stream read it."""
-    live = world["service"].get_remediation_plan_live_status(remediation_id)
+    live = plans_logic.read_live_status(remediation_id)
     return [
         _status(client, api_key, remediation_id).json()["progress"]["overall"],
         _result(client, api_key, remediation_id).json()["progress"]["overall"],
@@ -49,7 +50,7 @@ def test_a_regenerate_that_meets_its_runs_delete_leaves_the_plan_as_it_was(
     remediation_id = _done_plan(client, api_key, world)
     assert _post(client, api_key, remediation_id, "reject", {"version": 1}).status_code == 200
     before = _record(remediation_id)
-    plans, runs = container.get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
+    plans, runs = get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
     real_append = plans.create_remediation_plan_version
 
     def appended_then_the_delete_marks(*args: Any) -> bool:
@@ -91,7 +92,7 @@ def test_a_review_landing_before_the_regenerate_undoes_its_append_is_kept(  # no
     remediation_id = _done_plan(client, api_key, world)
     if first_review is not None:
         assert _post(client, api_key, remediation_id, first_review, {"version": 1}).status_code == 200
-    plans, runs = container.get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
+    plans, runs = get_remediation_repository(), get_mongodb()[Collection.SESSIONS]
     session_id, real_append = _record(remediation_id)["session_id"], plans.create_remediation_plan_version
     answers: list[Any] = []
 

@@ -15,14 +15,14 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    a run on `tsg_servicemapper`. A service (its name, sector and subsector, case and spacing forgiven) has **one
    mapping per entity** (a unique index): the first Generate makes it; a later one runs it again with the details
    it sends, on the same `mapping_id`.
-2. The worker reads the SQL onboarding catalog (`app/worker/service_mapper/catalog_provider.py`): every service
+2. The worker reads the SQL onboarding catalog (`app/crud/service_mapper.py`; checked and cached in `app/domain/service_mapper/catalog.py`): every service
    with its sectors and subsectors (`tsg_Onboarding_GetServicesWithSectorDetails` and
    `tsg_GetServiceMapperAssociations`: TSG's own procedures in `scripts/sql`).
 3. One AI call (`app/domain/service_mapper/generate.py`): the system prompt `app/prompts.toml` `[service_mapper.generate]` and a JSON user
    message with the selected service (with its recorded `known_upstream`/`known_downstream` when it is in the catalog), the counts (`upstream_count`, `downstream_count`, a
    maximum each), `already_mapped` (from the second run: the names the mapping holds, by direction; those
    services are left out of `catalog`, so the AI is not offered them again) and `catalog`: **every** database service, grouped by sector and subsector, groups and services
-   ordered most relevant first by hybrid search (`app/search/service_mapper.py`); the selected service is left
+   ordered most relevant first by hybrid search (`app/domain/service_mapper/catalog.py`); the selected service is left
    out. Only a catalog too large for the input keeps just its most relevant services. **No catalog ID ever
    reaches the AI**: services are named, and the answer names services.
 4. The schema is checked (`GeneratedAnswer`). If an item would be dropped for a fault only the AI can fix, the
@@ -34,7 +34,7 @@ reviewer to accept or reject relationship by relationship. The definitions follo
    distinctive word in common, e.g. "Water Supply" and "Water Production & Transmission") is asked again too:
    a service already in the database is never identified anew by the AI. An unusable re-ask, or one that finds
    the AI busy or down, keeps the first answer.
-5. `reconcile.py` maps each name to its catalog service (exact name, then a name form; services that share a name
+5. `reconcile` (`app/domain/service_mapper/generate.py`) maps each name to its catalog service (exact name, then a name form; services that share a name
    are told apart by sector and subsector), drops what is left of the above, keeps each service in one direction,
    drops every service the mapping already holds (either direction, or another name form of one the AI named),
    caps each list at its count, and adds the new services after those the mapping holds: a run never rewrites

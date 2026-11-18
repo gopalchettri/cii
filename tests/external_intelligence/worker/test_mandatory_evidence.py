@@ -9,20 +9,12 @@ from typing import Any
 
 import pytest
 
-from app import container
-from app.core.constants import (
-    AiTask,
-    Applicability,
-    EvidenceMode,
-    EvidenceRole,
-    PromptVersion,
-    ScenarioStatus,
-    TaskName,
-)
+from app.core.constants import AiTask, EvidenceMode, EvidenceRole, PromptVersion, ScenarioStatus, TaskName
 from app.core.exceptions import Unavailable
-from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
-from app.data_access.jobs.job_repository import JobRepository
-from app.models.external_intelligence.evidence import Evidence
+from app.crud.jobs import JobRepository
+from app.domain.intel import evidence
+from app.domain.intel.switch import IntelligenceSwitch, get_intelligence_switch
+from app.schemas.intel_records import Evidence
 from app.worker.scenario.write_job import find_evidence_outage
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import TECHNIQUE
@@ -44,15 +36,11 @@ def test_the_gate_holds_back_only_an_outage() -> None:
     settled = {"snapshot_id": "s1", "failure": None}
     assert find_evidence_outage({"evidence": [], "intel_search": settled}) is None  # written without evidence
     assert isinstance(find_evidence_outage({"intel_search": settled | {"failure": "down"}}), Unavailable)
-    assert isinstance(
-        find_evidence_outage({"intel_search": None}), Unavailable
-    )  # never searched: no snapshot
+    assert isinstance(find_evidence_outage({"intel_search": None}), Unavailable)  # never searched: no snapshot
     assert find_evidence_outage({"evidence": [TECHNIQUE.as_doc()], "intel_search": settled}) is None
 
 
-@pytest.mark.parametrize(
-    "found", [(), (dataclasses.replace(TECHNIQUE, facts=()),)], ids=["nothing", "nothing_citable"]
-)
+@pytest.mark.parametrize("found", [(), (dataclasses.replace(TECHNIQUE, facts=()),)], ids=["nothing", "nothing_citable"])
 def test_nothing_citable_is_written_without_evidence(
     intel: Intel, story_chat: Any, found: tuple[Evidence, ...]
 ) -> None:
@@ -94,7 +82,7 @@ def test_the_switch_is_read_once_per_batch(intel: Intel, monkeypatch: pytest.Mon
         intel.switch.enabled = False  # an admin turns it off while the batch searches
         return search(*args, **kwargs)
 
-    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", turned_off_meanwhile)
+    monkeypatch.setattr(evidence, "find_evidence", turned_off_meanwhile)
     _write_batch(lease)
     (scenario,) = _scenarios_of(record_id)
     assert scenario["status"] == ScenarioStatus.DONE and len(intel.finder.calls) == 1
@@ -110,7 +98,7 @@ def test_a_first_write_while_the_switch_cannot_be_read_waits_for_it(
     flags = MemoryFlags()
     flags.down = True
     unread = IntelligenceSwitch(flags, env_enabled=lambda: True)  # type: ignore[arg-type]
-    monkeypatch.setattr(container.get_intelligence_switch(), "state", unread.state)
+    monkeypatch.setattr(get_intelligence_switch(), "state", unread.state)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "one")
     with pytest.raises(Unavailable):
@@ -119,16 +107,12 @@ def test_a_first_write_while_the_switch_cannot_be_read_waits_for_it(
 
 
 def test_each_cited_entry_keeps_its_dates_its_role_and_its_claim(intel: Intel) -> None:
-    confirmed = Evidence(
-        "CVE-2024-0001", TECHNIQUE.kind, TECHNIQUE.source, "Flaw", TECHNIQUE.url, 80.0, TECHNIQUE.facts,
-        Applicability.CONFIRMED, published="2024-01-05", fetched_at="2026-10-12T00:00:00",
-        role=EvidenceRole.DIRECT,
-    )  # fmt: skip
-    intel.finder.evidence = (confirmed,)
+    dated = dataclasses.replace(TECHNIQUE, modified="2024-01-05T00:00:00.000Z", fetched_at="2026-10-12T00:00:00")
+    intel.finder.evidence = (dated,)
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
     (scenario,) = _scenarios_of(record_id)
     (entry,) = scenario["content"]["evidence"]
-    dated = (entry["published"], entry["fetched_at"], entry["role"])
-    assert dated == ("2024-01-05", "2026-10-12T00:00:00", EvidenceRole.DIRECT)
+    kept = (entry["modified"], entry["fetched_at"], entry["role"])
+    assert kept == ("2024-01-05T00:00:00.000Z", "2026-10-12T00:00:00", EvidenceRole.CONTEXT)
     assert entry["searched_at"] and entry["supports"]

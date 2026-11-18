@@ -5,17 +5,14 @@ the fake chat model and the fake finder (tests/external_intelligence/fakes.py)."
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app import container
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AiOutage,
     AiTask,
-    AuditAction,
     Collection,
     EvidenceMode,
     EvidenceSearchFailure,
@@ -28,9 +25,9 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import LeaseLost, Unavailable
-from app.data_access.jobs.job_repository import JobRepository
+from app.crud.jobs import JobRepository
+from app.domain.intel import evidence
 from app.domain.scenario.write import build_scenario_id
-from app.worker.external_intelligence.evidence_at_write import EvidenceAtWrite
 from tests.external_intelligence.conftest import Intel
 from tests.external_intelligence.fakes import SNAPSHOT, TECHNIQUE, FakeFinder
 from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
@@ -52,12 +49,6 @@ def _threat_docs(record_id: str) -> dict[str, dict[str, Any]]:
     return {t["name"]: t for t in _sessions().find_one({"_id": record_id})["plan"]["threats"]}
 
 
-def _audit_rows(record_id: str) -> list[dict[str, Any]]:
-    query = {"target.id": record_id, "action": AuditAction.EXTERNAL_INTELLIGENCE_EVIDENCE_USED}
-    rows = [row["after"] for row in get_mongodb()[Collection.AUDIT].find(query)]
-    return sorted(rows, key=lambda after: -after["threats_searched"])
-
-
 def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) -> None:
     record_id = _queued_run([f"Threat {n}" for n in range(1, 9)], first_set=3)  # 8 planned, 3 asked for
     assert _deliver_until_done(record_id) == 1
@@ -72,14 +63,11 @@ def test_a_batch_searches_once_and_only_for_the_threats_it_writes(intel: Intel) 
         assert content["evidence"][0]["n"] == 1 and content["intel_search"]["query"]
 
 
-def test_one_audit_row_per_written_batch(intel: Intel) -> None:
+def test_one_search_per_written_batch(intel: Intel) -> None:
     batch = Generation.WRITER_BATCH
     record_id = _queued_run([f"Threat {n}" for n in range(1, batch + 3)])  # one full batch, then 2
     assert _deliver_until_done(record_id) == 2
-    first, second = _audit_rows(record_id)
-    assert (first["threats_searched"], second["threats_searched"]) == (batch, 2)
-    assert first["snapshot_id"] == second["snapshot_id"] == SNAPSHOT
-    assert len(intel.finder.calls) == 2
+    assert [len(call) for call in intel.finder.calls] == [batch, 2]
 
 
 def test_a_threat_shared_by_two_paths_is_searched_once(intel: Intel) -> None:
@@ -100,7 +88,6 @@ def test_a_retry_after_an_outage_searches_again(intel: Intel, story_chat: Any) -
     assert _deliver_until_done(record_id) == 1
     assert len(intel.finder.calls) == 2 and len(_scenarios_of(record_id)) == 2
     assert len(intel.finder.calls[1]) == 2  # every threat still to write
-    assert len(_audit_rows(record_id)) == 2
 
 
 def test_an_evidence_outage_holds_the_paths_back_and_a_later_try_writes_them_with_evidence(
@@ -139,7 +126,7 @@ def test_an_ai_outage_in_the_evidence_search_reaches_the_job_as_that_outage(
         def ai_down(*args: Any, **kwargs: Any) -> Any:
             raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.DOWN], reason=AiOutage.DOWN)
 
-        monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", ai_down)
+        monkeypatch.setattr(evidence, "find_evidence", ai_down)
     record_id = _queued_run(["Threat 1", "Threat 2"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable) as error:
@@ -158,7 +145,7 @@ def test_a_search_that_breaks_names_its_own_reason_never_a_missing_snapshot(
     def reranker_down(*args: Any, **kwargs: Any) -> Any:
         raise Unavailable("the reranker could not load")
 
-    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", reranker_down)
+    monkeypatch.setattr(evidence, "find_evidence", reranker_down)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(Unavailable) as error:
@@ -177,7 +164,7 @@ def test_a_search_error_that_is_no_outage_reaches_the_job_runner_and_writes_noth
     def search_raising(*args: Any, **kwargs: Any) -> Any:
         raise error
 
-    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", search_raising)
+    monkeypatch.setattr(evidence, "find_evidence", search_raising)
     record_id = _queued_run(["Threat 1"])
     lease = JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, "first")
     with pytest.raises(type(error)):
@@ -225,9 +212,7 @@ def _written_without_evidence(record_id: str) -> dict[str, Any]:
     return new
 
 
-def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_is_written_without(
-    intel: Intel, story_chat: Any
-) -> None:
+def test_a_regenerate_of_a_story_whose_threat_has_no_evidence_is_written_without(intel: Intel, story_chat: Any) -> None:
     """Owner 2026-10-19 ("do not block the threat scenario"): its threat's search holds nothing usable, so the
     new version is written without evidence and replaces the old one."""
     record_id = _queued_run(["Threat 1"])
@@ -266,41 +251,19 @@ def test_a_regenerate_while_off_writes_a_story_again_as_the_original_writer(inte
     assert "evidence_mode" not in new["content"]
 
 
-def test_the_evidence_an_older_plan_kept_is_never_cited_again(
-    intel: Intel, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """(owner 2026-10-12: "each can be revoked and purged"): a plan saved by an older release keeps a
-    threat's evidence; the regenerate searches again and cites only what is approved now."""
+def test_the_evidence_an_older_plan_kept_is_never_cited_again(intel: Intel) -> None:
+    """A plan saved by an older release keeps a threat's evidence; the regenerate searches again and cites
+    only what that search finds."""
     record_id = _queued_run(["Threat 1"])
     assert _deliver_until_done(record_id) == 1
-    kept = {
-        "plan.threats.0.evidence": [TECHNIQUE.as_doc()],
-        "plan.threats.0.intel_search": {"snapshot_id": "s"},
-    }
+    kept = {"plan.threats.0.evidence": [TECHNIQUE.as_doc()], "plan.threats.0.intel_search": {"snapshot_id": "s"}}
     _sessions().update_one({"_id": record_id}, {"$set": kept})
-    monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
     intel.finder.evidence = (replace(TECHNIQUE, source=IntelSource.ATTACK_ENTERPRISE),)
     _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
-    assert len(intel.finder.calls) == 2  # searched again, on the index rebuilt without it
+    assert len(intel.finder.calls) == 2  # searched again
     new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
     assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
     assert new["content"]["intel_search"]["snapshot_id"] == SNAPSHOT
-
-
-def test_a_search_on_an_index_not_yet_rebuilt_never_cites_the_revoked_source(
-    intel: Intel, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The worker's index follows the snapshot pointer only every SWITCH_CACHE_SECONDS, so right after a
-    revoke it still holds the revoked source: the batch's approved sources go to the search, which never
-    offers it."""
-    record_id = _queued_run(["Threat 1"])
-    assert _deliver_until_done(record_id) == 1
-    monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
-    enterprise = replace(TECHNIQUE, ref="T1195", source=IntelSource.ATTACK_ENTERPRISE)
-    intel.finder.evidence = (TECHNIQUE, enterprise)
-    _start_regenerate(record_id, build_scenario_id(record_id, "p1", 1))
-    new = get_mongodb()[Collection.SCENARIOS].find_one({"_id": build_scenario_id(record_id, "p1", 2)})
-    assert {e["source"] for e in new["content"]["evidence"]} == {IntelSource.ATTACK_ENTERPRISE}
 
 
 def test_a_regenerate_of_a_story_while_the_switch_cannot_be_read_waits_for_it(intel: Intel) -> None:
@@ -317,43 +280,15 @@ def test_a_regenerate_of_a_story_while_the_switch_cannot_be_read_waits_for_it(in
     assert scenarios.find_one({"_id": build_scenario_id(record_id, "p1", 2)}) is None
 
 
-def test_a_search_whose_only_records_were_revoked_finds_no_evidence_and_is_no_outage(
-    intel: Intel, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Revoked records are cut before the top-k, so a search only they could answer settles with no evidence:
-    the regenerate is written without evidence and never waits as for an outage."""
-    record_id = _queued_run(["Threat 1"])
-    assert _deliver_until_done(record_id) == 1
-    monkeypatch.setattr(intel.feeds, "list_approved_sources", lambda: [IntelSource.ATTACK_ENTERPRISE])
-    _start_regenerate(
-        record_id, build_scenario_id(record_id, "p1", 1)
-    )  # the fake holds mitre_attack_ics only
-    _written_without_evidence(record_id)
-
-
-def test_a_threat_already_searched_is_searched_again_reading_the_feeds_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One search per write: a threat's earlier search is replaced by this batch's, and the approved sources
-    are read once for the batch."""
-    reads: list[str] = []
-
-    class CountedFeeds:
-        def list_approved_sources(self) -> list[IntelSource]:
-            reads.append("approved")
-            return list(IntelSource)
-
-    class NoAudit:
-        def create_audit_record(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
+def test_a_threat_already_searched_is_searched_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One search per write: a threat's earlier search is replaced by this batch's."""
     finder = FakeFinder()
+    monkeypatch.setattr(evidence, "find_evidence", finder.find_evidence)
     context = {"asset": {"id": 1, "name": "Grid", "category_code": None}, "asset_context": {}, "systems": []}
-    run = {"_id": "run", "context": context | {"missing_facts": []}}
+    run = {"_id": "run", "context": context}
     earlier = {"evidence": [], "intel_search": {"snapshot_id": "older", "failure": None}}
     threats = {"t": {"name": "Threat 1", "type": {"name": "Malware"}} | earlier}
-    progress = SimpleNamespace(paths={"p1": {"steps": ["t"]}})
-    EvidenceAtWrite(run, threats, progress, finder, CountedFeeds(), NoAudit()).attach(["p1"])  # type: ignore[arg-type]
-    assert len(finder.calls) == 1 and reads == ["approved"]
+    evidence.attach_evidence(run, threats, {"p1": {"steps": ["t"]}}, ["p1"])
+    assert len(finder.calls) == 1
     assert threats["t"]["intel_search"]["snapshot_id"] == SNAPSHOT
     assert [entry["ref"] for entry in threats["t"]["evidence"]] == [TECHNIQUE.ref]

@@ -95,10 +95,7 @@ def _grafana_env() -> dict[str, str]:
 def _loki() -> Command:
     config = OBS / "loki" / "loki.yaml"
     command = [str(program("loki")), f"-config.file={config}", "-config.expand-env=true", "-target=all"]
-    command += [
-        "-server.http-listen-address=127.0.0.1",
-        "-server.grpc-listen-address=127.0.0.1",
-    ]  # this PC only
+    command += ["-server.http-listen-address=127.0.0.1", "-server.grpc-listen-address=127.0.0.1"]  # this PC only
     return command, {"LOKI_DATA": (ROOT / "data" / "loki").as_posix()}
 
 
@@ -189,6 +186,4 @@ def reset_grafana_password() -> None:
         check=False,
     )
     if result.returncode:
-        raise SystemExit(
-            f"Grafana did not accept the admin password: {result.stderr.decode(errors='replace')}"
-        )
+        raise SystemExit(f"Grafana did not accept the admin password: {result.stderr.decode(errors='replace')}")

@@ -1,4 +1,4 @@
-"""The VS Code debugging tasks (scripts/debug_tools.py, docs/DEBUGGING.md): the test-run cycle, its safety
+"""The VS Code debugging tasks (scripts/debug_tools.py): the test-run cycle, its safety
 rule, the log search, and a stream that ends with a plain message instead of a stack trace."""
 
 import importlib
@@ -49,13 +49,7 @@ def test_a_test_run_is_made_changed_and_deleted_and_only_a_test_run_is_deleted(t
 def test_find_shows_the_key_fields_of_each_matching_line(tools, capsys: pytest.CaptureFixture[str]) -> None:  # type: ignore[no-untyped-def]
     from app.core.config import get_settings
 
-    line = {
-        "event": "http.request",
-        "status": 500,
-        "route": "/x",
-        "request_id": "find-me-123",
-        "level": "info",
-    }
+    line = {"event": "http.request", "status": 500, "route": "/x", "request_id": "find-me-123", "level": "info"}
     (Path(get_settings().log_dir) / "api.log").write_text(json.dumps(line) + "\n", encoding="utf-8")
     assert tools.find("find-me-123") == 0
     assert "event=http.request  status=500  route=/x" in capsys.readouterr().out

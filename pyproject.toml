@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 local = ["sentence-transformers>=3.0"]   # dev only: local reranker model
-dev = ["pytest>=8", "httpx>=0.27", "mypy>=1.11", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-xdist>=3", "httpx>=0.27", "mypy>=1.11", "ruff>=0.6"]
 
 [build-system]
 requires = ["setuptools>=69"]
@@ -35,12 +35,18 @@ include = ["app*"]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py312"
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true  # wrap only when a line passes 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "W605"]  # W605: a stray backslash ("IT\OT") is an error later
 ignore = ["S101"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false  # matches the formatter's skip-magic-trailing-comma
 
 [tool.mypy]
 python_version = "3.12"

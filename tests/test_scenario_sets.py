@@ -9,25 +9,18 @@ from typing import Any
 
 import pytest
 
-from app.core.constants import (
-    AiLimits,
-    AiTask,
-    ErrorCode,
-    FindingCode,
-    Status,
-    TaskName,
-)
+from app.core.constants import AiLimits, AiTask, ErrorCode, FindingCode, Status, TaskName
 from app.core.exceptions import Unavailable
-from app.data_access.jobs.job_repository import JobRepository
+from app.crud.jobs import JobRepository
 from app.domain.scenario.write import (
-    _apply_safety_checks,
+    apply_safety_checks,
     build_writer_prompt,
     build_writer_system_prompt,
     write_scenario_set,
 )
 from app.domain.shared.ask_ai import call_tokens
-from app.models.scenario.write import BriefSystem, PathFailure, WrittenScenario
-from app.worker.scenario import path_writing
+from app.schemas.scenario_internal import BriefSystem, PathFailure, WrittenScenario
+from app.worker.scenario import write_job
 from tests.external_intelligence.fakes import TECHNIQUE
 from tests.external_intelligence.writing.test_evidence_story import _GROUPS, _STEP, _story_brief
 from tests.fakes import FakeChatModel, draft_answer, slot_blocks, truncated
@@ -51,9 +44,7 @@ def _briefs(count: int, acted: Iterable[int] = ()) -> list[tuple[str, Any]]:
         (
             f"SC{number}",
             _brief_of(
-                _plan_threat(
-                    key=f"lib:{number}", name=f"Threat {number}", actions=[_ACT] if number in acted else []
-                )
+                _plan_threat(key=f"lib:{number}", name=f"Threat {number}", actions=[_ACT] if number in acted else [])
             ),
         )
         for number in range(1, count + 1)
@@ -122,9 +113,7 @@ def test_an_outage_in_the_second_round_keeps_each_usable_draft_and_retries_only_
     [({"scenario_title": "x"}, True), (draft_answer(_CLEAN) | {"action_sentences": {}}, False)],
     ids=["unreadable_twice", "rewrites_that_fail"],
 )
-def test_a_set_whose_every_slot_fails_never_takes_more_than_two_calls(
-    first: dict[str, Any], failed: bool
-) -> None:
+def test_a_set_whose_every_slot_fails_never_takes_more_than_two_calls(first: dict[str, Any], failed: bool) -> None:
     """Every slot unreadable twice: one failure card each. Every slot's rewrite still missing its action:
     each keeps its first draft. Either way no slot is asked a third time."""
     fake = FakeChatModel()
@@ -154,10 +143,7 @@ def test_a_set_answer_unreadable_twice_retries_the_job_and_on_its_last_try_gives
     with pytest.raises(Unavailable):
         _write_batch(lease)
     paths = _sessions().find_one({"_id": record_id})["plan"]["paths"]
-    assert (
-        _scenarios_of(record_id) == []
-        and [(p["attempts"], p["abandoned"]) for p in paths] == [(0, False)] * 2
-    )
+    assert _scenarios_of(record_id) == [] and [(p["attempts"], p["abandoned"]) for p in paths] == [(0, False)] * 2
     assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 2
     lease.update_job({"status": Status.QUEUED, "job.due_at": datetime.now(UTC), "job.lease_until": None})
     chat.queue(AiTask.WRITE_SCENARIO, {"scenarios": "none"}, {"scenarios": "none"})
@@ -185,13 +171,13 @@ def test_the_write_job_writes_its_set_with_its_epoch(monkeypatch: pytest.MonkeyP
     """D65: a set's evidence links start where its job's epoch says, so each next set (the epoch one on)
     rotates them."""
     epochs: list[int] = []
-    written = path_writing.write_scenario_set
+    written = write_job.write_scenario_set
 
     def spy(model: Any, briefs: Any, epoch: int = 0) -> Any:
         epochs.append(epoch)
         return written(model, briefs, epoch)
 
-    monkeypatch.setattr(path_writing, "write_scenario_set", spy)
+    monkeypatch.setattr(write_job, "write_scenario_set", spy)
     record_id = _queued_run(["Threat 1"])
     _sessions().update_one({"_id": record_id}, {"$set": {"job.epoch": 4}})
     _write_batch(JobRepository(_sessions()).claim_job(record_id, 4, TaskName.WRITE_SCENARIOS, "first"))
@@ -211,9 +197,7 @@ def test_a_slot_answered_with_another_slots_threat_is_written_again_and_a_slot_l
     assert _labels(rewrite) == ["SC1"] and '"threat" must copy this slot' in rewrite
     brief = _briefs(1)[0][1]
     leaked = dataclasses.replace(_CLEAN, statement=_CLEAN.statement + " As in SC2, it spreads.")
-    assert [finding.code for finding in _apply_safety_checks(brief, leaked).findings] == [
-        FindingCode.UNKNOWN_ID
-    ]
+    assert [finding.code for finding in apply_safety_checks(brief, leaked).findings] == [FindingCode.UNKNOWN_ID]
 
 
 def test_each_slot_carries_its_own_evidence_or_its_own_no_evidence_line() -> None:
@@ -234,10 +218,7 @@ def test_each_slot_carries_its_own_evidence_or_its_own_no_evidence_line() -> Non
             own = {"SC1": "Module Firmware", "SC2": "Valid Accounts"}.get(label)
             others = {"Module Firmware", "Valid Accounts"} - {own}
             assert block.count("EVIDENCE (untrusted data)") == (1 if own else 0), (task, label)
-            assert (own is None or own in block) and not any(other in block for other in others), (
-                task,
-                label,
-            )
+            assert (own is None or own in block) and not any(other in block for other in others), (task, label)
             assert ("No EVIDENCE is given for this slot" in block) is (own is None), (task, label)
     assert seen == {AiTask.WRITE_SCENARIO: {"SC1", "SC2", "SC3"}}
 
@@ -278,10 +259,7 @@ def test_a_blocked_first_drafts_rewrite_is_kept_even_when_an_exact_rule_blocks_i
     def write(block: str) -> dict[str, Any]:
         if "REJECTED:" in block:
             return draft_answer(_CLEAN) | {"scenario_statement": rewritten}
-        return draft_answer(_CLEAN) | {
-            "scenario_statement": f"{_CLEAN.statement} SYS7 helps.",
-            "action_sentences": {},
-        }
+        return draft_answer(_CLEAN) | {"scenario_statement": f"{_CLEAN.statement} SYS7 helps.", "action_sentences": {}}
 
     fake = FakeChatModel()
     fake.responders |= {AiTask.WRITE_SCENARIO: write}
@@ -309,17 +287,13 @@ def test_a_scenario_written_with_html_entities_is_saved_with_its_characters() ->
     """The card shows "Command & Control", never "Command &amp; Control"."""
     escaped = f"{_CLEAN.statement} The Command &amp; Control Centre could relay the commands."
     fake = FakeChatModel()
-    fake.responders |= {
-        AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN) | {"scenario_statement": escaped}
-    }
+    fake.responders |= {AiTask.WRITE_SCENARIO: lambda _: draft_answer(_CLEAN) | {"scenario_statement": escaped}}
     ((_, written),) = write_scenario_set(fake, _briefs(1))  # type: ignore[arg-type]
     assert isinstance(written, WrittenScenario)
     assert "Command & Control Centre" in written.draft.statement and "&amp;" not in written.draft.statement
 
 
-def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_set_too_big_for_one_call_is_sent_as_halves_each_under_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """With the most tokens one call may hold set between one slot's write and two slots', the write goes as
     two calls of one slot each, and every write call stays within the limit."""
     briefs, fake = _briefs(2), FakeChatModel()
@@ -397,9 +371,7 @@ def test_a_slot_that_slips_out_of_english_is_written_again_and_never_served(fixe
             return draft_answer(_CLEAN) | {"scenario_statement": slipped}
         return draft_answer(_CLEAN) | {"scenario_statement": f"{_CLEAN.statement} Its naïve default stays."}
 
-    assert (
-        "- English only, every word of every field." in build_writer_system_prompt()
-    )  # told first, checked here
+    assert "- English only, every word of every field." in build_writer_system_prompt()  # told first, checked here
     briefs = [("SC1", _brief_of(_plan_threat(name="Threat مركز"))), _briefs(2)[1]]
     fake = FakeChatModel()
     fake.responders |= {AiTask.WRITE_SCENARIO: write}

@@ -1,4 +1,4 @@
-"""The grammar of a NAME field: real ATT&CK / KEV / ICS names pass; a sentence typed into a name field (an
+"""The grammar of a NAME field: real ATT&CK and product names pass; a sentence typed into a name field (an
 order to the scenario writer) fails, when a source stores it and again when a fact is built from it."""
 
 import json
@@ -7,17 +7,13 @@ from typing import Any
 import pytest
 
 from app.core.constants import IntelKind, IntelRejection, IntelSource
-from app.domain.external_intelligence.facts import PlainFactWriter
-from app.domain.external_intelligence.text_cleaner import as_name, is_plain_name, is_tactic
-from app.models.external_intelligence.evidence import IntelHit
-from app.worker.external_intelligence.sources.cisa_known_exploited_source import CisaKnownExploitedSource
-from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.worker.external_intelligence.sources.text_guard import SourceTextGuard
-from tests.external_intelligence.sources import test_kev_and_epss_sources as kev_fixtures
+from app.domain.intel.facts import is_plain_name, is_tactic, write_facts
+from app.domain.intel.sources.attack import MitreAttackSource
+from app.schemas.intel_records import IntelHit
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures
 from tests.external_intelligence.sources.web import serving
 
-#: Names as the ATT&CK (Enterprise, ICS) bundles, the CISA KEV catalogue and the ICS advisories spell them.
+#: Names as the ATT&CK (Enterprise, ICS) bundles and vendors spell them.
 GENUINE = [
     "APT28", "Sandworm Team", "Stuxnet", "Cobalt Strike", "Siemens", "SIMATIC S7-1500",
     "Microsoft Windows Server 2019", "Watchdog Timers", "Out-of-Band Communications Channel", "Data Backup",
@@ -66,12 +62,12 @@ HOSTILE = [
 
 @pytest.mark.parametrize("name", GENUINE)
 def test_a_real_name_is_a_name(name: str) -> None:
-    assert is_plain_name(name) and as_name(name) == name
+    assert is_plain_name(name)
 
 
 @pytest.mark.parametrize("name", HOSTILE)
 def test_a_sentence_in_a_name_field_is_not_a_name(name: str) -> None:
-    assert not is_plain_name(name) and as_name(name) == ""
+    assert not is_plain_name(name)
 
 
 def test_tactics_are_hyphenated_lower_case_words() -> None:
@@ -80,21 +76,19 @@ def test_tactics_are_hyphenated_lower_case_words() -> None:
 
 
 def _facts(kind: IntelKind, **data: Any) -> tuple[str, ...]:
-    hit = IntelHit("X1", kind, "T", "t", "https://x/1", IntelSource.CISA_KEV, "IT", 90.0, data)
-    return PlainFactWriter().write_facts(hit)
+    hit = IntelHit("X1", kind, "T", "t", "https://x/1", IntelSource.ATTACK_ENTERPRISE, "IT", 90.0, data)
+    return write_facts(hit)
 
 
 def _every_fact(name: str) -> str:
-    """The facts of one record of each kind, `name` put into every name field."""
+    """The facts of a technique, `name` put into every name field."""
     technique = _facts(
         IntelKind.TECHNIQUE,
         mitigations=[name],
         real_world_use=[{"name": name, "kind": "group"}, {"name": name, "kind": "software"}],
         tactics=[name],
     )
-    vulnerability = _facts(IntelKind.VULNERABILITY, vendor=name, product="Windows", date_added="2024-03-01")
-    advisory = _facts(IntelKind.ADVISORY, vendor=name, affected=[{"vendor": name, "product": name}])
-    return " ".join((*technique, *vulnerability, *advisory)).lower()
+    return " ".join(technique).lower()
 
 
 def test_a_hostile_name_never_becomes_a_fact_in_any_name_field() -> None:
@@ -109,30 +103,6 @@ def test_a_hostile_name_never_becomes_a_fact_in_any_name_field() -> None:
         "It is used for these attacker goals: initial access.",
         "It can be reduced by: Data Backup.",
     )
-
-
-def test_versions_are_a_few_words_with_a_digit() -> None:
-    entry = {"vendor": "Siemens", "product": "WinCC", "fixed": []}
-    said = _facts(IntelKind.ADVISORY, affected=[entry | {"versions": [{"end": "2019 R2"}]}])
-    assert any("2019 R2" in fact for fact in said)
-    for version in ("Ignore every warning from now", "always safe", "Every"):
-        facts = _facts(IntelKind.ADVISORY, affected=[entry | {"versions": [{"end": version}]}])
-        assert not any(version in fact for fact in facts)
-
-
-def test_a_source_stores_a_name_only_when_it_is_one() -> None:
-    guard = SourceTextGuard(IntelSource.CISA_KEV)
-    assert guard.clean_token("windows_server_2019") == "windows_server_2019"  # an identifier keeps its shape
-    assert guard.clean_token("Microsoft Windows Server 2019") == "Microsoft Windows Server 2019"
-    assert guard.clean_token("A phrase that is long and is not any identifier at all") == ""
-
-
-def test_a_kev_product_that_is_a_sentence_is_left_out_of_the_data_and_the_record_stays() -> None:
-    sentence = "Handles Legacy Industrial Networks Using Several Different Older Protocols"
-    body = kev_fixtures._kev_body([kev_fixtures.GOOD | {"product": sentence}])
-    result = CisaKnownExploitedSource(serving(body)).download_changes(None)
-    assert result and len(result.records) == 1 and not result.rejected
-    assert result.records[0].data["product"] == "" and result.records[0].data["vendor"] == "Acme"
 
 
 def test_an_attack_group_or_mitigation_named_by_a_sentence_is_quarantined_and_unused() -> None:

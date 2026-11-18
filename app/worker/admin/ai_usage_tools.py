@@ -1,10 +1,10 @@
-"""The AI usage runbook's commands, run in any app pod (the image holds app/ only):
+"""The AI usage beat task and the runbook's commands, run in any app pod (the image holds app/ only):
 
 python -m app.worker.admin.ai_usage_tools copy-texts
     after the first release with AI usage: the previous release's AI call texts (tsg_ai_calls, expired
     after 14 days) copied into tsg_ai_call_texts, kept for good, a day at a time; safe to run again.
-python -m app.worker.admin.ai_usage_tools roll-up SINCE UNTIL
-    every UTC hour from SINCE to UNTIL (ISO, e.g. 2026-10-01T00:00+00:00) added up again.
+python -m app.worker.admin.ai_usage_tools roll-up SINCE
+    every UTC hour from SINCE (ISO, e.g. 2026-10-01T00:00+00:00) to now added up again.
 python -m app.worker.admin.ai_usage_tools replay FILE
     the rows of the ai.usage_row_spilled lines in FILE ("-" reads standard input) stored, then every hour
     from the oldest one to now added up again; safe to run again. FILE is what Loki gives: Grafana Explore's
@@ -13,48 +13,53 @@ python -m app.worker.admin.ai_usage_tools replay FILE
 
 import json
 import sys
-from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pymongo
 from bson import ObjectId
 
-from app.core.clock import utc_now
-from app.core.constants import PREVIOUS_AI_CALL_TEXTS, AiUsageLogEvent
+from app.core.constants import (
+    PREVIOUS_AI_CALL_TEXTS,
+    AiUsageLimits,
+    AiUsageLogEvent,
+    AiUsageMessage,
+    Collection,
+    TaskName,
+)
+from app.core.database import get_mongodb
+from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Unavailable
+from app.crud import ai_calls
+from app.crud import ai_usage as crud
+from app.domain.ai_usage import roll_up_ai_usage
+from app.worker.celery_app import celery_app
+
+
+@celery_app.task(name=TaskName.ROLL_UP_AI_USAGE)
+def roll_up_ai_usage_task() -> None:
+    """Beat, every 5 minutes: every hour since the newest added up (catching up after any downtime)."""
+    roll_up_ai_usage(get_mongodb())
 
 
 def spilled_rows(text: str) -> list[dict[str, Any]]:
-    """Each spilled row the exported text holds, its ids and time turned back from text (the log keeps them
-    as text); anything else in it is skipped."""
+    """Each spilled row an export holds, its ids and time turned back from text; anything else skipped."""
+    stripped = text.lstrip()
     rows = []
-    for entry in _log_entries(text):
-        if entry.get("event") != AiUsageLogEvent.ROW_SPILLED or not isinstance(entry.get("row"), dict):
+    for item in json.loads(stripped) if stripped.startswith("[") else stripped.splitlines():
+        entry = _json_object(item) if isinstance(item, str) else item
+        if isinstance(entry, dict) and isinstance(entry.get("line"), str):  # Grafana's or Loki's own export
+            entry = _json_object(entry["line"])
+        if not isinstance(entry, dict) or entry.get("event") != AiUsageLogEvent.ROW_SPILLED:
             continue
-        row = dict(entry["row"])
-        row["_id"] = ObjectId(row["_id"])
-        if row.get("ask_id"):
-            row["ask_id"] = ObjectId(row["ask_id"])
-        row["created_at"] = datetime.fromisoformat(row["created_at"])
-        rows.append(row)
+        if isinstance(row := entry.get("row"), dict):
+            ask_id = {"ask_id": ObjectId(row["ask_id"])} if row.get("ask_id") else {}
+            created_at = datetime.fromisoformat(row["created_at"])
+            rows.append(row | {"_id": ObjectId(row["_id"]), "created_at": created_at} | ask_id)
     return rows
 
 
-def _log_entries(text: str) -> Iterator[dict[str, Any]]:
-    """TSG's log lines in an export: Grafana's JSON array of {line, ...}, or one line each, maybe after a
-    time (Grafana's text download) or under "line" (Loki's own export)."""
-    stripped = text.lstrip()
-    lines: Iterable[Any] = json.loads(stripped) if stripped.startswith("[") else stripped.splitlines()
-    for item in lines:
-        entry = _json_object(item) if isinstance(item, str) else item
-        if isinstance(entry, dict) and isinstance(entry.get("line"), str):
-            entry = _json_object(entry["line"])
-        if isinstance(entry, dict):
-            yield entry
-
-
 def _json_object(line: str) -> Any:
-    """The JSON object a text line holds from its first "{" on; None when it holds none."""
     _, brace, rest = line.partition("{")
     try:
         return json.loads(brace + rest) if brace else None
@@ -63,33 +68,28 @@ def _json_object(line: str) -> Any:
 
 
 def replay_spilled_rows(text: str) -> int:
-    """Stores the spilled rows (one already stored is skipped) and adds up every hour from the oldest one to
-    now, both under the add-up's lock (no row is stored without its hours added up), so a request counted in
-    a later hour while its first rows were missing is counted once, in its first; how many rows there were."""
-    from app.container import get_ai_usage_service
-
-    rows = spilled_rows(text)
+    """Stores the spilled rows (one stored already is skipped), then adds up every hour from the oldest on."""
+    db, rows = get_mongodb(), spilled_rows(text)
     if rows:
-        get_ai_usage_service().replay_rows(rows, min(row["created_at"] for row in rows), utc_now())
+        with pymongo.timeout(AiUsageLimits.ROLLUP_CHUNK_SECONDS):
+            crud.insert_rows(db, rows)
+        roll_up_ai_usage(db, min(row["created_at"] for row in rows))
     return len(rows)
 
 
 def _read_export(name: str) -> str:
-    """The exported file's text ("-": standard input), whether UTF-8 (with or without its mark) or UTF-16."""
     data = sys.stdin.buffer.read() if name == "-" else Path(name).read_bytes()
     return data.decode("utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig")
 
 
 def main(command: str, *arguments: str) -> str:
     """Runs one command; what it did, in one line."""
-    from app.container import get_ai_call_repository, get_ai_usage_service
-
     if command == "copy-texts":
-        held = get_ai_call_repository().copy_records_from(PREVIOUS_AI_CALL_TEXTS)
+        held = ai_calls.copy_records_from(get_mongodb()[Collection.AI_CALLS], PREVIOUS_AI_CALL_TEXTS)
         return f"tsg_ai_call_texts now holds {held} AI call texts (copied from {PREVIOUS_AI_CALL_TEXTS})."
-    if command == "roll-up":
-        since, until = (datetime.fromisoformat(argument) for argument in arguments[:2])
-        return f"{get_ai_usage_service().roll_up_hours(since, until)} hours of AI usage added up again."
+    if command == "roll-up":  # always to now: a run stopping short would leave the beat's hours behind it
+        hours = roll_up_ai_usage(get_mongodb(), datetime.fromisoformat(arguments[0]))
+        return f"{hours} hours of AI usage added up again."
     if command == "replay":
         stored = replay_spilled_rows(_read_export(arguments[0]))
         return f"{stored} spilled AI usage rows stored (any already stored skipped)."
@@ -97,11 +97,7 @@ def main(command: str, *arguments: str) -> str:
 
 
 def run(arguments: list[str]) -> int:
-    """Runs one command line: its answer printed (exit code 0), or why it could not run, such as the add-up's
-    lock not being free or MongoDB too slow, in one line, not a traceback (exit code 1)."""
-    from app.core.constants import AiUsageMessage
-    from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Unavailable
-
+    """Runs one command line: its answer printed (exit 0), or why it could not run in one line (exit 1)."""
     try:
         print(main(*arguments))  # noqa: T201 - a command-line tool's answer
     except Unavailable as busy:

@@ -11,7 +11,7 @@ from pymongo.errors import AutoReconnect
 
 from app.core import metrics, readiness
 from app.core.constants import Dependency, Queue
-from app.worker.heartbeat import WorkerHeartbeat
+from app.worker.lifecycle import WorkerHeartbeat
 from tests.test_deploy import COMMON_FILE, SECRETS_FILE, _container, _deployment, _objects, _reads
 from tests.test_observability import OBS, _panels, _rules
 
@@ -86,10 +86,7 @@ def test_lost_log_lines_raise_an_alert_of_their_own_group() -> None:
     fired_by = [
         series["series"].split("{")[0]
         for case in _cases()
-        if any(
-            check["alertname"] == "LogLinesLost" and check.get("exp_alerts")
-            for check in case["alert_rule_test"]
-        )
+        if any(check["alertname"] == "LogLinesLost" and check.get("exp_alerts") for check in case["alert_rule_test"])
         for series in case["input_series"]
     ]
     assert {"loki_write_dropped_entries_total", "loki_discarded_samples_total"} <= set(fired_by)
@@ -114,9 +111,7 @@ def test_alloy_keeps_its_read_positions_on_a_disk_that_outlives_the_pod() -> Non
     [volume] = [v for v in alloy["spec"]["template"]["spec"]["volumes"] if v["name"] == mount["name"]]
     claim = volume["persistentVolumeClaim"]["claimName"]
     assert alloy["spec"]["strategy"] == {"type": "Recreate"}  # one pod at a time on a ReadWriteOnce disk
-    [disk] = [
-        c for c in _objects(COMMON_FILE, kind="PersistentVolumeClaim") if c["metadata"]["name"] == claim
-    ]
+    [disk] = [c for c in _objects(COMMON_FILE, kind="PersistentVolumeClaim") if c["metadata"]["name"] == claim]
     assert disk["spec"]["accessModes"] == ["ReadWriteOnce"]
 
 
@@ -150,9 +145,7 @@ def test_alertmanager_emails_through_the_receiver_its_route_names() -> None:
     receivers = {receiver["name"]: receiver for receiver in config["receivers"]}
     assert set(receivers) == {"company-smtp", "gmail"} and config["route"]["receiver"] in receivers
     files = _alertmanager_secret_files()
-    [monitoring] = [
-        o for o in _objects(SECRETS_FILE, kind="Secret") if o["metadata"]["name"] == "tsg-monitoring"
-    ]
+    [monitoring] = [o for o in _objects(SECRETS_FILE, kind="Secret") if o["metadata"]["name"] == "tsg-monitoring"]
     for name, receiver in receivers.items():
         [email] = receiver["email_configs"]
         assert files[email["auth_password_file"]] in monitoring["stringData"], name

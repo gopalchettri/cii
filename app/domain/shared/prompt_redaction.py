@@ -28,17 +28,7 @@ _PLACEHOLDER_VALUES = frozenset(
 )
 #: Keys that hold a database id or an internal field: never in a prompt, at any depth.
 DATABASE_KEYS = frozenset(
-    {
-        "id",
-        "alias",
-        "criticality",
-        "category_id",
-        "category_code",
-        "type_id",
-        "catalogue_id",
-        "actor_id",
-        "control_id",
-    }
+    {"id", "alias", "criticality", "category_id", "category_code", "type_id", "catalogue_id", "actor_id", "control_id"}
 )
 #: Code's platform note on a shown assumption, with any punctuation or space before it, in any case.
 _PLATFORM_NOTE = re.compile(r"\W*" + re.escape(Writing.PLATFORM_NOTE.removeprefix(" - ")), re.IGNORECASE)
@@ -61,10 +51,7 @@ def redacted(value: Any) -> Any:
 
 
 def _carries_a_fact(value: Any) -> bool:
-    """False for a blank or placeholder text ("N/A", "tbd")."""
-    return not (
-        isinstance(value, str) and (not value.strip() or value.strip().casefold() in _PLACEHOLDER_VALUES)
-    )
+    return not (isinstance(value, str) and (not value.strip() or value.strip().casefold() in _PLACEHOLDER_VALUES))
 
 
 def drop_database_ids(value: Any) -> Any:
@@ -82,11 +69,7 @@ def facts_safe_for_prompt(facts: dict[str, Any]) -> dict[str, Any]:
     rather than "none". 0 and False are facts and stay."""
     kept: dict[str, Any] = {}
     for name, value in drop_database_ids(facts).items():
-        if (
-            value is None
-            or (isinstance(value, str | list | dict) and not value)
-            or not _carries_a_fact(value)
-        ):
+        if value is None or (isinstance(value, str | list | dict) and not value) or not _carries_a_fact(value):
             continue
         if isinstance(value, list):
             value = [item for item in value if _carries_a_fact(item)]

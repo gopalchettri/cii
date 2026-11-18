@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 from structlog.testing import capture_logs
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     Collection,
@@ -22,28 +21,39 @@ from app.core.constants import (
     IntelWorkEvent,
     Queue,
     Status,
+    TaskName,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.search.external_intelligence.evidence_index import EvidenceIndexRefused
+from app.crud.admin_jobs import get_admin_job_repository
+from app.domain.intel.evidence import evidence_request
+from app.domain.intel.index import EvidenceIndexRefused
+from app.worker import intel as warm_up_module
 from app.worker import lifecycle
-from app.worker.external_intelligence import warm_up as warm_up_module
-from app.worker.external_intelligence.evidence_at_write import evidence_request
-from app.worker.external_intelligence.refresh_task import refresh_external_intelligence, run_refresh_job
-from app.worker.external_intelligence.warm_up import (
+from app.worker.intel import (
     follow_active_snapshot,
+    refresh_external_intelligence,
+    run_refresh_job,
     start_following_active_snapshot,
     warm_up_intelligence,
 )
 from tests.external_intelligence.conftest import Intel
-from tests.planner_samples import CONTEXT, system_row
+from tests.planner_samples import CONTEXT
 from tests.test_worker import _free_port, _worker_starting
 
 NOW = datetime(2026, 10, 12, tzinfo=UTC)
 
 
 def _admin_jobs() -> Any:
-    return container.get_admin_job_repository()
+    return get_admin_job_repository()
+
+
+@pytest.fixture(autouse=True)
+def links_sent(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The names of the tasks the worker sent: the linking that follows every import."""
+    sent: list[str] = []
+    monkeypatch.setattr(warm_up_module.celery_app, "send_task", lambda name, **_message: sent.append(name))
+    return sent
 
 
 def _threat(**changes: Any) -> dict[str, Any]:
@@ -65,41 +75,20 @@ def test_the_request_text_is_the_threats_type_and_name_only() -> None:
     assert "Grid Control Centre" not in request.text  # the asset enters through the filter, not the text
 
 
-def test_the_recorded_products_come_from_the_asset_row_and_the_threats_systems() -> None:
-    context = CONTEXT.__class__(
-        asset=CONTEXT.asset,
-        asset_context=CONTEXT.asset_context | {"vendor_name": "Acme", "product_version": "1.2"},
-        systems=[
-            system_row(
-                321,
-                "SYS1",
-                "SCADA server",
-                technology_used=["Windows", "Siemens WinCC"],
-                operating_system="Windows 10",
-                firmware_version="9.0",
-                category_code="OT",
-            ),
-            system_row(322, "SYS2", "Historian", technology_used=["OSIsoft PI"]),
-        ],
-    )
-    request = evidence_request(context, _threat())
-    asset_row, system = request.recorded_products.rows  # only the threat's system: the Historian is not in it
-    assert asset_row.vendors == ("Acme",)  # a recorded version is not read: nothing compares it
-    assert system.products == ("Windows", "Siemens WinCC", "Windows 10")
-    assert "OT" in request.asset_types
-
-
-def test_a_threat_naming_no_known_system_uses_every_system() -> None:
-    request = evidence_request(CONTEXT, _threat(systems=[999]))
-    assert len(request.recorded_products.rows) == 1 + len(CONTEXT.systems)
-
-
-def test_the_scheduled_refresh_runs_the_due_sources_only_while_the_switch_is_on(intel: Intel) -> None:
+def test_beats_check_imports_only_when_it_claims_a_due_run_and_only_while_the_switch_is_on(
+    intel: Intel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saved schedule decides (tests/external_intelligence/test_import_schedule.py): a check that does not
+    win the claim imports nothing, and with the switch off the schedule is not even asked."""
+    claims = iter([False, True])
+    monkeypatch.setattr(warm_up_module.schedule, "claim_due_run", lambda now: next(claims))
+    refresh_external_intelligence()
+    assert intel.refresher.calls == []  # not due, or another check won
     refresh_external_intelligence()
     assert intel.refresher.calls == [("due", None)]
     intel.switch.enabled = False
-    refresh_external_intelligence()
-    assert len(intel.refresher.calls) == 1  # skipped
+    refresh_external_intelligence()  # asking the schedule again would raise StopIteration
+    assert len(intel.refresher.calls) == 1
 
 
 def _job(source: str | None = None) -> str:
@@ -119,11 +108,11 @@ def _job(source: str | None = None) -> str:
 
 
 def test_an_admin_refresh_of_one_source_is_recorded_on_its_job(intel: Intel) -> None:
-    job_id = _job("cisa_kev")
+    job_id = _job("mitre_attack_enterprise")
     refresh_external_intelligence(job_id)
-    assert intel.refresher.calls == [("one", IntelSource.CISA_KEV)]
+    assert intel.refresher.calls == [("one", IntelSource.ATTACK_ENTERPRISE)]
     stored = _admin_jobs().get(_id=job_id)
-    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "cisa_kev"})
+    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "mitre_attack_enterprise"})
     refresh_external_intelligence(job_id)  # a repeated message finds the job done
     assert len(intel.refresher.calls) == 1
 
@@ -133,10 +122,26 @@ def test_a_refresh_whose_index_the_ai_could_not_rebuild_is_done_and_says_why(int
     reason instead of reading as if all went well."""
     down = {"code": "unavailable", "message": "The AI service is down.", "reason": "ai_down"}
     intel.refresher.index_error = down
-    job_id = _job("cisa_kev")
+    job_id = _job("mitre_attack_enterprise")
     refresh_external_intelligence(job_id)
     stored = _admin_jobs().get(_id=job_id)
-    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "cisa_kev", "index_error": down})
+    assert (stored["status"], stored["result"]) == (
+        Status.DONE,
+        {"source": "mitre_attack_enterprise", "index_error": down},
+    )
+
+
+def test_an_admin_refresh_ignores_the_schedule_and_queues_the_control_links_whatever_it_stored(
+    intel: Intel, links_sent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Import now runs whatever the schedule says, and the linking follows every import: queued only for a
+    changed graph, a linking that failed or was lost was not tried again until MITRE's next release."""
+    monkeypatch.setattr(warm_up_module.schedule, "claim_due_run", lambda now: 1 / 0)
+    refresh_external_intelligence(_job())
+    assert intel.refresher.calls == [("due", None)] and links_sent == [TaskName.LINK_MITIGATIONS]
+    job_id = _job("mitre_attack_ics")
+    refresh_external_intelligence(job_id)
+    assert links_sent == [TaskName.LINK_MITIGATIONS] * 2 and _admin_jobs().get(_id=job_id)["status"] == Status.DONE
 
 
 def test_an_admin_refresh_runs_while_the_workers_cached_switch_still_reads_off(intel: Intel) -> None:
@@ -154,29 +159,25 @@ def test_an_admin_refresh_while_the_master_switch_is_off_fails_its_job_with_the_
     job_id = _job()
     refresh_external_intelligence(job_id)
     stored = _admin_jobs().get(_id=job_id)
-    assert (
-        stored["status"] == Status.FAILED
-        and "off" in stored["error"]["message"]
-        and intel.refresher.calls == []
-    )
+    assert stored["status"] == Status.FAILED and "off" in stored["error"]["message"] and intel.refresher.calls == []
 
 
-def test_a_failed_refresh_is_recorded_without_driver_details_then_raised(intel: Intel) -> None:
-    class Broken:
-        def refresh_due_sources(self, now: datetime) -> None:
-            raise ValueError("mongodb://user:secret@host")
+def test_a_failed_refresh_is_recorded_without_driver_details_then_raised(
+    intel: Intel, links_sent: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(now: datetime, keep_going: Any = None) -> None:
+        raise ValueError("mongodb://user:secret@host")
 
+    monkeypatch.setattr(warm_up_module.refresh, "refresh_all_sources", broken)
     job_id = _job()
     with pytest.raises(ValueError, match="secret"):
-        run_refresh_job(job_id, _admin_jobs(), lambda: Broken())  # type: ignore[arg-type,return-value]
+        run_refresh_job(job_id)
     stored = _admin_jobs().get(_id=job_id)
-    assert stored["status"] == Status.FAILED and stored["error"] == {
-        "code": "internal_error",
-        "message": "ValueError",
-    }
+    assert stored["status"] == Status.FAILED and stored["error"] == {"code": "internal_error", "message": "ValueError"}
+    assert links_sent == []  # nothing was imported
 
 
-def test_the_warm_up_builds_only_while_on_and_never_fails(intel: Intel) -> None:
+def test_the_warm_up_builds_only_while_on_and_never_fails(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:
     built: list[bool] = []
 
     class Keeper:
@@ -184,10 +185,11 @@ def test_the_warm_up_builds_only_while_on_and_never_fails(intel: Intel) -> None:
             built.append(True)
             raise RuntimeError("the store is down")
 
-    warm_up_intelligence(intel.switch, lambda: Keeper())  # type: ignore[arg-type,return-value]  # swallowed
+    monkeypatch.setattr(warm_up_module, "get_evidence_index_keeper", lambda: Keeper())
+    warm_up_intelligence()  # swallowed
     assert built == [True]
     intel.switch.enabled = False
-    warm_up_intelligence(intel.switch, lambda: Keeper())  # type: ignore[arg-type,return-value]
+    warm_up_intelligence()
     assert built == [True]
 
 
@@ -203,7 +205,9 @@ class _Intervals(threading.Event):
         return self.count < 0
 
 
-def test_the_worker_follows_the_active_snapshot_every_interval_only_while_on(intel: Intel) -> None:
+def test_the_worker_follows_the_active_snapshot_every_interval_only_while_on(
+    intel: Intel, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """G242 (run 45b8c63b): the writer's first search after a reload got the old index, as nothing asked the
     keeper before it; now each interval asks, and one failed ask never ends the following."""
     asked: list[bool] = []
@@ -214,10 +218,11 @@ def test_the_worker_follows_the_active_snapshot_every_interval_only_while_on(int
             if len(asked) == 1:
                 raise RuntimeError("the store is down")
 
-    follow_active_snapshot(intel.switch, lambda: Keeper(), _Intervals(3))  # type: ignore[arg-type,return-value]
+    monkeypatch.setattr(warm_up_module, "get_evidence_index_keeper", lambda: Keeper())
+    follow_active_snapshot(_Intervals(3))
     assert len(asked) == 3
     intel.switch.enabled = False
-    follow_active_snapshot(intel.switch, lambda: Keeper(), _Intervals(2))  # type: ignore[arg-type,return-value]
+    follow_active_snapshot(_Intervals(2))
     assert len(asked) == 3
 
 
@@ -225,20 +230,19 @@ def test_a_ready_worker_starts_one_follower_and_only_with_the_master_switch_on(
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     followed: list[object] = []
-    follower = lambda switch, keeper, stop: followed.append(switch)  # noqa: E731 - the thread's stand-in target
+    follower = lambda stop: followed.append(stop)  # noqa: E731 - the thread's stand-in target
     monkeypatch.setattr(warm_up_module, "follow_active_snapshot", follower)
-    keeper = container.get_evidence_index_keeper  # the provider: never called here
-    thread = start_following_active_snapshot(get_settings(), intel.switch, keeper)
+    thread = start_following_active_snapshot()
     assert thread is not None and thread.daemon
     thread.join(5)
-    assert followed == [intel.switch]
+    assert len(followed) == 1 and isinstance(followed[0], threading.Event) and not followed[0].is_set()
     started: list[bool] = []
     monkeypatch.setattr(lifecycle, "warm_up_intelligence", lambda *args: None)
     monkeypatch.setattr(lifecycle, "start_following_active_snapshot", lambda *args: started.append(True))
     lifecycle.warm_up_external_intelligence(_worker_starting("threads", Queue.SCENARIOS))
     assert started == [True]
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
-    assert start_following_active_snapshot(get_settings(), intel.switch, keeper) is None
+    assert start_following_active_snapshot() is None
 
 
 def test_only_a_worker_that_writes_scenarios_builds_the_evidence_index(
@@ -269,7 +273,7 @@ def test_a_scenarios_worker_consumes_and_beats_only_once_its_index_is_built(
 
     keeper = SimpleNamespace(rebuild_index=build_soon)
     heartbeat = SimpleNamespace(start=lambda: beat_once_built.append(built.done()))
-    monkeypatch.setattr(container, "get_evidence_index_keeper", lambda: keeper)
+    monkeypatch.setattr(warm_up_module, "get_evidence_index_keeper", lambda: keeper)
     monkeypatch.setattr(lifecycle, "start_following_active_snapshot", lambda *args: None)
     monkeypatch.setattr(lifecycle, "WorkerHeartbeat", lambda *args: heartbeat)
     monkeypatch.setattr(lifecycle, "_heartbeat", None)
@@ -295,7 +299,7 @@ def test_a_scenarios_worker_starts_when_its_index_build_fails_or_runs_late(
     def seconds_to_start(build: Future[None]) -> float:
         """How long the worker's warm-up took with this build."""
         keeper = SimpleNamespace(rebuild_index=lambda: build)
-        monkeypatch.setattr(container, "get_evidence_index_keeper", lambda: keeper)
+        monkeypatch.setattr(warm_up_module, "get_evidence_index_keeper", lambda: keeper)
         started = time.monotonic()
         lifecycle.warm_up_external_intelligence(_worker_starting("threads", Queue.SCENARIOS))
         return time.monotonic() - started
@@ -303,7 +307,7 @@ def test_a_scenarios_worker_starts_when_its_index_build_fails_or_runs_late(
     assert seconds_to_start(failed) < 2 and seconds_to_start(late) < 2
 
 
-def test_a_warm_up_with_nothing_imported_yet_logs_no_failure(intel: Intel) -> None:
+def test_a_warm_up_with_nothing_imported_yet_logs_no_failure(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner, 2026-10-15: on but empty, only the keeper's one line names the import to run. Before: every
     scenarios worker start also logged warm_up_failed with a traceback, though its index had settled empty."""
 
@@ -312,8 +316,9 @@ def test_a_warm_up_with_nothing_imported_yet_logs_no_failure(intel: Intel) -> No
         build: Future[None] = Future()
         build.set_exception(error)
         keeper = SimpleNamespace(rebuild_index=lambda: build)
+        monkeypatch.setattr(warm_up_module, "get_evidence_index_keeper", lambda: keeper)
         with capture_logs() as logs:
-            warm_up_intelligence(intel.switch, lambda: keeper)  # type: ignore[arg-type,return-value]
+            warm_up_intelligence()
         return [line["event"] for line in logs]
 
     assert logged(EvidenceIndexRefused(IntelMessage.SNAPSHOT_EMPTY)) == []

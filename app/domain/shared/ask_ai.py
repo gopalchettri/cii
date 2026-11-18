@@ -25,11 +25,7 @@ def ask_ai_and_check(
     first_answer_check: Callable[[dict[str, Any]], list[str]] | None = None,
     reuse_earlier_answer: bool = False,
 ) -> Any:
-    """What a checked answer means. An answer with problems is asked again once with them; raises
-    UnreadableAiAnswer when the second is still wrong, TruncatedAiAnswer when one was cut off.
-    `first_answer_check` also judges a usable first answer, and `reuse_earlier_answer` takes this job's
-    earlier answers (see ChatModel.ask_for_checked_json). Its every attempt (retries, a re-ask) is one ask
-    in tsg_ai_usage."""
+    """What a checked answer means."""
     with one_ask():
         answer = chat.ask_for_checked_json(
             task,
@@ -71,8 +67,7 @@ def answer_item_problems(contract: type[BaseModel], item: Any, where: str) -> li
         contract.model_validate({key: value for key, value in item.items() if key in contract.model_fields})
     except ValidationError as exc:
         return [
-            f"{where}: "
-            + " ".join([*map(str, error["loc"]), str(error["msg"]).removeprefix("Value error, ")])
+            f"{where}: " + " ".join([*map(str, error["loc"]), str(error["msg"]).removeprefix("Value error, ")])
             for error in exc.errors()
         ]
     return []

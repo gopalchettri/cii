@@ -12,7 +12,7 @@ import numpy as np
 from app.ai import TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.constants import AI_OUTAGE_MESSAGES, CHAT_MAX_OUTPUT_TOKENS, AiOutage, AiTask
 from app.core.exceptions import Unavailable
-from app.models.scenario.write import ScenarioDraft
+from app.schemas.scenario_internal import ScenarioDraft
 
 #: An answer: a JSON object, an exception to raise, or a function of the user prompt giving either.
 Answer = dict[str, Any] | BaseException | Callable[[str], dict[str, Any]]
@@ -40,10 +40,7 @@ def brief_system_names(user_prompt: str) -> list[str]:
 
 #: Where each slot of a set prompt starts ("SLOT SC1"), and the list its answer holds the slots' items under.
 _SLOT = re.compile(r"^SLOT (\S+)\n", re.MULTILINE)
-_SET_KEYS = {
-    AiTask.WRITE_SCENARIO: "scenarios",
-    AiTask.REPAIR_SCENARIO: "scenarios",
-}
+_SET_KEYS = {AiTask.WRITE_SCENARIO: "scenarios", AiTask.REPAIR_SCENARIO: "scenarios"}
 
 
 def slot_blocks(user_prompt: str) -> list[tuple[str, str]]:
@@ -138,8 +135,7 @@ class FakeChatModel:
         if whole and isinstance(whole[0], dict) and key in whole[0]:
             return dict(self.queued[task].pop(0))  # type: ignore[arg-type]
         items = [
-            {"slot": label, "threat": _slot_threat(block)} | self._one_answer(task, block)
-            for label, block in slots
+            {"slot": label, "threat": _slot_threat(block)} | self._one_answer(task, block) for label, block in slots
         ]
         return {key: items}
 

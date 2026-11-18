@@ -9,14 +9,10 @@ from typing import Any
 
 import pytest
 
-from app.domain.external_intelligence import untrusted_text
-from app.domain.external_intelligence.injection_patterns import (
-    MARKUP_PATTERNS,
-    SQUASHED_PATTERNS,
-    TEXT_PATTERNS,
-)
-from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
-from app.models.external_intelligence.sanitised_text import SanitisedText
+from app.domain.intel import safety as untrusted_text
+from app.domain.intel.patterns import MARKUP_PATTERNS, SQUASHED_PATTERNS, TEXT_PATTERNS
+from app.domain.intel.safety import UntrustedTextSanitiser
+from app.schemas.intel_records import SanitisedText
 
 SANITISER = UntrustedTextSanitiser()
 
@@ -115,9 +111,7 @@ def test_ordinary_descriptions_pass_and_keep_their_words(text: str) -> None:
 
 
 def test_markup_links_and_urls_are_removed_and_the_words_stay() -> None:
-    text = (
-        'See <a href="https://evil.test/x">the advisory</a> and [docs](https://x.test/y?q=1), www.evil.test/z'
-    )
+    text = 'See <a href="https://evil.test/x">the advisory</a> and [docs](https://x.test/y?q=1), www.evil.test/z'
     text += " ![pixel](https://evil.test/p.png) mailto:a@b.test done"
     result = SANITISER.sanitise(text, 500)
     assert not result.unsafe
@@ -266,9 +260,7 @@ def _counted(table: untrusted_text.Patterns, reads: list[tuple[int, str]]) -> An
 
 def test_each_pattern_reads_each_text_once_so_a_long_description_costs_two_reads() -> None:
     reads: list[tuple[int, str]] = []
-    counted = UntrustedTextSanitiser(
-        *(_counted(t, reads) for t in (TEXT_PATTERNS, SQUASHED_PATTERNS, MARKUP_PATTERNS))
-    )
+    counted = UntrustedTextSanitiser(*(_counted(t, reads) for t in (TEXT_PATTERNS, SQUASHED_PATTERNS, MARKUP_PATTERNS)))
     description = "Adversaries may abuse command interpreters to execute commands. " * 30 + "It’s common."
     assert not counted.sanitise(description, 1500).unsafe  # two rounds: the curly quote is normalised
     assert max(Counter(reads).values()) == 1

@@ -1,5 +1,5 @@
 # Prometheus on a developer laptop (scripts/monitoring.py). Same rules and paths as UAT (prometheus.yml);
-# only the targets differ: everything runs on this machine, on the ports docs/RUNNING.md uses.
+# only the targets differ: everything runs on this machine, on the ports run.ps1 and scripts/monitoring.py use.
 
 global:
   scrape_interval: 30s

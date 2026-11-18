@@ -1,5 +1,6 @@
--- The test database's rows (BLUEPRINT R-11): entity 86 owns asset 103 (category OT) with supporting systems 321 and
--- 322; system 323 exists but is not linked to the asset; entity 99 owns nothing. The library: the 6 STRIDE
+-- The test database's rows: entity 86 owns asset 103 (category OT) with supporting systems 321 and
+-- 322; system 323 exists but is not linked to that asset; entity 86 also owns asset 105 (category IT) with
+-- supporting system 323; entity 99 owns nothing. The library: the 6 STRIDE
 -- categories, 8 types, 20 live threats, 6 actors, 30 controls (each with an AssetType), plus one pending type with
 -- its pending threat, one pending threat under a live type, and one curator-rejected threat.
 SET NOCOUNT ON;
@@ -56,9 +57,12 @@ INSERT dbo.ctm_scan_entity (id, type, name, ctm_category_id, description, operat
                             target_rto_hours, target_rpo_hours, priority, data_handled)
 VALUES (103, N'Control system', N'Grid control centre', 3,
         N'Monitors and switches the 132 kV transmission network.', N'Windows Server 2019', N'Abu Dhabi', 5,
-        4, 1, 1, N'Telemetry and switching commands');
+        4, 1, 1, N'Telemetry and switching commands'),
+       (105, N'Application', N'Customer billing platform', 2,
+        N'Bills electricity customers each month.', N'Windows Server 2022', N'Dubai', 3,
+        8, 4, 14, N'Customer names, meter readings and payment records');
 SET IDENTITY_INSERT dbo.ctm_scan_entity OFF;
-INSERT dbo.ctm_scan_entity_bu (ctm_scan_entity_id, group_id, service_id) VALUES (103, 86, 1);
+INSERT dbo.ctm_scan_entity_bu (ctm_scan_entity_id, group_id, service_id) VALUES (103, 86, 1), (105, 86, 2);
 
 SET IDENTITY_INSERT dbo.onboarding_supporting_systems ON;
 INSERT dbo.onboarding_supporting_systems (
@@ -80,7 +84,7 @@ SET IDENTITY_INSERT dbo.onboarding_supporting_systems OFF;
 -- A system's own description (the procedure shows it, G217): 322 has none recorded (the required-facts tests).
 UPDATE dbo.onboarding_supporting_systems SET description = N'Runs the transmission grid.' WHERE id = 321;
 INSERT dbo.ctm_scan_entity_supporting_system (ctm_scan_entity_id, onboarding_supporting_system_id)
-VALUES (103, 321), (103, 322);
+VALUES (103, 321), (103, 322), (105, 323);
 
 -- The 6 STRIDE categories, with DevTest5's ids.
 INSERT dbo.Threat_Category (ThreatCategoryID, ThreatCategoryName, IsActive, IsDeleted) VALUES

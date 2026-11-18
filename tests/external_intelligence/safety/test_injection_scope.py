@@ -8,9 +8,9 @@ import time
 import pytest
 
 from app.core.constants import StoryFindingCode
-from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
-from app.domain.scenario.write import _apply_safety_checks
-from app.models.scenario.write import Finding, ScenarioDraft, WriterBrief
+from app.domain.intel.safety import UntrustedTextSanitiser
+from app.domain.scenario.write import apply_safety_checks
+from app.schemas.scenario_internal import Finding, ScenarioDraft, WriterBrief
 
 SANITISER = UntrustedTextSanitiser()
 
@@ -19,9 +19,7 @@ def echo_findings(text: str) -> list[Finding]:
     """The echo check's findings for a story telling `text`."""
     brief = WriterBrief({}, (), {}, "Threat", (), (), ())
     draft = ScenarioDraft("", text, "", (), "")
-    return [
-        f for f in _apply_safety_checks(brief, draft).findings if f.code == StoryFindingCode.INJECTION_ECHO
-    ]
+    return [f for f in apply_safety_checks(brief, draft).findings if f.code == StoryFindingCode.INJECTION_ECHO]
 
 
 #: Sentences from advisories, CVE descriptions and attack stories that merely describe what an attacker does.
@@ -180,9 +178,7 @@ def test_an_echoed_instruction_blocks_the_story(echo: str) -> None:
     assert [f.code for f in findings] == [StoryFindingCode.INJECTION_ECHO]
 
 
-@pytest.mark.parametrize(
-    "text", ["\n" * 8_000, "\n " * 4_000, "#" * 8_000], ids=["newlines", "spaced", "hashes"]
-)
+@pytest.mark.parametrize("text", ["\n" * 8_000, "\n " * 4_000, "#" * 8_000], ids=["newlines", "spaced", "hashes"])
 def test_a_long_run_of_newlines_or_hashes_is_checked_in_linear_time(text: str) -> None:
     """Probe, 30 Oct: 16,000 newlines took 81 s at ingest and 8,000 about 21 s (a quadratic scan)."""
     started = time.perf_counter()

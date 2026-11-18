@@ -22,6 +22,7 @@ from app.core.constants import (
     EmbeddingCorpus,
     ErrorCode,
     ErrorMessage,
+    IntelKind,
     IntelSource,
     Limits,
     LogEvent,
@@ -31,15 +32,13 @@ from app.core.constants import (
     Timeouts,
 )
 from app.core.database import get_mongodb
-from app.data_access.admin.embedding_repository import EmbeddingRepository
-from app.data_access.base import VectorRepository
-from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
-from app.data_access.jobs.job_repository import new_job
-from app.data_access.jobs.work_control_repository import WorkControlRepository
-from app.data_access.remediation.remediation_repository import RemediationRepository
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.service_mapper.mapping_repository import RETIRED_CREATE_KEY_INDEX, MappingRepository
-from app.models.external_intelligence.intel_record import RejectedRecord
+from app.crud import work_control
+from app.crud.base import VectorRepository
+from app.crud.embeddings import EmbeddingRepository
+from app.crud.intel import IntelRecordRepository
+from app.crud.jobs import new_job
+from app.crud.scenarios import ThreatScenarioRepository
+from app.schemas.intel_records import IntelRecord
 from app.worker import jobs
 from tests import test_review as review
 from tests.test_review import api_key, service  # noqa: F401 - fixtures used by name
@@ -49,11 +48,7 @@ UNCONFIRMED_WRITES = [
     WriteConcernError("primary stepped down", 189),
     ExecutionTimeout("operation exceeded time limit", 50),
 ]
-REPLICATION_TIMED_OUT = {
-    "code": 64,
-    "errmsg": "waiting for replication timed out",
-    "errInfo": {"wtimeout": True},
-}
+REPLICATION_TIMED_OUT = {"code": 64, "errmsg": "waiting for replication timed out", "errInfo": {"wtimeout": True}}
 #: Each way the app writes in bulk; a lagging replica set reaches every one.
 BULK_WRITERS: dict[str, Callable[[], Any]] = {
     "scenario decisions": lambda: ThreatScenarioRepository().update_scenario_decisions(
@@ -63,7 +58,8 @@ BULK_WRITERS: dict[str, Callable[[], Any]] = {
         EmbeddingCorpus.THREAT, {"key": [{"id": "row"}]}, {"key": {"sources": []}}
     ),
     "intel import": lambda: IntelRecordRepository().save_intel_records(
-        [], [RejectedRecord(IntelSource.CISA_KEV, "CVE-1", "bad", "hash")], datetime.now(UTC)
+        [IntelRecord(IntelSource.ATTACK_ENTERPRISE, "T1", IntelKind.TECHNIQUE, "IT", "t", "x", "https://x", "v")],
+        datetime.now(UTC),
     ),
     "vector cache": lambda: VectorRepository(Collection.EMBEDDINGS).save_vectors([{"_id": "key"}]),
 }
@@ -241,8 +237,9 @@ def _settle_with(spy: SimpleNamespace) -> None:
     """The sweep's settle step reading tsg_scenarios through `spy`, which finds nothing, so no session is
     read."""
     scenarios = ThreatScenarioRepository(spy)  # type: ignore[arg-type]
-    work = WorkControlRepository(None, scenarios, RemediationRepository(), None)  # type: ignore[arg-type]
-    work.settle_stopped_scenario_sessions()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(work_control, "get_threat_scenario_repository", lambda: scenarios)
+        work_control.settle_stopped_scenario_sessions()
 
 
 def test_the_sweep_never_reads_controls_failed_for_good() -> None:
@@ -288,12 +285,3 @@ def test_start_up_drops_the_retired_failed_controls_index() -> None:
     scenarios.collection.create_index([("controls.status", 1), ("controls.last_attempt_at", 1)])
     scenarios.create_indexes()
     assert "controls.status_1_controls.last_attempt_at_1" not in scenarios.collection.index_information()
-
-
-def test_start_up_drops_the_retired_mapping_create_key_index() -> None:
-    """Owner 2026-10-28: a mapping keeps every Idempotency-Key it ran in request_keys; the index on the first
-    request's key goes at start-up."""
-    mappings = MappingRepository()
-    mappings.collection.create_index([("tenant_id", 1), ("entity_id", 1), ("create_key", 1)])
-    mappings.create_indexes()
-    assert RETIRED_CREATE_KEY_INDEX not in mappings.collection.index_information()

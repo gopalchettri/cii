@@ -1,9 +1,5 @@
-"""Search indexes: keyword (BM25) + meaning (vectors), merged by rank method and values.
-
-Keywords find rare exact words (product names, acronyms) that vectors blur; vectors find the same idea in
-other words ("data leakage" ~ "unauthorised disclosure") that keywords miss. Merging by RANK (reciprocal-rank
-fusion) means the two score scales never need calibrating against each other. Everything is in memory (~1.8k
-rows): one search is a dictionary walk plus one matrix multiply."""
+"""Hybrid search in memory: keyword (BM25) and meaning (vectors) legs merged by rank, so no score scale needs
+calibrating against the other."""
 
 import math
 import re
@@ -13,7 +9,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from app.core.constants import Search
-from app.models.search.hits import SearchHit
+from app.schemas.library import SearchHit
 
 _NOT_A_WORD = re.compile(r"[^\w\s]")
 
@@ -23,53 +19,8 @@ def tokenize(text: str) -> list[str]:
     return _NOT_A_WORD.sub(" ", text).casefold().split()
 
 
-class KeywordIndex:
-    """BM25 over a corpus tokenized once; one query is scored against every document."""
-
-    def __init__(self, texts: Sequence[str]) -> None:
-        documents = [tokenize(text) for text in texts]
-        self._size = len(documents)
-        lengths = np.array([len(document) for document in documents], dtype=np.float64)
-        average_length = float(lengths.mean()) if self._size else 0.0
-        # The part of BM25 that depends only on the document, worked out once.
-        self._length_weight = (
-            Search.BM25_K1 * (1.0 - Search.BM25_B + Search.BM25_B * lengths / average_length)
-            if average_length
-            else None
-        )
-        postings: dict[str, tuple[list[int], list[int]]] = {}
-        for position, document in enumerate(documents):
-            for token, count in Counter(document).items():
-                ids, counts = postings.setdefault(token, ([], []))
-                ids.append(position)
-                counts.append(count)
-        self._postings = {
-            token: (np.array(ids), np.array(counts, dtype=np.float64))
-            for token, (ids, counts) in postings.items()
-        }
-        self._idf = {
-            token: math.log(1.0 + (self._size - len(ids) + 0.5) / (len(ids) + 0.5))
-            for token, (ids, _) in postings.items()
-        }
-
-    def score(self, query: str) -> np.ndarray:
-        scores = np.zeros(self._size)
-        if self._length_weight is None:
-            return scores
-        for token in tokenize(query):  # a repeated query word counts again, as in v1
-            posting = self._postings.get(token)
-            if posting is None:
-                continue
-            ids, counts = posting
-            scores[ids] += (
-                self._idf[token] * counts * (Search.BM25_K1 + 1.0) / (counts + self._length_weight[ids])
-            )
-        return scores
-
-
 def rank_best_first(scores: np.ndarray, depth: int) -> list[int]:
-    """Positions best first, equal scores in position order; a zero score is left out, so a leg that knows
-    nothing about a row never votes for it."""
+    """Positions best first, ties in position order; a zero score is left out, so it never votes."""
     order = np.argsort(-scores, kind="stable")
     return [int(position) for position in order[scores[order] > 0][:depth]]
 
@@ -87,11 +38,37 @@ class HybridIndex:
     """One searchable list of texts: a keyword leg and a vector leg, merged by rank."""
 
     def __init__(self, texts: Sequence[str], vectors: np.ndarray) -> None:
-        self._keywords = KeywordIndex(texts)
         self._vectors = vectors  # L2-normalised rows, aligned with texts
         self._by_exact_text: dict[str, list[int]] = {}
         for position, text in enumerate(texts):
             self._by_exact_text.setdefault(" ".join(tokenize(text)), []).append(position)
+        documents = [tokenize(text) for text in texts]
+        lengths = np.array([len(document) for document in documents], dtype=np.float64)
+        average = float(lengths.mean()) if documents else 0.0
+        # BM25's document-only part, worked out once; an all-empty corpus has no postings to weigh.
+        self._length_weight = Search.BM25_K1 * (1.0 - Search.BM25_B + Search.BM25_B * lengths / (average or 1.0))
+        postings: dict[str, tuple[list[int], list[int]]] = {}
+        for position, document in enumerate(documents):
+            for token, count in Counter(document).items():
+                ids, counts = postings.setdefault(token, ([], []))
+                ids.append(position)
+                counts.append(count)
+        self._postings = {
+            token: (np.array(ids), np.array(counts, dtype=np.float64)) for token, (ids, counts) in postings.items()
+        }
+        self._idf = {
+            token: math.log(1.0 + (len(documents) - len(ids) + 0.5) / (len(ids) + 0.5))
+            for token, (ids, _) in postings.items()
+        }
+
+    def score_keywords(self, query: str) -> np.ndarray:
+        """BM25 of one query against every text; a repeated query word counts again, as in v1."""
+        scores = np.zeros(len(self._length_weight))
+        for token in tokenize(query):
+            if (posting := self._postings.get(token)) is not None:
+                ids, counts = posting
+                scores[ids] += self._idf[token] * counts * (Search.BM25_K1 + 1.0) / (counts + self._length_weight[ids])
+        return scores
 
     def search(
         self,
@@ -103,12 +80,8 @@ class HybridIndex:
         vector_floor: float | None = Search.VECTOR_FLOOR,
         leg_depth: int | None = None,
     ) -> list[SearchHit]:
-        """The top_k rows for one query. `allowed` (one bool per row) narrows the rows BEFORE each leg is cut
-        to `leg_depth` (default top_k), so rows outside the scope never take a place. The vector leg keeps
-        only rows at least `vector_floor` similar when any reach it (semantic_match_threshold), else
-        the best anyway. A row whose text equals the query (after tokenizing) comes first with certainty:
-        two different threats once had cosine 0.969."""
-        keyword_scores = self._keywords.score(query)
+        """The top_k rows for one query; `allowed` scopes the rows before each leg's cut, an exact text first."""
+        keyword_scores = self.score_keywords(query)
         vector_scores = self._vectors @ query_vector if len(self._vectors) else np.zeros(0)
         if allowed is not None:
             keyword_scores = np.where(allowed, keyword_scores, 0.0)

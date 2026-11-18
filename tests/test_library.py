@@ -12,10 +12,8 @@ from app.core.config import get_settings
 from app.core.constants import AssetType, Env, ErrorMessage, LogEvent, StrideCategory
 from app.core.database import get_stored_procedure_client
 from app.core.exceptions import Unavailable
-from app.data_access.library.control_repository import ControlRepository
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.models.library.library import LibraryActor, LibraryThreatType, ThreatLibrary
+from app.crud.library import ControlRepository, SqlOperationRepository, ThreatRepository
+from app.schemas.library import LibraryActor, LibraryThreatType, ThreatLibrary
 from app.search.library_cache import LibraryCache, load_libraries
 from tests.sql_fakes import load_library_from
 
@@ -59,8 +57,8 @@ class ScriptedRepository:
         self.loads += 1
         return ThreatLibrary(threats=(), actors=())
 
-    def get_control_library(self) -> tuple[tuple[()], tuple[()]]:
-        return (), ()
+    def get_control_library(self) -> tuple[()]:
+        return ()
 
 
 def _scripted_cache(repository: ScriptedRepository) -> LibraryCache:
@@ -68,6 +66,20 @@ def _scripted_cache(repository: ScriptedRepository) -> LibraryCache:
 
 
 SQL_DOWN = Unavailable(ErrorMessage.SQL_UNREACHABLE)
+
+
+@pytest.fixture(autouse=True)
+def no_checker_thread_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cache made here starts no minute checker: one left running logs its failed checks into later tests."""
+    monkeypatch.setattr("app.search.library_cache.start_thread_without_lease", lambda *_: None)
+
+
+def test_a_cache_made_here_leaves_no_checker_thread_running() -> None:
+    """Before: four scripted caches kept checking every minute until the run ended; with their script used up
+    each check logged library.check_failed into whichever test was capturing logs (test_d51_ai_capacity)."""
+    before = [thread for thread in threading.enumerate() if thread.name == "library-check"]
+    assert _scripted_cache(ScriptedRepository((("Control_Library", b"v1"),))).get_threat_library() is not None
+    assert [thread for thread in threading.enumerate() if thread.name == "library-check"] == before
 
 
 def test_library_loads_threats_with_stride_categories_and_controls_with_their_asset_type() -> None:
@@ -152,8 +164,13 @@ def test_an_outage_during_a_check_keeps_serving_the_last_good_copy() -> None:
     service = _scripted_cache(repository)
     loaded = service.get_threat_library()
     failures_before = REGISTRY.get_sample_value("tsg_library_check_failures_total") or 0.0
-    service.check_library_once()  # SQL unreachable: logged, not raised
-    service.check_library_once()  # any other failure: logged, the checker keeps running
+    with capture_logs() as logs:
+        service.check_library_once()  # SQL unreachable: one warning, not raised
+        service.check_library_once()  # any other failure: logged with its trace, the checker keeps running
+    assert [(e["event"], e["log_level"]) for e in logs] == [
+        (LogEvent.DEPENDENCY_UNAVAILABLE, "warning"),
+        (LogEvent.LIBRARY_CHECK_FAILED, "error"),
+    ]
     assert service.get_threat_library() is loaded and repository.loads == 1
     # Counted too (LibraryCheckFailing): a check that keeps failing means library edits are not picked up.
     assert REGISTRY.get_sample_value("tsg_library_check_failures_total") == failures_before + 2
@@ -262,20 +279,3 @@ def test_a_threat_without_its_own_category_is_left_out_and_counted() -> None:
     assert library.threats_without_category == (2,)
     crew = LibraryActor(1, "Crew")
     assert library.types == (LibraryThreatType(7, "Malware", StrideCategory.TAMPERING, (crew,)),)
-
-
-def test_the_old_control_procedure_still_loads_without_retired_controls() -> None:
-    """Owner, 2026-10-11: an app rolled out before the DBA installs the new tsg_GetControlLibrary (one result
-    set) still loads its library, with no retired controls and a warning naming what to install."""
-
-    class _OldProcedure:
-        def execute_procedure(self, _procedure: object) -> list[list[dict[str, object]]]:
-            row = {"ControlLibraryID": 1, "ControlCode": "AC-01", "AssetType": "IT", "Domain": "Access",
-                   "ControlName": "Account management", "ControlDescription": "Reviews."}  # fmt: skip
-            return [[row]]
-
-    with capture_logs() as logs:
-        loaded = load_library_from(control_sets=_OldProcedure().execute_procedure(None))
-    active, retired = loaded.control_library, loaded.retired_controls
-    assert ([control.code for control in active], retired) == (["AC-01"], ())
-    assert [entry["event"] for entry in logs] == [LogEvent.LIBRARY_RETIRED_CONTROLS_MISSING]

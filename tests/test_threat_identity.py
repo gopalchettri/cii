@@ -1,4 +1,4 @@
-"""A hand-written scenario's threat identity (BLUEPRINT M05 Rule L2, BUILD_PLAN S55): live, pending, curator-
+"""A hand-written scenario's threat identity: live, pending, curator-
 rejected and new wordings; ids and names that must agree; a threat the library files under another type; the
 category rule. Pure, no store."""
 
@@ -8,8 +8,8 @@ import pytest
 
 from app.core.constants import ConflictReason, LibraryStatus
 from app.core.exceptions import Invalid
-from app.domain.remediation.manual import resolve_threat
-from app.models.remediation.requests import ManualScenario
+from app.domain.remediation.plans import resolve_threat
+from app.schemas.remediation import ManualScenario
 from tests.plan_job_fakes import ELEVATION, TAMPERING, THREATS
 
 
@@ -61,11 +61,7 @@ def test_pending_rejected_and_new_wordings() -> None:
     found = (rejected["catalogue_id"], rejected["status"], rejected["type_id"])
     assert found == (None, LibraryStatus.CURATOR_REJECTED, 1)
     new_threat = _resolved({"id": 1}, {"name": "Logic bomb"})
-    assert (new_threat["status"], new_threat["category"], new_threat["type_name"]) == (
-        None,
-        TAMPERING,
-        "Malware",
-    )
+    assert (new_threat["status"], new_threat["category"], new_threat["type_name"]) == (None, TAMPERING, "Malware")
     new_type = _resolved({"name": "Insider sabotage"}, {"name": "Logic bomb"})
     assert (new_type["type_id"], new_type["category"]) == (None, None)
 
@@ -91,9 +87,7 @@ def test_the_category_given_must_be_stride_and_one_the_threat_is_filed_under() -
     assert filed["category"] == ELEVATION
     not_filed = _refused({"name": "Malware"}, {"id": 10}, threat_category={"name": "Spoofing"})
     assert "not 'Spoofing'" in (not_filed.errors or [])[0]["message"]
-    both = _refused(
-        {"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"id": 2, "name": "Spoofing"}
-    )
+    both = _refused({"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"id": 2, "name": "Spoofing"})
     assert (both.errors or [])[0]["field"] == "body.manual_scenario.threat_category_name"  # review S56
     unknown = _refused({"name": "Malware"}, {"name": "Logic bomb"}, threat_category={"name": "Fraud"})
     assert unknown.errors == [

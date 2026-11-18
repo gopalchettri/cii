@@ -10,11 +10,11 @@ import pytest
 
 from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, Collection, Decision, Status, Step, TaskName
 from app.core.database import get_mongodb
-from app.data_access.jobs.job_repository import JobRepository
+from app.crud.jobs import JobRepository
 from app.domain.scenario.session import build_status_board
-from app.domain.service_mapper.views import mapping_status, mapping_view
-from app.models.remediation.plan import RemediationStatus
-from app.models.scenario.views import session_status_from_record
+from app.domain.service_mapper.mappings import mapping_status, mapping_view
+from app.schemas.remediation import RemediationStatus
+from app.schemas.scenarios import session_status_from_record
 
 #: Each job collection: its job's task, its record's own fields, and how its status reads the notice.
 _READERS: dict[Collection, tuple[TaskName, dict[str, Any], list[Callable[[dict[str, Any]], Any]]]] = {
@@ -31,7 +31,7 @@ _READERS: dict[Collection, tuple[TaskName, dict[str, Any], list[Callable[[dict[s
     Collection.SERVICE_MAPPINGS: (
         TaskName.MAP_SERVICES,
         {"tenant_id": "t-1", "entity_id": 86, "generation": 1, "created_at": datetime.now(UTC)},
-        [lambda record: mapping_status(record, 5).retrying, lambda record: mapping_view(record, 5).retrying],
+        [lambda record: mapping_status(record).retrying, lambda record: mapping_view(record).retrying],
     ),
 }
 

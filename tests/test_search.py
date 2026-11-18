@@ -13,14 +13,8 @@ import pytest
 
 from app.core.constants import ErrorMessage, StrideCategory
 from app.core.exceptions import Unavailable
-from app.models.library.library import (
-    LibraryActor,
-    LibraryControl,
-    LibraryThreat,
-    LibraryThreatType,
-    ThreatLibrary,
-)
-from app.search.indexes import HybridIndex, KeywordIndex, fuse_by_rank, tokenize
+from app.schemas.library import LibraryActor, LibraryControl, LibraryThreat, LibraryThreatType, ThreatLibrary
+from app.search.indexes import HybridIndex, fuse_by_rank, tokenize
 from app.search.service import LibrarySearch
 from tests.fakes import FakeEmbeddings
 
@@ -52,7 +46,7 @@ def test_keyword_scores_equal_v1_on_random_corpora() -> None:
         texts = [" ".join(generator.choices(words, k=generator.randint(1, 9))) for _ in range(30)]
         query = " ".join(generator.choices(words, k=4))
         expected = v1_bm25_scores(tokenize(query), [tokenize(text) for text in texts])
-        assert np.allclose(KeywordIndex(texts).score(query), expected)
+        assert np.allclose(HybridIndex(texts, np.zeros((len(texts), 1))).score_keywords(query), expected)
 
 
 def test_rank_fusion_equals_v1() -> None:
@@ -116,16 +110,11 @@ def test_threats_are_searched_within_their_category_and_controls_and_actors_in_f
 
 
 def test_the_vector_leg_keeps_only_close_rows_when_any_are_close_else_the_best_anyway() -> None:
-    index = HybridIndex(
-        ["alpha", "beta", "gamma"], np.vstack([_unit(1, 0, 0), _unit(0, 1, 0), _unit(0, 0, 1)])
-    )
+    index = HybridIndex(["alpha", "beta", "gamma"], np.vstack([_unit(1, 0, 0), _unit(0, 1, 0), _unit(0, 0, 1)]))
     close = index.search("unrelated words", _unit(1, 0.2, 0), top_k=3)
     assert [hit.position for hit in close] == [0]  # cosine 0.98 passes the 0.60 floor; 0.20 does not
     nothing_close = index.search("unrelated words", _unit(0.5, 0.4, -1), top_k=3)
-    assert [hit.position for hit in nothing_close] == [
-        0,
-        1,
-    ]  # none reaches 0.60 (0.42, 0.34): best ones count
+    assert [hit.position for hit in nothing_close] == [0, 1]  # none reaches 0.60 (0.42, 0.34): best ones count
 
 
 def _library(control_name: str) -> SimpleNamespace:
@@ -231,9 +220,7 @@ def test_a_slow_build_of_an_older_library_never_replaces_the_newer_one() -> None
     slow.join(5)
     assert got_old[0].library is old  # type: ignore[attr-defined]  # its caller still got what it asked for
     assert search.snapshot().library is new
-    assert (
-        embeddings.calls.count("control") == 2
-    )  # old and new built once each: the newer were never replaced
+    assert embeddings.calls.count("control") == 2  # old and new built once each: the newer were never replaced
 
 
 def _until(condition: Callable[[], bool], seconds: float = 5) -> bool:
@@ -288,9 +275,9 @@ def test_a_failed_rebuild_keeps_the_older_snapshot_and_is_tried_again_later() ->
     search.snapshot()
     current[0] = new
     assert search.snapshot().library is old
-    assert _until(lambda: attempts == [1] and search._snapshots._building is None)
+    assert _until(lambda: attempts == [1] and search._building is None)
     assert search.snapshot().library is old and attempts == [1]  # no new attempt within the pause
-    search._snapshots._retry_at = 0.0  # the pause is over
+    search._retry_at = 0.0  # the pause is over
     search.snapshot()
     assert _until(lambda: attempts == [1, 1])
     with pytest.raises(Unavailable):

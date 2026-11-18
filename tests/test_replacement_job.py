@@ -57,6 +57,11 @@ def _plan(record_id: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     return run, {path["path_id"]: path for path in run["plan"]["paths"]}
 
 
+def _replaced(paths: dict[str, dict[str, Any]]) -> int:
+    """How many paths a spare took the place of."""
+    return sum(p.get("unselected_reason") == UnselectedReason.REPLACED_AFTER_FAILURE for p in paths.values())
+
+
 def _on_the_asset_of(record_id: str, earlier: str) -> None:
     """Run `record_id` on the asset of run `earlier` (done by now, so the asset is free)."""
     asset_id = _sessions().find_one({"_id": earlier})["asset_id"]
@@ -77,7 +82,7 @@ def test_a_rejected_path_is_replaced_by_a_reserve_and_the_limit_holds(chat: Fake
     assert _slots_written(chat) == 3  # p1, p2, p3
     done = [s for s in _scenarios_of(record_id) if s["status"] == ScenarioStatus.DONE]
     assert sorted(s["path_id"] for s in done) == ["p2", "p3"]
-    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
+    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and _replaced(paths) == 1
 
 
 def test_with_no_limit_and_every_path_in_the_set_a_rejected_path_is_not_replaced(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
@@ -150,17 +155,14 @@ def test_a_path_repeating_its_own_runs_scenario_is_given_up_before_the_ai_and_a_
     _deliver_until_done(again)
     run, paths = _plan(again)
     repeat, spare = paths["p1"], paths["p3"]
-    assert (repeat["selected"], repeat["unselected_reason"]) == (
-        False,
-        UnselectedReason.REPLACED_AFTER_FAILURE,
-    )
+    assert (repeat["selected"], repeat["unselected_reason"]) == (False, UnselectedReason.REPLACED_AFTER_FAILURE)
     assert (repeat["abandoned_reason"], repeat["replaced_by"], repeat["attempts"]) == (
         FindingCode.NEAR_DUPLICATE, "p3", 0,
     )  # fmt: skip
     assert spare["replaces"] == "p1" and spare["served"] and paths["p2"]["served"]
     assert _slots_written(chat) - calls_before == 2  # p2 and p3 only
     assert sorted(s["path_id"] for s in _scenarios_of(again)) == ["p0", "p2", "p3"]  # no card for p1
-    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and run["counts"]["replaced"] == 1
+    assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE and _replaced(paths) == 1
 
 
 def test_a_reserve_the_scenario_count_left_out_comes_before_a_later_sets_path(chat: FakeChatModel) -> None:  # noqa: F811 - the imported fixture
@@ -185,7 +187,8 @@ def test_with_no_limit_a_rejected_path_is_replaced_by_the_next_sets_best_path(ch
     assert (paths["p1"]["selected"], paths["p1"]["replaced_by"]) == (False, "p3")
     assert paths["p3"]["replaces"] == "p1" and paths["p3"]["served"] and not paths["p4"]["served"]
     assert sorted(run["job"]["set"]) == ["p1", "p2", "p3"]
-    assert (run["counts"]["abandoned"], run["counts"]["replaced"], run["counts"]["remaining"]) == (0, 1, 1)
+    assert (run["counts"]["abandoned"], _replaced(paths), run["counts"]["remaining"]) == (0, 1, 1)
+    assert "replaced" not in run["counts"]
     assert run["last_action"]["outcome"] == RunActionOutcome.COMPLETE
 
 
@@ -213,9 +216,7 @@ def test_a_next_set_whose_path_a_reserve_replaced_still_reads_what_was_asked(cha
     record_id = _queued_run(["Wrong one", "Threat 2", "Threat 3", "Threat 4"], limit=2)
     queued = {"outcome": RunActionOutcome.RUNNING, "requested": 2, "delivered": None, "reason": None,
               "remaining": None, "epoch": 1}  # fmt: skip
-    _sessions().update_one(
-        {"_id": record_id}, {"$set": {"last_action": {"kind": "next_set"}, "last_next_set": queued}}
-    )
+    _sessions().update_one({"_id": record_id}, {"$set": {"last_action": {"kind": "next_set"}, "last_next_set": queued}})
     _deliver_until_done(record_id)
     run, paths = _plan(record_id)
     assert paths["p1"]["replaced_by"] == "p3" and len(run["job"]["set"]) == 3  # the reserve joined the set

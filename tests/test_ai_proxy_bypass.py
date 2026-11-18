@@ -64,10 +64,7 @@ def test_the_gateway_goes_on_no_proxy_once_and_keeps_what_was_there() -> None:
 
 def test_a_module_s_own_gateway_goes_on_no_proxy_too() -> None:
     """Owner 2026-10-28: a module may call its chat model on its own gateway (CII_<MODULE>_CHAT_BASE_URL)."""
-    own = {
-        "remediation_chat_base_url": "https://own-gateway.example",
-        "remediation_chat_model": "litellm_proxy/x",
-    }
+    own = {"remediation_chat_base_url": "https://own-gateway.example", "remediation_chat_model": "litellm_proxy/x"}
     apply_proxy_settings(_settings(True).model_copy(update=own))
     assert os.environ["NO_PROXY"].split(",") == ["localhost", "llmapi.example", "own-gateway.example"]
 
@@ -110,9 +107,7 @@ def test_nothing_is_copied_when_the_bypass_is_off_or_not_on_windows(monkeypatch:
 CONFIGURED_PROXY = "http://configured.test:3128"  # CII_PROXY_URL
 
 
-def test_the_configured_proxy_carries_every_other_host_and_wins_over_the_rest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_configured_proxy_carries_every_other_host_and_wins_over_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     # Owner 2026-10-16: the proxy is set in the env file, like CII_AI_BYPASS_PROXY.
     _windows_proxy_setting(monkeypatch, {"https": COMPANY_PROXY})
     monkeypatch.setenv("HTTPS_PROXY", "http://chosen.test:3128")
@@ -133,9 +128,7 @@ def test_with_the_bypass_off_the_ai_calls_use_the_configured_proxy_too() -> None
 def test_importing_the_ai_layer_never_copies_the_env_file_into_the_environment(tmp_path: Path) -> None:
     # G263: litellm loaded ./.env into os.environ on import. CII_AI_BYPASS_PROXY then read as a proxy variable
     # (its name ends in _PROXY), so Windows' proxy setting was ignored from start-up; every key went along.
-    (tmp_path / ".env").write_text(
-        "CII_AI_BYPASS_PROXY=true\nCII_SCENARIO_CHAT_API_KEY=must-stay-in-the-file\n"
-    )
+    (tmp_path / ".env").write_text("CII_AI_BYPASS_PROXY=true\nCII_SCENARIO_CHAT_API_KEY=must-stay-in-the-file\n")
     probe = (
         "import json, os, urllib.request, app.ai; "
         "print(json.dumps([sorted(k for k in os.environ if k.upper().startswith('CII_')), "
@@ -197,19 +190,12 @@ def test_both_spellings_are_merged_so_the_gateway_never_hides_the_pods_entries(
     assert merged_no_proxy(environment, {"llmapi.example"}) == merged
 
 
-def test_each_gateway_route_is_logged_once_without_the_proxy_password(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_each_gateway_route_is_logged_once_without_the_proxy_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://tsg:secret@proxy.test:8080")
     with capture_logs() as logs:
         apply_proxy_settings(_settings(True))
-    routes = {
-        e["host"]: (e["route"], e.get("proxy")) for e in logs if e["event"] == LogEvent.AI_GATEWAY_ROUTE
-    }
-    assert routes == {
-        "llmapi.example": ("direct", None),
-        "other-provider.example": ("proxy", "proxy.test:8080"),
-    }
+    routes = {e["host"]: (e["route"], e.get("proxy")) for e in logs if e["event"] == LogEvent.AI_GATEWAY_ROUTE}
+    assert routes == {"llmapi.example": ("direct", None), "other-provider.example": ("proxy", "proxy.test:8080")}
     assert "secret" not in str(logs)
 
 

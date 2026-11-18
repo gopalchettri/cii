@@ -16,31 +16,22 @@ import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
 from pymongo import _csot
-from pymongo.errors import ExecutionTimeout
-from structlog.testing import capture_logs
 
-from app import container
-from app.api.routers import ai_usage as ai_usage_routes
+from app.api.routes import ai_usage as ai_usage_routes
 from app.core.clock import utc_now
 from app.core.constants import AiApi, AiUsageCollection, AiUsageLimits, Module
-from app.core.database import get_mongodb, get_redis_client
+from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin.ai_usage_repository import (
-    AiUsageHourlyRepository,
-    AiUsageRepository,
-    AiUsageRequestRepository,
-)
-from app.models.ai_usage.usage_report import UsageCallList, UsageTotalsQuery
-from app.services.ai_usage import ai_usage_service as ai_usage_service_module
-from app.services.ai_usage.ai_usage_service import AiUsageService
+from app.crud import ai_usage as crud
+from app.domain import ai_usage
+from app.domain.ai_usage import roll_up_ai_usage
+from app.schemas.ai_usage import UsageCallList, UsageTotalsQuery
 
 DAY = datetime(2025, 3, 10, tzinfo=UTC)
 WINDOW = {"since": "2025-03-10T00:00:00Z", "until": "2025-03-12T00:00:00Z"}
 
 
-def _row(
-    request: dict[str, Any], minute: int, bucket: str, task: str, outcome: str = "ok", **extra: Any
-) -> dict:
+def _row(request: dict[str, Any], minute: int, bucket: str, task: str, outcome: str = "ok", **extra: Any) -> dict:
     """One usage row of `request`, `minute` minutes after its start (a reused answer has no try number)."""
     if outcome == "reused":
         extra.setdefault("try_no", None)
@@ -105,8 +96,8 @@ def session() -> dict[str, Any]:
         _row(plan, 1, "controls", "embed", model="embedder"),
         _row(plan, 2, "controls", "rerank", model="reranker"),
     ]
-    AiUsageRepository().create_rows(rows)
-    container.get_ai_usage_service().roll_up_hours(DAY, DAY + timedelta(hours=23))
+    crud.insert_rows(get_mongodb(), rows)
+    roll_up_ai_usage(get_mongodb(), DAY, DAY + timedelta(hours=23))
     return {
         "entity": entity,
         "session_id": session_id,
@@ -121,9 +112,7 @@ def _totals(client: TestClient, session: dict[str, Any], **params: Any) -> Any:
     return client.get("/v1/ai-usage", params={**WINDOW, "entity_id": session["entity"], **params})  # no key
 
 
-def test_totals_by_module_and_api_count_each_part_and_label_each_api(
-    client: TestClient, session: dict
-) -> None:
+def test_totals_by_module_and_api_count_each_part_and_label_each_api(client: TestClient, session: dict) -> None:
     """Mutation: count a reused answer as an AI call, or drop `requests` from the add-up."""
     response = _totals(client, session)
     assert response.status_code == 200, response.text
@@ -138,8 +127,7 @@ def test_totals_by_module_and_api_count_each_part_and_label_each_api(
         "Starts a run: finds threats, writes the first set, picks controls",
     )
     parts = {
-        name: (part["label"], part["total_ai_calls"], part["failed_calls"])
-        for name, part in create["buckets"].items()
+        name: (part["label"], part["total_ai_calls"], part["failed_calls"]) for name, part in create["buckets"].items()
     }
     assert parts == {
         "threats": ("Finding threats", 3, 1),
@@ -147,11 +135,11 @@ def test_totals_by_module_and_api_count_each_part_and_label_each_api(
         "controls": ("Picking controls", 2, 0),
     }
     next_set = items[("threat_scenarios", "next_set")]
-    assert (
-        next_set["total_ai_calls"],
-        next_set["failed_calls"],
-        next_set["buckets"]["threats"]["total_ai_calls"],
-    ) == (3, 1, 0)
+    assert (next_set["total_ai_calls"], next_set["failed_calls"], next_set["buckets"]["threats"]["total_ai_calls"]) == (
+        3,
+        1,
+        0,
+    )
     plan = items[("remediation", "create_plan")]
     assert set(plan["buckets"]) == {"remediation", "controls"} and plan["total_ai_calls"] == 3
     assert response.json()["total"]["total_ai_calls"] == 13
@@ -181,28 +169,21 @@ def test_totals_by_day_are_days_in_the_callers_time_zone(client: TestClient, ses
         {"group_by": ["planet"]},
     ],
 )
-def test_a_totals_report_it_cannot_answer_right_is_refused(
-    client: TestClient, session: dict, params: dict
-) -> None:
+def test_a_totals_report_it_cannot_answer_right_is_refused(client: TestClient, session: dict, params: dict) -> None:
     assert _totals(client, session, **params).status_code == 422
 
 
-def test_a_sessions_requests_newest_first_with_its_totals_and_pages(
-    client: TestClient, session: dict
-) -> None:
+def test_a_sessions_requests_newest_first_with_its_totals_and_pages(client: TestClient, session: dict) -> None:
     """Mutation: leave the plan (its session is the run) out of the session, or lose the cursor's place."""
-    first = client.get(
-        "/v1/ai-usage/requests", params={"session_id": session["session_id"], "limit": 2}
-    ).json()
+    first = client.get("/v1/ai-usage/requests", params={"session_id": session["session_id"], "limit": 2}).json()
     assert [item["api"] for item in first["items"]] == ["create_plan", "next_set"]
-    assert (
-        first["summary"]["requests"],
-        first["summary"]["total_ai_calls"],
-        first["summary"]["failed_calls"],
-    ) == (3, 13, 2)
+    assert (first["summary"]["requests"], first["summary"]["total_ai_calls"], first["summary"]["failed_calls"]) == (
+        3,
+        13,
+        2,
+    )
     rest = client.get(
-        "/v1/ai-usage/requests",
-        params={"session_id": session["session_id"], "limit": 2, "after": first["next"]},
+        "/v1/ai-usage/requests", params={"session_id": session["session_id"], "limit": 2, "after": first["next"]}
     ).json()
     assert [item["api"] for item in rest["items"]] == ["create_scenario"] and rest["next"] is None
     create = rest["items"][0]
@@ -216,17 +197,13 @@ def test_a_request_list_over_too_long_a_range_is_refused(client: TestClient) -> 
     assert client.get("/v1/ai-usage/requests", params=params).status_code == 422
 
 
-def test_a_ranges_requests_page_by_index_from_the_summaries_the_add_up_keeps(
-    client: TestClient, session: dict
-) -> None:
+def test_a_ranges_requests_page_by_index_from_the_summaries_the_add_up_keeps(client: TestClient, session: dict) -> None:
     """Review 2026-10-29: a request list over a range grouped every raw row of the range again on every page.
     It now pages the per-request summaries by their (first_at, _id) index. Mutation: stop writing the
     summaries in the add-up."""
     window = {**WINDOW, "entity_id": session["entity"], "limit": 2}
     first = client.get("/v1/ai-usage/requests", params=window).json()
-    assert [item["api"] for item in first["items"]] == ["create_plan", "next_set"] and first[
-        "summary"
-    ] is None
+    assert [item["api"] for item in first["items"]] == ["create_plan", "next_set"] and first["summary"] is None
     rest = client.get("/v1/ai-usage/requests", params={**window, "after": first["next"]}).json()
     assert [(item["api"], item["total_ai_calls"]) for item in rest["items"]] == [("create_scenario", 7)]
 
@@ -241,11 +218,11 @@ def test_a_request_still_running_is_never_skipped_between_pages(client: TestClie
         | {"session_id": session_id, "at": at + timedelta(minutes=10 * n)}
         for n, api in enumerate((AiApi.CREATE_SCENARIO, AiApi.NEXT_SET, AiApi.REGENERATE))
     ]
-    AiUsageRepository().create_rows([_row(request, 0, "scenario", "write_scenario") for request in requests])
+    crud.insert_rows(get_mongodb(), [_row(request, 0, "scenario", "write_scenario") for request in requests])
     params = {"session_id": session_id, "limit": 2}
     first = client.get("/v1/ai-usage/requests", params=params).json()
     assert [item["api"] for item in first["items"]] == ["regenerate", "next_set"]
-    AiUsageRepository().create_rows([_row(requests[0], 90, "controls", "rerank")])  # the oldest one goes on
+    crud.insert_rows(get_mongodb(), [_row(requests[0], 90, "controls", "rerank")])  # the oldest one goes on
     rest = client.get("/v1/ai-usage/requests", params={**params, "after": first["next"]}).json()
     assert [item["api"] for item in rest["items"]] == ["create_scenario"]
 
@@ -264,9 +241,7 @@ def test_a_cursor_with_a_year_mongodb_cannot_hold_is_refused(client: TestClient,
     for at in ("0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"):
         after = base64.urlsafe_b64encode(json.dumps([at, "0" * 24]).encode()).decode()
         calls = client.get("/v1/ai-usage/calls", params={"request_id": "any", "after": after})
-        listed = client.get(
-            "/v1/ai-usage/requests", params={"session_id": session["session_id"], "after": after}
-        )
+        listed = client.get("/v1/ai-usage/requests", params={"session_id": session["session_id"], "after": after})
         assert (calls.status_code, listed.status_code) == (422, 422), at
 
 
@@ -276,7 +251,7 @@ def test_a_time_zone_mongodb_does_not_know_is_refused_not_a_server_error(
     """Review 2026-10-29: Python's zone list can be newer than MongoDB's (America/Coyhaique came in tzdata
     2025b), so a zone Python took failed the aggregate and answered 500. Mutation: let MongoDB's refusal
     through."""
-    monkeypatch.setattr(ai_usage_service_module, "time_zone", lambda tz: ZoneInfo("UTC"))  # Python takes it
+    monkeypatch.setattr(ai_usage, "_time_zone", lambda tz: ZoneInfo("UTC"))  # Python takes it
     response = _totals(client, session, tz="Mars/Olympus", group_by=["day"], client_id=uuid.uuid4().hex)
     assert response.status_code == 422 and "Mars/Olympus" in response.text
 
@@ -346,33 +321,7 @@ def test_a_reports_work_and_its_json_run_off_the_event_loop(monkeypatch: pytest.
     assert json.loads(response.body) == {"items": [], "next": None}
 
 
-def test_reports_read_from_redis_are_capped_too(
-    client: TestClient, session: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Review 2026-10-29: reading a cached report took no place, so a flood of them while Redis was slow piled
-    up threads without bound. They have places of their own, with the same short wait. Mutation: read Redis
-    with no place."""
-    kept = {"group_by": ["api"], "client_id": uuid.uuid4().hex}
-    assert _totals(client, session, **kept).status_code == 200  # computed, and kept
-    monkeypatch.setattr(ai_usage_routes, "_KEPT_REPORTS", _NoPlace())
-    assert _totals(client, session, **kept).status_code == 503
-
-
-def test_a_report_redis_holds_needs_no_place(
-    client: TestClient, session: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Review 2026-10-29: a cached report waited for a place behind slow ones and answered 503, though
-    Redis answers it in milliseconds. Mutation: look in Redis only once a place is taken."""
-    kept = {"group_by": ["api"], "client_id": uuid.uuid4().hex}
-    assert _totals(client, session, **kept).status_code == 200  # computed, and kept
-    monkeypatch.setattr(ai_usage_routes, "_REPORTS", _NoPlace())
-    assert _totals(client, session, **kept).status_code == 200
-    assert _totals(client, session, group_by=["api"], client_id=uuid.uuid4().hex).status_code == 503
-
-
-def test_one_requests_activities_each_have_a_name_a_description_and_a_model(
-    client: TestClient, session: dict
-) -> None:
+def test_one_requests_activities_each_have_a_name_a_description_and_a_model(client: TestClient, session: dict) -> None:
     """Mutation: key the activity catalogue by task alone (embed and rerank differ per part)."""
     response = client.get(f"/v1/ai-usage/requests/{session['create']['request_id']}")
     assert response.status_code == 200, response.text
@@ -383,26 +332,18 @@ def test_one_requests_activities_each_have_a_name_a_description_and_a_model(
     assert found[("Relevance check", "kimi")] == (2, 1)
     assert found[("Control ranking", "reranker")] == (1, 0)
     gate = next(item for item in response.json()["activities"] if item["task"] == "relevance_gate")
-    assert (
-        gate["description"].startswith("AI picks which library threats apply") and gate["reused_answers"] == 1
-    )
+    assert gate["description"].startswith("AI picks which library threats apply") and gate["reused_answers"] == 1
     assert client.get(f"/v1/ai-usage/requests/{uuid.uuid4().hex}").status_code == 404
 
 
 def test_every_call_of_a_request_newest_first_with_its_activity_and_never_its_text(
     client: TestClient, session: dict
 ) -> None:
-    response = client.get(
-        "/v1/ai-usage/calls", params={"request_id": session["create"]["request_id"], "limit": 50}
-    )
+    response = client.get("/v1/ai-usage/calls", params={"request_id": session["create"]["request_id"], "limit": 50})
     calls = response.json()["items"]
     assert len(calls) == 8 and calls[0]["outcome"] == "reused" and calls[-1]["outcome"] == "unavailable"
     assert calls[0]["try_no"] is None  # fix-check 2026-10-29: a reused answer is no attempt (it answered 500)
-    assert (calls[-1]["activity"], calls[-1]["reason"], calls[-1]["try_no"]) == (
-        "Relevance check",
-        "ai_busy",
-        1,
-    )
+    assert (calls[-1]["activity"], calls[-1]["reason"], calls[-1]["try_no"]) == ("Relevance check", "ai_busy", 1)
     assert not [call for call in calls if "prompt" in call or "response" in call]
     assert client.get("/v1/ai-usage/calls").status_code == 422
 
@@ -411,9 +352,9 @@ def test_the_hourly_add_up_equals_a_raw_recount_and_running_it_again_changes_not
     """Mutation: drop $ifNull from the add-up key, or count a request in every hour it touches."""
     hourly = get_mongodb()[AiUsageCollection.HOURLY]
     mine = {"entity_id": session["entity"]}
-    before = sorted(hourly.find(mine), key=lambda doc: doc["_id"])
-    container.get_ai_usage_service().roll_up_hours(DAY, DAY + timedelta(hours=23))
-    assert sorted(hourly.find(mine), key=lambda doc: doc["_id"]) == before
+    before = sorted(hourly.find(mine, {"read_at": 0}), key=lambda doc: doc["_id"])
+    roll_up_ai_usage(get_mongodb(), DAY, DAY + timedelta(hours=23))
+    assert sorted(hourly.find(mine, {"read_at": 0}), key=lambda doc: doc["_id"]) == before
     raw = [row for row in session["rows"] if row["outcome"] != "reused"]
     assert sum(doc["total_ai_calls"] for doc in before) == len(raw)
     assert sum(doc["requests"] for doc in before) == 3
@@ -433,214 +374,57 @@ def test_a_row_with_no_entity_or_api_is_added_up_under_empty_keys() -> None:
         "model": marker,
         "outcome": "ok",
     }
-    AiUsageRepository().create_rows([row])
-    container.get_ai_usage_service().roll_up_hours(at, at)
+    crud.insert_rows(get_mongodb(), [row])
+    roll_up_ai_usage(get_mongodb(), at, at)
     [doc] = get_mongodb()[AiUsageCollection.HOURLY].find({"model": marker})
-    assert (doc["module"], doc["api"], doc["entity_id"], doc["total_ai_calls"], doc["requests"]) == (
-        "",
-        "",
-        "",
-        1,
-        0,
-    )
+    assert (doc["module"], doc["api"], doc["entity_id"], doc["total_ai_calls"], doc["requests"]) == ("", "", "", 1, 0)
 
 
-def _service(hourly: AiUsageHourlyRepository | None = None) -> AiUsageService:
-    repositories = (AiUsageRepository(), hourly or AiUsageHourlyRepository(), AiUsageRequestRepository())
-    return AiUsageService(*repositories, get_redis_client())
+def test_an_hour_read_earlier_never_replaces_one_read_later() -> None:
+    """Two add-ups may run at once (no lock): the later read wins. Mutation: replace without the read_at
+    guard, or guard with $lt (a document stored before read_at existed would never be replaced)."""
+    hourly, hour_id = get_mongodb()[AiUsageCollection.HOURLY], f"test-{uuid.uuid4().hex}"
+    later, earlier = utc_now(), utc_now() - timedelta(minutes=1)
+    hourly.insert_one({"_id": hour_id, "total_ai_calls": 1})  # stored before read_at existed
+    crud.replace_if_newer(get_mongodb(), AiUsageCollection.HOURLY, [{"_id": hour_id, "read_at": later, "n": 2}])
+    crud.replace_if_newer(get_mongodb(), AiUsageCollection.HOURLY, [{"_id": hour_id, "read_at": earlier, "n": 3}])
+    assert hourly.find_one({"_id": hour_id})["n"] == 2
 
 
-def test_a_second_add_up_while_one_runs_is_skipped_and_a_manual_one_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review 2026-10-29: the runbook's replay and roll-up took no lock, so a scheduled add-up could write an
-    hour back over theirs; and a replay stored its rows before taking it, so a refused replay left rows no
-    add-up had counted. Mutations: let roll_up_hours run without the lock; store the rows before it."""
-    monkeypatch.setattr(AiUsageLimits, "ROLLUP_LOCK_WAIT_SECONDS", 1)
-    redis, service, usage = get_redis_client(), _service(), AiUsageRepository()
-    request = {"request_id": "replayed-while-busy", "api": AiApi.NEXT_SET, "module": Module.THREAT_SCENARIOS}
-    row = _row({**request, "at": DAY, "session_id": "s", "entity_id": 1}, 0, "scenario", "write_scenario")
-    redis.set(AiUsageLimits.ROLLUP_LOCK_KEY, "another-run", ex=30)
-    try:
-        with capture_logs() as logs:
-            assert service.roll_up_ai_usage() == 0
-        assert [entry["event"] for entry in logs] == ["ai.usage_rollup_busy"]
-        with pytest.raises(Unavailable):
-            service.roll_up_hours(DAY, DAY)
-        with pytest.raises(Unavailable):
-            service.replay_rows([row], DAY, DAY)
-        assert usage.collection.count_documents({"_id": row["_id"]}) == 0  # nothing stored uncounted
-        assert redis.get(AiUsageLimits.ROLLUP_LOCK_KEY) == "another-run"  # never released by the skipped one
-    finally:
-        redis.delete(AiUsageLimits.ROLLUP_LOCK_KEY)
+def test_an_add_up_with_no_row_yet_still_records_its_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: return before the success metric when nothing is stored (AiUsageRollupBehind would fire)."""
+    seen: list[str] = []
+    monkeypatch.setattr(crud, "newest_hour", lambda db: None)
+    monkeypatch.setattr(ai_usage.metrics, "record_reaper_time", lambda gauge: seen.append(gauge))
+    roll_up_ai_usage(get_mongodb())
+    assert seen == [ai_usage.metrics.AI_USAGE_ROLLUP_LAST_SUCCESS]
 
 
-def test_a_manual_add_up_waits_for_the_scheduled_one_to_finish() -> None:
-    """Fix-check 2026-10-29: a replay refused at once while the 5-minute add-up ran, so the runbook's step
-    failed at random. It waits for the lock now. Mutation: wait 0 seconds."""
-    redis, service = get_redis_client(), _service()
-    redis.set(AiUsageLimits.ROLLUP_LOCK_KEY, "another-run", ex=2)
-    try:
-        assert isinstance(service.roll_up_hours(DAY, DAY), int)  # no Unavailable: it waited its turn
-    finally:
-        redis.delete(AiUsageLimits.ROLLUP_LOCK_KEY)
+def test_a_replayed_row_of_an_older_request_rebuilds_its_summary() -> None:
+    """A request with rows before the window still gets its summary rebuilt (its last_at moves); only its
+    hourly count stays in its first hour. Mutation: rebuild only requests first seen in the window."""
+    request_id, at = uuid.uuid4().hex, datetime(2025, 7, 1, 8, tzinfo=UTC)
+    row = {"bucket": "scenario", "task": "write_scenario", "outcome": "ok", "request_id": request_id}
+    row["model"] = request_id  # a marker
+    for hours in (0, 5):
+        crud.insert_rows(get_mongodb(), [row | {"_id": ObjectId(), "created_at": at + timedelta(hours=hours)}])
+        roll_up_ai_usage(get_mongodb(), at + timedelta(hours=hours), at + timedelta(hours=hours))
+    summary = get_mongodb()[AiUsageCollection.REQUESTS].find_one({"_id": request_id})
+    assert summary["last_at"].replace(tzinfo=UTC) == at + timedelta(hours=5)
+    hourly = get_mongodb()[AiUsageCollection.HOURLY].find({"model": request_id})
+    assert sorted((doc["hour"].hour, doc["requests"]) for doc in hourly) == [(8, 1), (13, 0)]
 
 
-def test_an_add_up_whose_lock_ran_out_stops_and_leaves_the_next_holders_lock_alone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review 2026-10-29: the lock was renewed and released without checking it was still this run's, so a
-    run whose lock ran out wrote on beside the next holder, extended its lock, and could free it. Mutations:
-    renew with a plain EXPIRE; release with a plain DELETE; keep writing after a renewal failed."""
-    redis, service, hourly = get_redis_client(), _service(), AiUsageHourlyRepository()
-    key, chunks = AiUsageLimits.ROLLUP_LOCK_KEY, []
-    real = service._roll_up_chunk
-
-    def chunk_then_lose_the_lock(since: datetime, until: datetime) -> int:
-        chunks.append(since)
-        redis.set(key, "the-next-run", ex=30)  # this run's lock ran out and another add-up took it
-        return real(since, until)
-
-    monkeypatch.setattr(service, "_roll_up_chunk", chunk_then_lose_the_lock)
-    try:
-        with pytest.raises(Unavailable, match="ran past its lock"):
-            service.roll_up_hours(DAY, DAY + timedelta(days=2))  # three chunks of 24 hours
-        assert len(chunks) == 1  # no chunk written once its lock was gone
-        assert redis.get(key) == "the-next-run" and 0 < redis.ttl(key) <= 30  # neither freed nor extended
-        redis.delete(key)
-        marker = f"lock-lost-{uuid.uuid4().hex}"  # a row, so even a first scheduled run has an hour to add up
-        AiUsageRepository().create_rows(
-            [
-                {
-                    "_id": ObjectId(),
-                    "created_at": DAY,
-                    "bucket": "shared",
-                    "task": "embed",
-                    "model": marker,
-                    "outcome": "ok",
-                }
-            ]
-        )
-        before = hourly.frontier()
-        with capture_logs() as logs:
-            assert service.roll_up_ai_usage() == 0
-        assert "ai.usage_rollup_lock_lost" in [entry["event"] for entry in logs]
-        assert hourly.frontier() == before  # the next run redoes these hours
-    finally:
-        redis.delete(key)
+def test_each_add_up_day_has_a_mongodb_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: drop the day's timeout."""
+    deadlines: list[float | None] = []
+    real = ai_usage._write_hours
+    monkeypatch.setattr(ai_usage, "_write_hours", lambda *args: deadlines.append(_csot.remaining()) or real(*args))
+    roll_up_ai_usage(get_mongodb(), DAY, DAY)
+    assert deadlines and all(left is not None and left <= AiUsageLimits.ROLLUP_CHUNK_SECONDS for left in deadlines)
 
 
-def test_a_scheduled_add_up_whose_lock_ran_out_before_its_first_chunk_writes_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review 2026-10-29: the lock was renewed only after each chunk, so slow reads before the first (its
-    frontier) ate that chunk's time, and it could write after the lock ran out. It is renewed before each
-    chunk now. Mutation: renew only after each chunk."""
-    redis, hourly, chunks = get_redis_client(), AiUsageHourlyRepository(), []
-    key, frontier = AiUsageLimits.ROLLUP_LOCK_KEY, hourly.frontier
-
-    def slow_frontier() -> datetime | None:
-        redis.set(
-            key, "the-next-run", ex=30
-        )  # this read took so long the lock ran out; another add-up took it
-        return frontier()
-
-    monkeypatch.setattr(hourly, "frontier", slow_frontier)
-    service = _service(hourly)
-    monkeypatch.setattr(service, "_roll_up_chunk", lambda since, until: chunks.append(since) or 0)
-    AiUsageRepository().create_rows(
-        [{"_id": ObjectId(), "created_at": DAY, "bucket": "shared", "task": "embed", "outcome": "ok"}]
-    )  # an hour to add up even on a first run
-    try:
-        with capture_logs() as logs:
-            assert service.roll_up_ai_usage() == 0
-        assert chunks == [] and "ai.usage_rollup_lock_lost" in [entry["event"] for entry in logs]
-        assert redis.get(key) == "the-next-run"
-    finally:
-        redis.delete(key)
-
-
-def test_a_replay_stopped_part_way_leaves_its_hours_to_the_next_scheduled_add_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review 2026-10-29: a replay whose add-up timed out after storing its rows left them uncounted (the
-    scheduled add-up redoes only its last two hours). Its frontier is set back to them until they are added
-    up. Mutation: leave the frontier where it was."""
-    service, hourly = _service(), AiUsageHourlyRepository()
-    service.roll_up_ai_usage()
-    reached, marker = hourly.frontier(), f"replayed-{uuid.uuid4().hex}"
-    at = utc_now() - timedelta(days=2)
-    row = {
-        "_id": ObjectId(),
-        "created_at": at,
-        "bucket": "shared",
-        "task": "embed",
-        "outcome": "ok",
-        "model": marker,
-    }
-
-    def too_slow(since: datetime, until: datetime) -> int:
-        raise ExecutionTimeout("MongoDB took too long")
-
-    monkeypatch.setattr(service, "_roll_up_chunk", too_slow)
-    with pytest.raises(ExecutionTimeout):
-        service.replay_rows([row], at, utc_now())
-    assert hourly.frontier() == at.replace(minute=0, second=0, microsecond=0)  # set back to the stored row
-    _service().roll_up_ai_usage()  # the next scheduled add-up
-    assert sum(doc["total_ai_calls"] for doc in hourly.collection.find({"model": marker})) == 1
-    assert hourly.frontier() is not None and reached is not None and hourly.frontier() >= reached
-    second = {**row, "_id": ObjectId()}
-    _service().replay_rows([second], at, utc_now())  # one that finishes puts the frontier back
-    assert hourly.frontier() >= reached
-
-
-def test_a_replays_rows_are_stored_within_a_mongodb_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Review 2026-10-29: a replay's insert ran with no deadline, so a slow MongoDB could keep it going past
-    the lock's life. Mutation: drop its timeout."""
-    service, deadlines = _service(), []
-    real = service._usage.create_rows
-    monkeypatch.setattr(
-        service._usage, "create_rows", lambda rows: deadlines.append(_csot.remaining()) or real(rows)
-    )
-    row = {"_id": ObjectId(), "created_at": DAY, "bucket": "shared", "task": "embed", "outcome": "ok"}
-    service.replay_rows([row], DAY, DAY)
-    assert deadlines and deadlines[0] is not None and deadlines[0] <= AiUsageLimits.ROLLUP_CHUNK_SECONDS
-
-
-def test_each_add_up_chunk_has_a_mongodb_deadline_well_inside_the_locks_life(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Review 2026-10-29: a chunk's writes had no deadline, so a slow MongoDB could keep one writing past its
-    lock's life. Mutation: drop the chunk's timeout."""
-    service, deadlines = _service(), []
-    real = service._roll_up_chunk
-    monkeypatch.setattr(
-        service,
-        "_roll_up_chunk",
-        lambda since, until: deadlines.append(_csot.remaining()) or real(since, until),
-    )
-    service.roll_up_hours(DAY, DAY)
-    assert deadlines and all(
-        left is not None and left <= AiUsageLimits.ROLLUP_CHUNK_SECONDS for left in deadlines
-    )
-    assert 2 * AiUsageLimits.ROLLUP_CHUNK_SECONDS <= AiUsageLimits.ROLLUP_LOCK_SECONDS
-
-
-def test_only_the_scheduled_add_up_moves_its_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Review 2026-10-29: the scheduled add-up resumed from the newest hour held, so a manual add-up of recent
-    hours after downtime made it skip the hours between. It resumes from its own frontier now. Mutation: move
-    the frontier in roll_up_hours."""
-    hourly, service = AiUsageHourlyRepository(), _service()
-    service.roll_up_ai_usage()
-    reached = hourly.frontier()
-    assert reached is not None and reached.minute == reached.second == 0
-    service.roll_up_hours(DAY - timedelta(days=30), DAY - timedelta(days=30))  # a manual add-up, long ago
-    assert hourly.frontier() == reached
-
-
-def test_totals_grouped_by_part_and_task_keep_both_and_name_the_activity(
-    client: TestClient, session: dict
-) -> None:
+def test_totals_grouped_by_part_and_task_keep_both_and_name_the_activity(client: TestClient, session: dict) -> None:
     """Review 2026-10-29: a requested `bucket` was dropped from the key, so embed in threats and embed in
     controls merged and no activity was named. Mutation: pop bucket from the key again."""
     items = _totals(client, session, group_by=["bucket", "task"]).json()["items"]
@@ -674,42 +458,10 @@ def test_a_report_with_nothing_cut_adds_its_total_from_its_rows_in_one_read(
 ) -> None:
     """Review 2026-10-29: the total was always a second read, so an add-up landing between the two gave a
     total its rows did not add up to. Mutation: read the total although nothing was cut."""
-    hourly = AiUsageHourlyRepository()
-    monkeypatch.setattr(hourly, "sum_total", lambda match: pytest.fail("a second read with nothing cut"))
+    monkeypatch.setattr(crud, "sum_total", lambda *_: pytest.fail("a second read with nothing cut"))
     query = UsageTotalsQuery(
-        entity_id=str(session["entity"]),
-        tz="UTC",
-        group_by=["bucket"],
-        since=DAY,
-        until=DAY + timedelta(days=1),
+        entity_id=str(session["entity"]), tz="UTC", group_by=["bucket"], since=DAY, until=DAY + timedelta(days=1)
     )
-    body = _service(hourly)._totals(query)
+    body = ai_usage.summarize_ai_usage(get_mongodb(), query)
     assert body["truncated"] is False
     assert body["total"]["total_ai_calls"] == sum(item["total_ai_calls"] for item in body["items"]) > 0
-
-
-def test_a_totals_report_is_read_once_then_served_from_redis(
-    session: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Mutation: drop the cache (a dashboard refreshing every few seconds would aggregate every time). One
-    over REPORT_CACHE_MAX_BYTES is never kept: the Redis server also holds the job queues."""
-    hourly = AiUsageHourlyRepository()
-    reads: list[int] = []
-    real = hourly.sum_items
-    monkeypatch.setattr(hourly, "sum_items", lambda *args: reads.append(1) or real(*args))
-    service = _service(hourly)
-    query = UsageTotalsQuery(
-        entity_id=str(session["entity"]),
-        tz="UTC",
-        group_by=["bucket"],
-        since=DAY,
-        until=DAY + timedelta(days=1),
-        client_id=uuid.uuid4().hex,
-    )
-    assert service.summarize_ai_usage(query) == service.summarize_ai_usage(query)
-    assert reads == [1]
-    monkeypatch.setattr(AiUsageLimits, "REPORT_CACHE_MAX_BYTES", 10)
-    larger = query.model_copy(update={"client_id": uuid.uuid4().hex})
-    service.summarize_ai_usage(larger)
-    service.summarize_ai_usage(larger)
-    assert reads == [1, 1, 1]

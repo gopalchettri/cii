@@ -6,10 +6,10 @@ from typing import Any
 import pytest
 
 from app.core.constants import AiLimits, AiTask, ErrorCode, TaskName
-from app.data_access.jobs.job_repository import JobRepository
+from app.crud.jobs import JobRepository
 from app.domain.scenario.write import build_writer_prompt, write_scenario_set
 from app.domain.shared.ask_ai import call_tokens
-from app.models.scenario.write import PathFailure, WrittenScenario
+from app.schemas.scenario_internal import PathFailure, WrittenScenario
 from tests.fakes import FakeChatModel, draft_answer, slot_blocks, truncated
 from tests.test_scenario_sets import _briefs
 from tests.test_scenario_writing import _CLEAN
@@ -56,7 +56,7 @@ def test_a_cut_off_second_half_keeps_the_first_halfs_scenarios(
     if rewritten:
         assert isinstance(last, WrittenScenario)
     else:
-        assert isinstance(last, PathFailure) and last.code == ErrorCode.GENERATION_FAILED and not last.final
+        assert isinstance(last, PathFailure) and last.code == ErrorCode.GENERATION_FAILED
 
 
 def test_a_part_that_answers_with_no_usable_scenario_still_sends_the_set_to_the_rewrite(

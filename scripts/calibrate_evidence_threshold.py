@@ -8,7 +8,7 @@ and `ref` an intelligence record's id, both as a threat's search audit stores th
 evidence for that threat, 0 when not (60 or more pairs, a third of them 1, make a usable table). The records
 are read, never written, from tsg_intel's current records, and each pair is scored on exactly what the app
 scores: the query without indicators and the record's scoring_text
-(app/search/external_intelligence/evidence_index.py). Output: for each candidate threshold the pairs kept,
+(app/domain/intel/index.py). Output: for each candidate threshold the pairs kept,
 the precision (kept pairs that are evidence), the recall (evidence pairs that were kept) and the recommended
 value: the highest-recall threshold whose precision is at least 0.9 (noise is worse than a miss), else the
 best F1. Then set EVIDENCE_SIMILARITY_THRESHOLD in this environment's env file and record the model, the
@@ -25,14 +25,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from app.core.constants import IntelSource  # noqa: E402
-from app.models.external_intelligence.evidence import IntelHit  # noqa: E402
-from app.search.external_intelligence.corpus_builder import build_corpus  # noqa: E402
-from app.search.external_intelligence.evidence_index import (  # noqa: E402
+from app.domain.intel.index import (  # noqa: E402
+    build_corpus,  # noqa: E402
     remove_indicators,
     scoring_text,
     technique_titles,
 )
+from app.schemas.intel_records import IntelHit  # noqa: E402
 
 CANDIDATES = (0.5, 1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90)
 PRECISION_WANTED = 0.9
@@ -51,14 +50,12 @@ def read_pairs(path: Path) -> list[tuple[str, str, int]]:
 
 def current_records() -> tuple[IntelHit, ...]:
     """tsg_intel's current records of every source, read only, as the app's evidence index holds them."""
-    from app.container import get_intel_record_repository
+    from app.crud.intel import get_intel_record_repository
 
-    return build_corpus(get_intel_record_repository().stream_current_intel_records(list(IntelSource))).hits
+    return build_corpus(get_intel_record_repository().stream_current_intel_records()).hits
 
 
-def score_pairs(
-    pairs: Sequence[tuple[str, str, int]], hits: Sequence[IntelHit], score: Scorer
-) -> list[float]:
+def score_pairs(pairs: Sequence[tuple[str, str, int]], hits: Sequence[IntelHit], score: Scorer) -> list[float]:
     """The reranker's 0-100 score of every pair on the text the app scores, one call per distinct query."""
     by_ref = {hit.external_id: hit for hit in hits}
     titles = technique_titles(hits)
@@ -73,9 +70,7 @@ def score_pairs(
     return scores
 
 
-def sweep(
-    scores: Sequence[float], labels: Sequence[int], candidates: Sequence[float] = CANDIDATES
-) -> list[Row]:
+def sweep(scores: Sequence[float], labels: Sequence[int], candidates: Sequence[float] = CANDIDATES) -> list[Row]:
     """For each candidate threshold: pairs kept, precision and recall (1.0 precision when nothing is kept)."""
     wanted = sum(labels)
     rows = []
@@ -83,12 +78,7 @@ def sweep(
         kept = [label for value, label in zip(scores, labels, strict=True) if value >= threshold]
         hits = sum(kept)
         rows.append(
-            (
-                float(threshold),
-                float(len(kept)),
-                hits / len(kept) if kept else 1.0,
-                hits / wanted if wanted else 0.0,
-            )
+            (float(threshold), float(len(kept)), hits / len(kept) if kept else 1.0, hits / wanted if wanted else 0.0)
         )
     return rows
 
@@ -108,9 +98,7 @@ def _f1(row: Row) -> float:
 
 def report(rows: Sequence[Row]) -> str:
     lines = ["threshold   kept  precision  recall"]
-    lines += [
-        f"{t:9g}  {int(kept):5d}  {precision:9.2f}  {recall:6.2f}" for t, kept, precision, recall in rows
-    ]
+    lines += [f"{t:9g}  {int(kept):5d}  {precision:9.2f}  {recall:6.2f}" for t, kept, precision, recall in rows]
     return "\n".join([*lines, f"recommended EVIDENCE_SIMILARITY_THRESHOLD={recommend(rows):g}"])
 
 
@@ -126,7 +114,7 @@ def main(argv: Sequence[str], score: Scorer | None = None, hits: Sequence[IntelH
         sys.stdout.write(f"No current record in tsg_intel for: {', '.join(missing)}\n")
         return 2
     if score is None:
-        from app.container import get_rerank_model
+        from app.ai.rerank import get_rerank_model
 
         score = get_rerank_model().score_relevance
     scores = score_pairs(pairs, hits, score)

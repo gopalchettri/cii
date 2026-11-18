@@ -1,4 +1,4 @@
-"""The scenario write job (Step 12, BUILD_PLAN S25-S26): batches of six, saved one by one, handed on by
+"""The scenario write job: batches of six, saved one by one, handed on by
 themselves to the end of the set a person asked for; on the test MongoDB, with a fake chat model."""
 
 import threading
@@ -13,7 +13,6 @@ from celery.exceptions import Ignore
 from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
-from app import container
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AI_PATH_OUTAGE_MESSAGE,
@@ -32,12 +31,13 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
-from app.data_access.jobs.job_repository import JobLease, JobRepository
+from app.crud import scenarios as scenario_crud
+from app.crud import work_control
+from app.crud.jobs import JobLease, JobRepository
 from app.domain.scenario.session import pick_next_paths_to_write
-from app.models.scenario.plan import PlannedActor
+from app.schemas.scenario_internal import PlannedActor
 from app.worker import jobs
 from app.worker.scenario import plan_progress, write_job
-from app.worker.scenario.write_job import ScenarioWriteJob
 from tests.fakes import FakeChatModel, brief_of
 from tests.planner_samples import CONTEXT, planned
 
@@ -86,13 +86,7 @@ def _queued_run(
             "asset_id": int(record_id[:6], 16),
             "status": Status.QUEUED,
             "context": CONTEXT.to_record(),
-            "plan": {
-                "threats": threats,
-                "paths": paths,
-                "target": limit,
-                "not_assessed": [],
-                "frozen_at": now,
-            },
+            "plan": {"threats": threats, "paths": paths, "target": limit, "not_assessed": [], "frozen_at": now},
             "job": {
                 "task": TaskName.WRITE_SCENARIOS,
                 "epoch": 1,
@@ -125,10 +119,7 @@ def _answer_for(user_prompt: str) -> dict[str, Any]:
 
 
 def unreadable_then(
-    threat: str,
-    outage: Exception,
-    times: int = 1_000,
-    written: Callable[[str], dict[str, Any]] = _answer_for,
+    threat: str, outage: Exception, times: int = 1_000, written: Callable[[str], dict[str, Any]] = _answer_for
 ) -> Callable[[str], dict[str, Any]]:
     """A writer (`written`) whose first answer for `threat` is unreadable and whose rewrite of it meets
     `outage` (the first `times` rewrites): the set's other paths are final after its first round and saved,
@@ -148,18 +139,10 @@ def unreadable_then(
     return answer
 
 
-def write_job_with(chat: FakeChatModel, library: Any) -> ScenarioWriteJob:
-    """The write job as the app builds it, writing with `chat` from `library`."""
-    return ScenarioWriteJob(
-        sessions=container.get_threat_scenario_session_repository(),
-        scenarios=container.get_threat_scenario_repository(),
-        chat=chat,
-        threat_library=lambda: library,
-        switch=container.get_intelligence_switch(),
-        evidence_finder=container.get_evidence_finder,
-        feeds=container.get_intel_feed_repository(),
-        audit=container.get_audit_repository(),
-    )
+def write_job_with(monkeypatch: pytest.MonkeyPatch, chat: FakeChatModel, library: Any) -> None:
+    """Makes the write job write with `chat` from `library`."""
+    monkeypatch.setattr(write_job, "get_scenario_chat_model", lambda: chat)
+    monkeypatch.setattr(write_job, "get_library_cache", lambda: SimpleNamespace(get_threat_library=lambda: library))
 
 
 @pytest.fixture
@@ -170,8 +153,7 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> FakeChatModel:
         actors=(SimpleNamespace(actor_id=7, name="Cybercriminal"),),
         threats=[SimpleNamespace(catalogue_id=number, type_id=1) for number in range(1, 30)],
     )
-    job = write_job_with(fake, actors)
-    monkeypatch.setattr(container, "get_scenario_write_job", lambda: job)
+    write_job_with(monkeypatch, fake, actors)
     monkeypatch.setattr(plan_progress, "publish_session_status", PUBLISHED.append)
     return fake
 
@@ -186,16 +168,14 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
 
 def _write_batch(lease: JobLease | None) -> None:
     """One delivery of the write job, as its task runs it."""
-    container.get_scenario_write_job().write_scenario_batch(lease)  # type: ignore[arg-type]
+    write_job.write_scenario_batch(lease)  # type: ignore[arg-type]
 
 
 def _deliver_until_done(record_id: str) -> int:
     """Each message the job sends itself, delivered in turn, until the run ends: the number of deliveries."""
     deliveries = 0
     while (
-        lease := JobRepository(_sessions()).claim_job(
-            record_id, 1, TaskName.WRITE_SCENARIOS, f"d{deliveries}"
-        )
+        lease := JobRepository(_sessions()).claim_job(record_id, 1, TaskName.WRITE_SCENARIOS, f"d{deliveries}")
     ) is not None:
         deliveries += 1
         _write_batch(lease)
@@ -215,7 +195,7 @@ def test_fourteen_paths_are_written_in_three_batches_by_themselves(
 ) -> None:
     """T-WRT-20 (S25-S26): 6 + 6 + 2, each batch handed on in a fenced write; one title per scenario; the run
     ends complete, its counts from the scenarios."""
-    container.get_threat_scenario_repository().create_indexes()
+    scenario_crud.get_threat_scenario_repository().create_indexes()
     record_id = _queued_run([f"Threat {number}" for number in range(1, 15)])
     written_before = _settled("written")
     assert _deliver_until_done(record_id) == 3
@@ -261,9 +241,7 @@ def test_the_run_writes_only_its_first_set_and_the_rest_wait_for_a_next_set(
     assert (run["counts"]["written"], run["counts"]["remaining"]) == (3, 5)
 
 
-def test_a_job_with_no_set_writes_its_batch_and_stops(
-    chat: FakeChatModel, sent: list[tuple[Any, ...]]
-) -> None:
+def test_a_job_with_no_set_writes_its_batch_and_stops(chat: FakeChatModel, sent: list[tuple[Any, ...]]) -> None:
     """G196: a run queued before sets existed has no job.set: it writes the batch in its job, then stops; the
     rest waits for a next set (never a crash, never the whole plan)."""
     record_id = _queued_run([f"Threat {number}" for number in range(1, 9)])
@@ -295,11 +273,7 @@ def test_a_set_is_partial_only_when_one_of_its_paths_was_given_up(older_plan: di
     plan = {"paths": [path], "frozen_at": datetime.now(UTC)} | older_plan
     lease = SimpleNamespace(update_job=changes.update)
     run = {"_id": "r", "plan": plan, "job": {"set": ["p1"]}}
-    sessions, scenarios = (
-        container.get_threat_scenario_session_repository(),
-        container.get_threat_scenario_repository(),
-    )
-    plan_progress.PlanProgress(lease, run, sessions, scenarios).continue_or_finish()  # type: ignore[arg-type]
+    plan_progress.PlanProgress(lease, run).continue_or_finish()  # type: ignore[arg-type]
     assert changes["last_action.outcome"] == RunActionOutcome.COMPLETE
 
 
@@ -325,10 +299,8 @@ def test_an_unreadable_path_is_abandoned_at_once_and_the_run_ends_partial(
     assert "scenario_statement Field required" in rewrite.split("REJECTED:")[1]
 
 
-def test_a_path_the_plan_cannot_support_is_abandoned_at_once(
-    chat: FakeChatModel, sent: list[tuple[Any, ...]]
-) -> None:
-    record_id = _queued_run(["Threat on a removed system"], systems=(999,))
+def test_a_path_the_plan_cannot_support_is_abandoned_at_once(chat: FakeChatModel, sent: list[tuple[Any, ...]]) -> None:
+    record_id = _queued_run([" "])  # an unnamed threat: one of the checks made before any AI call
     assert _deliver_until_done(record_id) == 1 and chat.calls == []
     run = _sessions().find_one({"_id": record_id})
     assert run["plan"]["paths"][0]["abandoned"] and run["plan"]["paths"][0]["attempts"] == 1
@@ -343,16 +315,13 @@ def test_a_threat_retired_since_the_plan_is_abandoned_with_no_ai_call(
         actors=(SimpleNamespace(actor_id=7, name="Cybercriminal"),),
         threats=[SimpleNamespace(catalogue_id=2, type_id=1)],  # threat 1 retired after the plan
     )
-    monkeypatch.setattr(container, "get_scenario_write_job", lambda: write_job_with(chat, library))
+    write_job_with(monkeypatch, chat, library)
     record_id = _queued_run(["Retired threat", "Live threat"])
     assert _deliver_until_done(record_id) == 1
     run, stored = _sessions().find_one({"_id": record_id}), _scenarios_of(record_id)
     assert [path["abandoned"] for path in run["plan"]["paths"]] == [True, False]
     assert stored[0]["failure"]["code"] == ErrorCode.LIBRARY_RECORD_RETIRED and stored[1]["status"] == "done"
-    assert (
-        len(chat.asked(AiTask.WRITE_SCENARIO)) == 1
-        and run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
-    )
+    assert len(chat.asked(AiTask.WRITE_SCENARIO)) == 1 and run["last_action"]["outcome"] == RunActionOutcome.PARTIAL
 
 
 def test_an_outage_saves_the_others_and_the_retry_skips_what_was_saved(
@@ -513,7 +482,7 @@ def test_an_answer_that_comes_back_after_its_run_was_cancelled_is_never_saved(
     record_id = _queued_run(["Threat 1"])
 
     def cancelled_meanwhile(user_prompt: str) -> dict[str, Any]:
-        container.get_work_control_repository().cancel_scenario_session(record_id, 86, {"user_id": "u1"})
+        work_control.cancel_scenario_session(record_id, 86, {"user_id": "u1"})
         return _answer_for(user_prompt)
 
     chat.responders[AiTask.WRITE_SCENARIO] = cancelled_meanwhile
@@ -543,7 +512,7 @@ def test_the_duplicate_check_reads_the_store_once_per_batch_on_the_job_thread(
 ) -> None:
     """The batch reads the held scenarios once before any AI call, on the job's thread; each save adds its
     scenario to them (only the lease holder saves), so no save reads them again."""
-    scenarios = container.get_threat_scenario_repository()
+    scenarios = scenario_crud.get_threat_scenario_repository()
     read = scenarios.list_scenarios_for_duplicate_check
     threads: list[int] = []
 

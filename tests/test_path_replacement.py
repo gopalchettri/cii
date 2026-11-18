@@ -58,9 +58,7 @@ def test_with_no_reserve_a_later_sets_best_open_path_is_pulled_forward() -> None
     assert pick_replacement_path(every_path, {}, {"p1", "p2"}) == next_best
     threats = {"lib:p4": {"attacker_check": "none_fits", "actors": [{"role": "acting", "closest": True}]}}
     assert pick_replacement_path(every_path, threats, {"p1", "p2"}) == after
-    assert (
-        pick_replacement_path(every_path, {}, {"p1", "p2", "p4", "p5"}) is None
-    )  # nothing open outside the set
+    assert pick_replacement_path(every_path, {}, {"p1", "p2", "p4", "p5"}) is None  # nothing open outside the set
 
 
 def test_none_promoted_twice_or_brought_back() -> None:
@@ -79,11 +77,7 @@ def test_the_budget_is_the_sets_own_paths_times_the_attempts_and_a_replacement_b
     written = _path("p1", 1, [1], served="s1", attempts=limit - 3)
     failing = _path("p2", 2, [2], attempts=1)
     reserve = _reserve("p4", 4, [1])
-    assert (
-        pick_replacement_path([written, failing, reserve], {}, {"p1", "p2"}) == reserve
-    )  # limit - 3 + 1 + 1 spent
+    assert pick_replacement_path([written, failing, reserve], {}, {"p1", "p2"}) == reserve  # limit - 3 + 1 + 1 spent
     promoted = _path("p3", 3, [3], attempts=1, replaces="p2")
     every_path = [written, failing, promoted, reserve]
-    assert (
-        pick_replacement_path(every_path, {}, {"p1", "p2", "p3"}) is None
-    )  # its try counts; it adds no budget
+    assert pick_replacement_path(every_path, {}, {"p1", "p2", "p3"}) is None  # its try counts; it adds no budget

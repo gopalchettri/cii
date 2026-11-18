@@ -5,7 +5,6 @@ busy. Start-up now stops, naming the package, as it does for a model with no pro
 
 import pytest
 
-from app import container
 from app.ai import rerank
 from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS
 from app.core.config import Settings, get_settings
@@ -29,7 +28,7 @@ def test_the_worker_refuses_to_start_and_says_why(monkeypatch: pytest.MonkeyPatc
     def local_model() -> rerank.RerankModel:
         return rerank.rerank_model_from(settings, UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE)
 
-    monkeypatch.setattr(container, "get_rerank_model", local_model)
+    monkeypatch.setattr(rerank, "get_rerank_model", local_model)
     with pytest.raises(SystemExit, match="sentence-transformers"):
         lifecycle._prepare_stores_and_models()
 

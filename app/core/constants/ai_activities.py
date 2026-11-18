@@ -4,8 +4,7 @@ built, never stored on a usage row, so the wording can change with no data to mi
 from typing import Final
 
 from app.core.constants.ai_usage import AiApi, AiBucket
-from app.core.constants.common import AiTask
-from app.core.constants.job_modules import Module
+from app.core.constants.common import AiTask, Module
 
 #: (module, api) -> (label, description).
 API_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
@@ -13,21 +12,19 @@ API_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
         "Create scenario",
         "Starts a run: finds threats, writes the first set, picks controls",
     ),
+    (Module.THREAT_SCENARIOS, AiApi.CREATE_SESSION): (
+        "Create session",
+        "Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it",
+    ),
     (Module.THREAT_SCENARIOS, AiApi.NEXT_SET): ("Next set", "Writes the next set of scenarios for the run"),
     (Module.THREAT_SCENARIOS, AiApi.REGENERATE): ("Regenerate scenarios", "Rewrites the chosen scenarios"),
-    (Module.REMEDIATION, AiApi.CREATE_PLAN): (
-        "Create remediation plan",
-        "Writes a treatment plan for one scenario",
-    ),
+    (Module.REMEDIATION, AiApi.CREATE_PLAN): ("Create remediation plan", "Writes a treatment plan for one scenario"),
     (Module.REMEDIATION, AiApi.REGENERATE): ("Regenerate plan", "Writes a new version of the plan"),
     (Module.SERVICE_MAPPER, AiApi.CREATE_MAPPING): (
         "Map services",
         "Finds upstream and downstream services for a service",
     ),
-    (Module.SERVICE_MAPPER, AiApi.REGENERATE): (
-        "Regenerate mapping",
-        "Runs the mapping again to add new services",
-    ),
+    (Module.SERVICE_MAPPER, AiApi.REGENERATE): ("Regenerate mapping", "Runs the mapping again to add new services"),
 }
 
 #: part -> (label, description).
@@ -50,14 +47,8 @@ ACTIVITY_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
         "New threat suggestion",
         "AI suggests a threat for a category where no library threat applies",
     ),
-    (AiBucket.THREATS, AiTask.EMBED): (
-        "Threat search",
-        "Turns the asset text into vectors to search the library",
-    ),
-    (AiBucket.THREATS, AiTask.RERANK): (
-        "Threat match ranking",
-        "Ranks library threats against a suggested one",
-    ),
+    (AiBucket.THREATS, AiTask.EMBED): ("Threat search", "Turns the asset text into vectors to search the library"),
+    (AiBucket.THREATS, AiTask.RERANK): ("Threat match ranking", "Ranks library threats against a suggested one"),
     (AiBucket.SCENARIO, AiTask.THREAT_ACTIONS): (
         "Threat action split",
         "AI listed the attacker actions a threat's name describes (older runs only)",
@@ -74,16 +65,18 @@ ACTIVITY_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
         "Plan check",
         "AI checks, in one call, that each scenario of a set carries out its plan",
     ),
-    (AiBucket.SCENARIO, AiTask.EMBED): (
-        "Evidence search",
-        "Searches threat intelligence for a scenario's evidence",
-    ),
+    (AiBucket.SCENARIO, AiTask.EMBED): ("Evidence search", "Searches threat intelligence for a scenario's evidence"),
     (AiBucket.SCENARIO, AiTask.RERANK): ("Evidence ranking", "Ranks the evidence found for a scenario"),
-    (AiBucket.CONTROLS, AiTask.EMBED): (
-        "Control search",
-        "Turns the scenario into a vector to search the controls",
-    ),
+    (AiBucket.CONTROLS, AiTask.EMBED): ("Control search", "Turns the scenario into a vector to search the controls"),
     (AiBucket.CONTROLS, AiTask.RERANK): ("Control ranking", "Ranks candidate controls by how well they fit"),
+    (AiBucket.CONTROLS, AiTask.LINK_CONTROLS): (
+        "Link mitigation to controls",
+        "AI says which library controls do what one MITRE ATT&CK mitigation describes (once per data load)",
+    ),
+    (AiBucket.CONTROLS, AiTask.PICK_CONTROLS): (
+        "Pick controls",
+        "AI picks, in one call, the controls that reduce each sentence of a set's scenarios",
+    ),
     (AiBucket.REMEDIATION, AiTask.REMEDIATION_PLAN): (
         "Write remediation plan",
         "AI writes the treatment plan for the scenario's controls",
@@ -92,10 +85,7 @@ ACTIVITY_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
         "Map services",
         "AI lists upstream and downstream services for a service",
     ),
-    (AiBucket.SERVICE_MAPPER, AiTask.EMBED): (
-        "Service search",
-        "Searches the service catalog for candidates",
-    ),
+    (AiBucket.SERVICE_MAPPER, AiTask.EMBED): ("Service search", "Searches the service catalog for candidates"),
     (AiBucket.SHARED, AiTask.EMBED): ("Library indexing", "Embeds new or changed library and evidence rows"),
     (AiBucket.SHARED, AiTask.RERANK): ("Shared ranking", "A ranking no single request asked for"),
 }

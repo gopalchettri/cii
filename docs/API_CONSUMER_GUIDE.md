@@ -1,6 +1,6 @@
 # TSG API consumer guide: threat scenarios, remediation and service mapper
 
-Covers 18 endpoints, and two operations endpoints in section 7. Source of truth: `app/api/routers/scenario.py`, `app/api/routers/remediation.py`, `app/api/routers/service_mapper.py`, `app/models/**`.
+Covers 19 endpoints, and the operations endpoints in section 7. Source of truth: `app/api/routes/scenarios.py`, `app/api/routes/remediation.py`, `app/api/routes/service_mapper.py`, `app/schemas/**`.
 
 ## 1. Basics
 
@@ -27,12 +27,13 @@ Every run, scenario, plan and mapping belongs to the entity in `X-Entity-Id`. Un
 | Endpoint | Behaviour |
 | --- | --- |
 | `POST /v1/sessions` | optional. Same key + same body → `200` with the same run. Same key, other body → `409 idempotency_key_conflict`. |
+| `POST /v1/create_session` | the same rules as `POST /v1/sessions`. A key already used on one of the two start routes → `409 idempotency_key_conflict` on the other, even with the same body. |
 | `POST /v1/remediation`, `is_manual=true` | optional. Same key + same body → `200`, `replayed: true`. Same key, other body → `409 idempotency_key_conflict`. If that plan failed for an outage (`error.code` `unavailable`), the same key and body write its latest version again: `202`, `replayed: true`, `status: queued` (it can then also answer `409 run_being_deleted` or `control_library_empty`). |
 | `POST /v1/remediation`, `is_manual=false` | accepted but ignored. A repeat → `409 plan_already_exists`. |
 | `POST /v1/service-mapper` | optional. Same key + same body → `200` with the same `mapping_id` and the run (`generation`) it started. Same key, other body → `409` (no `reason`). |
 | `POST /v1/service-mapper/{mapping_id}/regenerate` | optional. Same key → `200` with the run it started. |
 
-Keys are one namespace per entity across `POST /v1/sessions` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. `POST /v1/service-mapper` keys are a namespace of their own. Use a fresh key (e.g. a UUID) per new request.
+Keys are one namespace per entity across `POST /v1/sessions`, `POST /v1/create_session` and manual `POST /v1/remediation`: a key used on one → `409 idempotency_key_conflict` on the other. `POST /v1/service-mapper` keys are a namespace of their own. Use a fresh key (e.g. a UUID) per new request.
 
 **No key sent.** The server makes one from who calls (tenant, entity, user and API client), the method, the path, the exact body and a fixed 60 s window. The same request again in the same window → `409 duplicate_request`: `detail` names the first record and how many seconds ago it started; `details` has its ids (`session_id`; `session_id` and `scenario_id` for a hand-written plan; `mapping_id` and `generation` for a service mapping) and `started_seconds_ago`. It is never replayed. The windows are fixed, so a repeat that crosses a window's edge starts new work. To send two identical requests on purpose, give each its own key.
 
@@ -74,7 +75,7 @@ Every error is `application/problem+json` (RFC 9457):
 | `request_id` | string | same as `X-Request-Id` header |
 | `reason` | string, optional | the rule that refused it (mostly on 409). Stable: branch on this. |
 | `errors` | array, optional | 422: `[{field, message}]`. Review 409s: `[{scenario_id, reason}]`. |
-| `details` | object, optional | facts you can act on, e.g. `remediation_id`, `system_ids`, `missing_facts` |
+| `details` | object, optional | facts you can act on, e.g. `remediation_id`, `system_ids` |
 
 ```json
 {
@@ -137,6 +138,8 @@ GET .../treatment-plan ─► plan (null until a version is done)
         ├─► POST .../treatment-plan/review       {"decision": "accepted"}  (needs a done version, else 409 not_complete)
         └─► POST .../treatment-plan/regenerate   {}  (202; needs latest not queued/running → back to status/SSE)
 ```
+
+`POST /v1/create_session` (3.1b) can take the place of `POST /v1/sessions` in the first line: the same body, the same `202` answer, and every call below works on its `session_id`.
 
 `...` = `/v1/sessions/{session_id}/scenarios/{scenario_id}`. Accept starts no work. Regenerate and next-set do: until that job finishes (`session_status` back to `completed`), accept, regenerate and next-set all get `409 generation_in_progress`.
 
@@ -246,6 +249,42 @@ A set can be `complete` with `delivered` below `requested`: a path an outage sto
 | 409 | `idempotency_key_conflict` | key reused for another body, used by a manual plan request, or its run was deleted: use a new key |
 | 409 | `duplicate_request` | the same request with no key in the same 60 s window: `details.session_id` is the run it started. Use that run, or send a new key |
 | 409 | `intel_no_data` | external intelligence is on but empty; admin must import first |
+
+### 3.1b `POST /v1/create_session`
+
+A second way to start a run for one asset. The headers, the body (`StartRunRequest`), the `Idempotency-Key` rules and the response (`RunBoard`, `202`, `200` on replay) are exactly those of 3.1. Every other threat-scenario call (status, events, results, accept, reject, regenerate, next set, plan-trace, promote, cancel, delete) works on its `session_id` as on any other run, and a remediation plan (section 4) is requested for its accepted scenarios the same way.
+
+What differs is how the scenarios are made:
+
+| | `POST /v1/sessions` (3.1) | `POST /v1/create_session` |
+| --- | --- | --- |
+| Where a scenario comes from | TSG first finds the threat-library threats that fit the asset, then the AI writes one scenario per threat | the AI writes the scenarios from its own knowledge of MITRE ATT&CK: the Enterprise matrix for an IT asset, ICS for an OT asset, both for an IT\OT (hybrid) asset or when the asset and its systems are mixed. With each scenario it names the attacker group, the techniques and the mitigations |
+| What code checks | each draft against the library threat it was given | every group, technique and mitigation named is looked up in TSG's own copy of MITRE ATT&CK (section 7.4). A spelling variant of the right entry's name, or an ATT&CK ID given with another entry's exact name (that entry is taken), is settled by code; an unconfirmed extra technique or mitigation is removed with no re-ask. Only a scenario that would be lost (no confirmed group or no confirmed technique) is sent back to the AI, once and alone; still lost, it is not shown. The AI's own text is saved without technique, CVE or advisory numbers, links or `[n]` markers (code adds the cited sentences), and goes through the safety checks of a 3.1 scenario: one they fault is not shown |
+| The attacker (`actors[]`, `actor`) | a threat actor of the library | the ATT&CK group, e.g. `Sandworm Team`; `actor_id` is null, `selection_reason` starts with its ATT&CK ID (`G0034: ...`) |
+| The threat (`threat`) | a library threat, or an AI-proposed one | always AI-proposed, under a threat type and a STRIDE category copied from the library; it can be promoted to the library like any other |
+| Evidence (`evidence[]`) | at most one record, found by search | one entry per confirmed technique, at most 3, each cited in the statement as `[1]`, `[2]`, `[3]`. `evidence_mode` is `source-documented` when ATT&CK records that the group, or a campaign ATT&CK attributes to it, uses one of them, else `inferred` |
+| Controls (`controls[]`) | found by search and scored 0-100 | the AI picks, per sentence, from at most 12 library controls code shortlisted (first the controls linked to the scenario's mitigations, section 7.4). Each has `match_type` `EXACT`, `match_reason` `"<prevent, detect, contain or recover>: <the sentence it reduces>"` and `score` null. Only controls of the control library can appear |
+| `progress.threats` | `PENDING`, `RUNNING`, then `COMPLETE` | `COMPLETE` from the first answer: there is no threat-finding stage |
+
+**How many scenarios.** The same three settings as 3.1 decide: `TOTAL_SCENARIO_COUNT` (0 = every relevant risk the AI finds; N = the N most relevant, never padded), `INITIAL_SET_SIZE` (the first set) and `NEXT_SET_SIZE` (each next set, 3.7). The AI's first answer writes the first set and lists the other relevant risks it sees, each with its ATT&CK group and one technique; a risk MITRE ATT&CK does not confirm is not planned. Each later set's answer lists further risks too, while the run holds fewer than `TOTAL_SCENARIO_COUNT` (with 0, always), until an answer lists no confirmed one; a regenerate lists none. `progress.scenario_count.total` is the first set's size until the first answer. When the AI sees fewer relevant risks than the first set has slots, it leaves the rest out. That is not an error: the run has that many scenarios (4 risks with `INITIAL_SET_SIZE=6`: `total: 4`).
+
+Example, with `TOTAL_SCENARIO_COUNT=15`, `INITIAL_SET_SIZE=6`, `NEXT_SET_SIZE=6`: the first answer writes 6 scenarios and lists 11 more risks, 17 in all. The best 15 are the run's scenarios (`total: 15`, `served: 6`, `remaining: 9`); the last 2 are spares. Two next sets write 6 and 3 more; a third answers `409 target_reached`. Had the AI found 10 risks, the run has 10.
+
+**Errors**: those of 3.1, with one difference.
+
+| Status | Reason | Fix |
+| --- | --- | --- |
+| 409 | `intel_no_data` | TSG's copy of MITRE ATT&CK is empty, or lacks a matrix this asset needs (ICS for OT, Enterprise for IT, both for IT\OT, or when the asset and its systems are mixed or have no recorded type). The intelligence switch does not refuse it: with the switch off the run uses the ATT&CK data already stored. An admin imports it first: `POST /v1/tsg/intel/refresh` (7.4). A next set or a regenerate of such a run answers the same when that data is missing by then |
+
+**Known limits** (deliberate):
+
+1. **A run can end with fewer scenarios than asked.** A scenario MITRE ATT&CK does not confirm, even after the one re-ask, is dropped and a spare risk takes its place. Example: 15 wanted, 17 found, 3 not confirmed; the re-ask fixes 2 and a spare replaces the third: 15. Only when no spare is left does the run end below 15.
+2. **The AI decides how many risks there are.** Each set's answer may add risks until one adds none, so asked again for the same asset it may find 16 instead of 17. Nothing is padded to reach `TOTAL_SCENARIO_COUNT`.
+3. **The AI's knowledge of MITRE ATT&CK can be older than TSG's copy.** A group MITRE added last month is not named until the model knows it. Nothing wrong is shown; a newer entry is only not used.
+4. **A scenario can have few controls, or none.** Picks are never padded: when no shortlisted control reduces a sentence, none is shown (`controls: []`, `control_match_status` `CONTROL_LIBRARY_GAP`). Only when the AI's pick answer cannot be read, or leaves a scenario out even after the one re-ask, are those scenarios' controls found by the search of 3.1 instead.
+5. **A picked control reads `match_type` `EXACT`** with no score. A new value would change a response the UI already reads.
+6. **The results do not say which route made a scenario.** `scenario_source` is `generated` for both; the stored session carries `pipeline: "attack"`.
+7. **The import schedule is daily or weekly at one time of day**, and **the admin page has no login of its own** (7.4, 7.5).
 
 ### 3.2 `GET /v1/sessions/{session_id}`
 
@@ -384,12 +423,11 @@ Headers: identity headers.
 | `controls_error` | object or null | `{code, message, ...}`; `code` `job_abandoned` has `reason` `abandoned` (its worker stopped on every attempt) |
 | `replaced_by` | string or null | newer version id |
 | `evidence_mode` | string or null | |
-| `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations` |
+| `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations`. `applicability` and `published` are always `null` now (the fields stay for the response shape); on a `POST /v1/create_session` scenario `modified` and `fetched_at` are `null` too |
 | `evidence_search` | object or null | |
 
-With the AI reviewer off (`CII_SCENARIO_REVIEW_ENABLED=false`, the default) the JSON is the same, field for
-field: `validation_errors` never holds "The plan check could not be made …", and `validation_notes` holds no
-reviewer notes.
+There is no AI reviewer: `validation_errors` never holds "The plan check could not be made …", and
+`validation_notes` holds no reviewer notes.
 
 ```json
 {
@@ -1480,7 +1518,7 @@ const reviewed = after.progress.relationships.pending === 0; // the review is co
 
 ## 7. Operations endpoints
 
-For operators and support, not for the UI. Source of truth: `app/api/routers/health.py`, `app/api/routers/admin.py`, `app/models/jobs/views.py`.
+For operators and support, not for the UI. Source of truth: `app/api/routes/health.py`, `app/api/routes/admin.py`, `app/schemas/jobs.py`.
 
 ### 7.1 `GET /ready`
 
@@ -1527,7 +1565,7 @@ Header `X-Admin-Key`. Every job of every kind active in the last `hours`, newest
 
 ### 7.3 AI usage: `GET /v1/ai-usage` and its drill-downs
 
-No key. Counts only (never a prompt or an answer), each with its model, activity and a one-line description. Source of truth: `app/api/routers/ai_usage.py`, `app/models/ai_usage/usage_report.py`, `app/core/constants/ai_activities.py`.
+No key. Counts only (never a prompt or an answer), each with its model, activity and a one-line description. Source of truth: `app/api/routes/ai_usage.py`, `app/schemas/ai_usage.py`, `app/core/constants/ai_activities.py`.
 
 **Counts in every report.** `total_ai_calls`: attempts sent to an AI model (chat, embedding, rerank), retries included; `successful_calls`: those that ended ok; `failed_calls`: the rest; `asks`: questions put to the AI; `extra_attempts`: attempts beyond one per ask (retries, a fallback model, re-asks); `reused_answers`: earlier answers a job's retry read back (no AI call); `outcomes`: per outcome (`ok`, `unavailable`, `unreadable`, `truncated`, `error`, `reused`); `tokens_in`, `tokens_out` (chat prompts and answers, and, from 2026-10-30, embedding and rerank inputs as the gateway counts them; a local reranker records none), `seconds`. `buckets` splits them by part of the work: `threats` (finding threats), `scenario` (writing scenarios), `controls` (picking controls), `remediation` (writing the plan), `service_mapper` (mapping services), each with `label`, `description` and `by_task`.
 
@@ -1540,4 +1578,66 @@ No key. Counts only (never a prompt or an answer), each with its model, activity
 
 `422` for a range or `tz` it cannot answer right (a time zone Python or MongoDB does not know, one a part hour from UTC at any time in the range such as Lord Howe in winter, `since` after `until`, too long a range, a year outside 2000-9000), an `after` this list did not return, an `entity_id` that is not ASCII digits, or a `module`, `api`, `bucket` or `task` not in its list (Swagger offers each as a list, with every report's purpose, real example answers and its errors); `503` (with `Retry-After`) when MongoDB does not answer within 30 s, or when 2 reports not in the 60 s cache already run in that API process and neither ends within 2 s (a cached report has 4 places of its own and takes milliseconds). In `/calls`, a reused answer has `try_no` `null`: nothing was sent to the AI. `asks` counts questions put to the AI (a reused answer is none), so `extra_attempts` = `total_ai_calls` - `asks` (retries, a fallback model, re-asks).
 
-The API calls counted (`api`): `create_scenario` (`POST /v1/sessions`), `next_set`, `regenerate` (threat scenarios, a remediation plan or a mapping: `module` tells which), `create_plan` (`POST /v1/remediation`), `create_mapping` (`POST /v1/service-mapper`). A session's requests include the remediation plans of its scenarios.
+The API calls counted (`api`): `create_scenario` (`POST /v1/sessions`), `create_session` (`POST /v1/create_session`), `next_set`, `regenerate` (threat scenarios, a remediation plan or a mapping: `module` tells which), `create_plan` (`POST /v1/remediation`), `create_mapping` (`POST /v1/service-mapper`). A session's requests include the remediation plans of its scenarios.
+
+The two AI activities of `POST /v1/create_session`'s controls are in the `controls` bucket: `link_controls` (the background linking of 7.4: one call per MITRE ATT&CK mitigation, once per data load) and `pick_controls` (one call per written set of up to 6 scenarios).
+
+### 7.4 External intelligence: the import, its schedule and the control links
+
+No key (owner's decision; every change is audited under `X-User-Id`, else `admin`). All paths start with `/v1/tsg/intel`. Source of truth: `app/api/routes/intel.py`, `app/schemas/intel.py`, `app/domain/intel/schedule.py`, `app/domain/intel/control_links.py`.
+
+TSG keeps its own copy of two sources and no other: MITRE ATT&CK Enterprise (`mitre_attack_enterprise`, for IT assets) and MITRE ATT&CK ICS (`mitre_attack_ics`, for OT assets). An import stores two things: the techniques that `POST /v1/sessions` searches for evidence, and the whole graph (groups, techniques, mitigations, software, campaigns and the links between them) that `POST /v1/create_session` checks its scenarios against.
+
+**When the import runs.** On the saved schedule, not every hour. With no schedule saved yet it is weekly, Sunday 02:00 UTC, enabled, and one first import starts at beat's first check, about a minute after the first start, so a new or upgraded system does not wait a week. It also runs on `POST /refresh` and when the switch is turned on. Both sources are always imported: none can be withdrawn. Each import first deletes what the four removed feeds (`cisa_kev`, `first_epss`, `nist_nvd`, `cisa_ics_advisories`) left in MongoDB: their records and their status documents, nothing else.
+
+| Route | What it does |
+| --- | --- |
+| `GET /switch`, `PUT /switch` `{"enabled": bool}` | read or set the on/off switch. Off: nothing is imported, by schedule or by hand, and `POST /v1/sessions` writes without evidence; `POST /v1/create_session` still runs from the ATT&CK data already stored; nothing is deleted |
+| `POST /refresh` (optional body `{"source": "mitre_attack_ics"}`) | import now, whatever the schedule says: `202` `{job_id, status}`. `409` while the switch is off or an import runs (`details.job_id` names it); `422` an unknown source |
+| `GET /refresh/{job_id}` | poll until `status` is `done` or `failed` |
+| `GET /health` | each source's state, `snapshot_id`, `pending_sources`, `no_data` |
+| `GET /schedule` | the saved schedule: `enabled`, `frequency`, `day_of_week`, `time`, `timezone`, and `next_run_at`, `last_run_at`, `updated_at` (UTC) |
+| `PUT /schedule` | save it; the answer is the schedule with its new `next_run_at`. `422` an unknown time zone, a bad time, weekly without a day, an unknown field; `409` while the env file says `EXTERNAL_INTELLIGENCE_ENABLED=false` |
+| `GET /control-links` | how far the mitigations are linked (below) |
+| `POST /control-links/prepare` | link them now: `202` `{job_id, status}`. `409` while the switch is off, or while one is queued or running (`details.job_id`) |
+| `GET /control-links/{job_id}` | poll until `done` or `failed`; `result` counts the mitigations `judged`, `unchanged` and `failed` |
+
+**The schedule body** (`PUT /schedule`; every field but `day_of_week` is required)
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `enabled` | bool | `false`: nothing is imported by itself (`next_run_at` null); `POST /refresh` still works |
+| `frequency` | string | `daily` or `weekly` |
+| `day_of_week` | int 0..6 | 0 = Monday ... 6 = Sunday; required when weekly, ignored (stored null) when daily |
+| `time` | string | `HH:MM`, 24-hour, in `timezone` |
+| `timezone` | string | an IANA name: `UTC`, `Asia/Dubai` |
+
+```json
+{ "enabled": true, "frequency": "weekly", "day_of_week": 6, "time": "02:00", "timezone": "Asia/Dubai" }
+```
+
+Example: saved on a Wednesday, that body answers `next_run_at` of the coming Sunday 02:00 Dubai time, which is Saturday 22:00 UTC. In a zone with daylight saving the local time is kept across the change. A slot missed while TSG was down runs once when it is back, never once per missed slot. A scheduled import that failed is tried again within the hour. The schedule is one time of day, daily or weekly: not "every 6 hours", not several days a week; `POST /refresh` covers anything else.
+
+**The control links.** After every import (and on `POST /control-links/prepare`) a background job links each MITRE ATT&CK mitigation that some technique names to the library controls that do what it says: it searches the 30 nearest controls, keeps the 15 the reranker scores best, and asks the AI which of them really do it. The AI reads control names and descriptions under labels (`C1`, `C2` ...), never a library id. A mitigation whose text, candidates, prompt and models are unchanged costs no AI call, so the first run is about one AI call per mitigation (about 100 in all, an estimate) and a later run few or none. One mitigation's failure keeps its earlier links and does not stop the others. A mitigation no source lists any more keeps its links too: no link record is ever deleted. `POST /v1/create_session` puts these linked controls first on each scenario's shortlist; before the first linking has finished, the shortlist is filled by meaning search alone.
+
+`GET /control-links` → `{mitigations, linked, without_links, not_prepared, prepared_at}`: `mitigations` have a prepared record, of which `linked` have at least one library control and `without_links` none; `not_prepared` are listed but not judged yet (or their judging failed); `prepared_at` is the newest preparation (null: none yet).
+
+### 7.5 The admin web page: `/ui/`
+
+A page for operators, served by the API itself at `https://<tsg-host>/ui/` (same origin, nothing else to deploy). It calls only the routes of this guide and adds none of its own; it is not in the OpenAPI document.
+
+| Page | What it shows and does | Needs the admin key |
+| --- | --- | --- |
+| Data ingestion | the switch; each source's state; import now (all or one source), followed until done | no |
+| Schedule | the form of 7.4, with the next and the last run | no |
+| Control links | linked, without a control, not prepared, last prepared; prepare now, followed with `judged`, `unchanged`, `failed` | no |
+| Jobs | every job, queue and worker (7.2); cancel an import or a build | yes |
+| Search vectors | build the library's search vectors now | yes |
+| API keys | list, mint (the key is shown once), revoke | yes |
+| Library curation | threats waiting for a curator; approve or reject | yes |
+| AI usage | the counts of 7.3 for a chosen period, as numbers | no |
+| System | `/health`, `/ready`, each store and worker | no |
+
+- **The admin key** is typed in the bar at the top of the page and kept in that browser tab's memory only: never in local storage, a cookie or a URL, and gone on reload. A `401` or `403` clears it and the page asks again. The "Recorded as" box is the `X-User-Id` changes are audited under (`admin-ui` when empty).
+- **It has no login of its own.** It uses what the API uses: anyone who can reach `/ui/` on the network can open the pages that need no key and change the switch and the schedule, exactly as anyone who can reach the API can call those routes today. The other pages work only with the admin key.
+- Every answer of `/ui/` carries `Cache-Control: no-store`, `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.

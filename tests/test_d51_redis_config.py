@@ -9,16 +9,19 @@ from urllib.parse import urlsplit
 
 import pytest
 from celery import Celery
+from fastapi.testclient import TestClient
 from redis.connection import SSLConnection
 
-from app import container
+from app import ai, main
+from app.ai import slots as ai_slots
 from app.core import readiness
-from app.core.broker import shared_celery_conf
 from app.core.config import get_settings
 from app.core.constants import LogEvent
 from app.core.database import get_redis_client
+from app.crud import indexes
 from app.realtime import event_hub
-from app.worker import celery_app
+from app.worker import celery_app, lifecycle
+from app.worker.celery_app import shared_celery_conf
 from tests import conftest
 from tests.checkout import CHECKOUT
 from tests.test_deploy import SECRETS_FILE, _all_deployments, _objects, _reads, _secrets
@@ -83,18 +86,20 @@ def test_the_eviction_policy_is_read_from_the_real_redis(monkeypatch: pytest.Mon
     assert isinstance(fields["maxmemory_policy"], str)
 
 
-def test_the_api_and_every_worker_log_the_eviction_policy_at_start_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_api_and_every_worker_log_the_eviction_policy_at_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     logged: list[str] = []
-    monkeypatch.setattr(container, "log_redis_eviction_policy", lambda: logged.append("policy"))
-    monkeypatch.setattr(container, "log_mongodb_topology", lambda: None)
-    monkeypatch.setattr(container, "create_all_indexes", lambda *_: None)
-    monkeypatch.setattr(container, "build_ai_gateways", lambda: None)
-    for worker_setting in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # set_up_worker changes them
-        monkeypatch.setattr(container, worker_setting, getattr(container, worker_setting))
-    container.set_up_api()
-    container.set_up_worker(())
+    for started in (main, lifecycle):
+        monkeypatch.setattr(started, "log_redis_eviction_policy", lambda: logged.append("policy"))
+    monkeypatch.setattr(main, "log_mongodb_topology", lambda: None)
+    monkeypatch.setattr(indexes, "create_all_indexes", lambda *_: None)
+    monkeypatch.setattr(ai, "build_ai_gateways", lambda: None)
+    monkeypatch.setattr(indexes, "create_all_indexes", lambda *_: None)
+    monkeypatch.setattr(ai, "build_ai_gateways", lambda: None)
+    for worker_setting in ("_ai_slot_wait_seconds", "_waits_out_rate_limits"):  # a worker start changes them
+        monkeypatch.setattr(ai_slots, worker_setting, getattr(ai_slots, worker_setting))
+    with TestClient(main.create_app()):
+        pass
+    lifecycle._prepare_stores_and_models()
     assert logged == ["policy", "policy"]
 
 
@@ -117,9 +122,7 @@ def test_a_rediss_broker_is_verified_never_left_unverified(monkeypatch: pytest.M
         assert connection.ssl["ssl_check_hostname"] is True
 
 
-def test_every_redis_client_verifies_a_rediss_server_against_the_ca_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_every_redis_client_verifies_a_rediss_server_against_the_ca_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """The limiter, publisher, heartbeat and readiness client, the event hub's subscription and the broker:
     the server's certificate checked against CII_REDIS_CA_FILE, and its host name."""
     _redis_over_tls(monkeypatch, CA_FILE)
@@ -128,11 +131,7 @@ def test_every_redis_client_verifies_a_rediss_server_against_the_ca_file(
     client = get_redis_client._build()
     connection = client.connection_pool.make_connection()
     assert isinstance(connection, SSLConnection)
-    assert (connection.cert_reqs, connection.ca_certs, connection.check_hostname) == (
-        ssl.CERT_REQUIRED,
-        CA_FILE,
-        True,
-    )
+    assert (connection.cert_reqs, connection.ca_certs, connection.check_hostname) == (ssl.CERT_REQUIRED, CA_FILE, True)
     client.close()
 
     class Built(Exception):

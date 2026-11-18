@@ -11,14 +11,13 @@ import litellm
 import pytest
 
 from app import ai
-from app.ai.profiles import EMBEDDING_MODEL_PROFILES
+from app.ai.profiles import EMBEDDING_MODEL_PROFILES, EmbeddingModelProfile
 from app.core.config import get_settings
 from app.core.constants import QUERY_TASKS, EmbeddingCorpus
 from app.core.database import get_mongodb
-from app.data_access.admin.embedding_repository import EmbeddingRepository
-from app.data_access.base import VectorRepository
-from app.domain.scenario.write import _read_control_search_settings
-from app.models.ai.profiles import EmbeddingModelProfile
+from app.crud.base import VectorRepository
+from app.crud.embeddings import EmbeddingRepository
+from app.domain.scenario.write import read_control_search_settings
 
 QWEN = "litellm_proxy/qwen3-embedding-8b"
 INSTRUCTION = "Instruct: {task}\nQuery:"
@@ -101,9 +100,7 @@ def test_the_cut_shortens_the_query_and_keeps_the_instruction_whole(monkeypatch:
     assert sent == [instruction + query[:10]] and len(sent[0]) == limit
 
 
-def test_a_query_vector_is_keyed_on_the_text_sent_never_on_the_bare_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_query_vector_is_keyed_on_the_text_sent_never_on_the_bare_query(monkeypatch: pytest.MonkeyPatch) -> None:
     """A vector stored for the bare text (before the instruction, or by a comparison) never answers a query,
     and one query searched against two corpora is two texts sent."""
     sent = _sent_texts(monkeypatch)
@@ -130,10 +127,10 @@ def test_a_stored_control_shortlist_is_keyed_on_the_instruction_the_gateway_send
 ) -> None:
     profile, snapshot = EMBEDDING_MODEL_PROFILES[QWEN], SimpleNamespace(library=SimpleNamespace(stamp=()))
     monkeypatch.setattr(get_settings(), "embedding_model", QWEN)
-    instruction = _read_control_search_settings(snapshot)["query_instruction"]  # type: ignore[arg-type]
+    instruction = read_control_search_settings(snapshot)["query_instruction"]  # type: ignore[arg-type]
     assert instruction is not None and profile.query_as_sent("q", CONTROL_TASK) == instruction + "q"
     monkeypatch.setattr(get_settings(), "embedding_model", "openai/text-embedding-3-large")
-    assert _read_control_search_settings(snapshot)["query_instruction"] is None  # type: ignore[arg-type]
+    assert read_control_search_settings(snapshot)["query_instruction"] is None  # type: ignore[arg-type]
 
 
 # --- the convention: every search embeds its query through the query path
@@ -141,8 +138,8 @@ def test_a_stored_control_shortlist_is_keyed_on_the_instruction_the_gateway_send
 #: The only functions that embed library texts (the document path): the index builders.
 DOCUMENT_EMBEDDERS = {
     "search/service.py:_index",
-    "search/service_mapper.py:_for_catalog",
-    "search/external_intelligence/evidence_index.py:build_index",
+    "domain/service_mapper/catalog.py:candidates",
+    "domain/intel/index.py:build_index",
 }
 #: The only function that compares texts of one kind with each other (both sides plain).
 TEXT_COMPARERS = {"domain/scenario/plan.py:_merge_reworded_threats"}

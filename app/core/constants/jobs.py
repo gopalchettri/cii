@@ -10,7 +10,7 @@ class Queue(StrEnum):
     THREATS = "tsg_threats"
     SCENARIOS = "tsg_scenarios"
     CONTROLS = "tsg_controls"
-    MAINTENANCE = "tsg_maintenance"  # long admin jobs: library builds, intelligence refreshes
+    MAINTENANCE = "tsg_maintenance"  # long admin jobs: library builds, intelligence refreshes, control links
     REAPER = "tsg_reaper"  # the reaper and the controls sweep alone: no long job takes their threads
     REMEDIATION = "tsg_remediation"
     SERVICEMAPPER = "tsg_servicemapper"
@@ -25,7 +25,8 @@ class TaskName(StrEnum):
     RETRY_CONTROLS = "tsg_retry_controls"
     BUILD_LIBRARY_INDEXES = "tsg_build_library_indexes"
     WRITE_PLAN = "tsg_write_plan"  # one remediation plan version
-    REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # sources due, then a snapshot
+    REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # every source, then a snapshot
+    LINK_MITIGATIONS = "tsg_link_mitigations"  # each ATT&CK mitigation linked to library controls
     ROLL_UP_AI_USAGE = "tsg_roll_up_ai_usage"  # AI usage rows added up per hour, for dashboards
 
 
@@ -39,6 +40,7 @@ TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Cele
     TaskName.RETRY_CONTROLS: {"queue": Queue.REAPER},
     TaskName.BUILD_LIBRARY_INDEXES: {"queue": Queue.MAINTENANCE},
     TaskName.REFRESH_EXTERNAL_INTELLIGENCE: {"queue": Queue.MAINTENANCE},
+    TaskName.LINK_MITIGATIONS: {"queue": Queue.MAINTENANCE},
     TaskName.ROLL_UP_AI_USAGE: {"queue": Queue.MAINTENANCE},
 }
 #: The queues some task is routed to: /ready needs a live worker on each (an unrouted queue needs none).
@@ -74,7 +76,7 @@ class Realtime:
 class Worker:
     THREADS: Final = 4  # tasks at once when a worker's command names none: each Deployment's -c sets its own
     BROKER_KEY_PREFIX: Final = "tsg:"  # every Celery key in Redis: v1 must not share the Redis database
-    BROKER_VISIBILITY_SECONDS: Final = 4_200  # > Lease.MAX_JOB_SECONDS + Lease.SECONDS; a claim drops a copy
+    BROKER_VISIBILITY_SECONDS: Final = 4_200  # only for messages held before they start (a retry's wait)
     HEARTBEAT_SECONDS: Final = 20  # each worker pod tells /ready "alive" this often
     ONLINE_WITHIN_SECONDS: Final = 60  # /ready counts a worker only if its last beat is this recent
     HEARTBEAT_KEY: Final = "tsg:workers:{queue}"  # sorted set: member = worker hostname, score = last beat
@@ -95,12 +97,9 @@ class Lease:
     REQUEUE_QUEUED_AFTER_SECONDS: Final = 120
     RESEND_ANYWAY_AFTER_SECONDS: Final = 900  # a job queued this long is sent again even behind a backlog
     MAX_JOB_SECONDS: Final = 3_600  # the run time job metrics are sized for; a longer job keeps its lease
-    STALL_SECONDS: Final = 900  # a job with no AI call or wait check this long is hung: it stops renewing
-    HUNG_AFTER_SECONDS: Final = 600  # its thread still running this long after its lease is lost: pod restart
     MAX_WAIT_SECONDS: Final = 3_600  # a job waiting this long for another job is failed
     RETRY_DELAYS_SECONDS: Final = (15, 30, 60, 120)  # wait before retrying after an outage, by attempt
     CLOCK_SKEW_SECONDS: Final = 5  # a claim accepts a job due this much later than the pod's clock
-    RESEND_EARLY_WITHIN_SECONDS: Final = RETRY_DELAYS_SECONDS[-1] + CLOCK_SKEW_SECONDS  # retry early: re-sent
 
 
 class JobKind(StrEnum):
@@ -148,9 +147,7 @@ class SessionMessage(StrEnum):
     SYSTEMS_NOT_LINKED = "Supporting systems {system_ids} are not linked to asset {asset_id}."
     SERVICE_NOT_FOUND = "Service {service_id} does not exist."
     SECTOR_NOT_FOUND = "Sector {sector_id} does not exist."
-    SECTOR_NOT_PARENT = (
-        "Sector {sector_id} is not the parent of sub-sector {subsector_id}; its sector is {parent_id}."
-    )
+    SECTOR_NOT_PARENT = "Sector {sector_id} is not the parent of sub-sector {subsector_id}; its sector is {parent_id}."
     IDEMPOTENCY_KEY_CONFLICT = "This Idempotency-Key was already used for another request."
     ENTITY_MISMATCH = "The entity in the path is not the caller's entity."
     ENTITY_MISMATCH_BODY = "manual_scenario.entity_id is not the caller's entity (X-Entity-Id)."
@@ -234,8 +231,7 @@ class BoardMessage(StrEnum):
 
     ABANDONED = "{abandoned} attack path(s) could not be written."
     NOT_JUDGED = (
-        "{not_judged} threat(s) could not be checked by the AI and were left out "
-        "(counted per STRIDE category)."
+        "{not_judged} threat(s) could not be checked by the AI and were left out (counted per STRIDE category)."
     )
     CONTROLS_FAILED = (
         "Controls could not be matched for {failed} scenario(s); request or regenerate a plan to try again."
@@ -295,3 +291,4 @@ class UnselectedReason(StrEnum):
 
     TARGET_REACHED = "target_reached"  # TOTAL_SCENARIO_COUNT kept more relevant paths
     REPLACED_AFTER_FAILURE = "replaced_after_failure"  # it failed for good and a reserve path took its place
+    NO_FURTHER_RISK = "no_further_risk"  # an attack run's first-set slot the AI found no further risk for

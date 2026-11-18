@@ -13,9 +13,7 @@ KEYS = ("THREAT_SCENARIO_WORD_LIMIT", "RISK_STATEMENT_WORD_LIMIT", "EVIDENCE_STA
 
 def test_the_writer_asks_for_the_configured_lengths(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(  # type: ignore[call-arg]
-        THREAT_SCENARIO_WORD_LIMIT="150-200",
-        RISK_STATEMENT_WORD_LIMIT="100-150",
-        EVIDENCE_STATEMENT_WORD_LIMIT="30-80",
+        THREAT_SCENARIO_WORD_LIMIT="150-200", RISK_STATEMENT_WORD_LIMIT="100-150", EVIDENCE_STATEMENT_WORD_LIMIT="30-80"
     )
     monkeypatch.setattr(write, "get_settings", lambda: settings)
     slots = (Writing.SCENARIO_WORDS_SLOT, Writing.RISK_WORDS_SLOT)

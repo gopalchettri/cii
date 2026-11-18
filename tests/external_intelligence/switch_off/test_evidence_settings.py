@@ -8,12 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.ai.profiles import (
-    CHAT_MODEL_PROFILES,
-    EMBEDDING_MODEL_PROFILES,
-    RERANK_MODEL_PROFILES,
-    find_model_profile,
-)
+from app.ai.profiles import CHAT_MODEL_PROFILES, EMBEDDING_MODEL_PROFILES, RERANK_MODEL_PROFILES, find_model_profile
 from app.core.config import Settings, get_settings
 from app.core.constants import ChatModule, Env, EvidenceSettingMessage
 
@@ -31,21 +26,13 @@ _OWN_KEYS = (
 
 
 def _settings(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    env: Env,
-    enabled: bool | None,
-    threshold: str | None = None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: Env, enabled: bool | None, threshold: str | None = None
 ) -> Settings:
     """Settings read the way the app reads them (an env file): a threshold line left out is not 'set'."""
     source = REPO / ".env"
     if not source.exists():
         pytest.skip(".env is git-ignored and not present here")
-    kept = [
-        line
-        for line in source.read_text(encoding="utf-8").splitlines()
-        if line.split("=")[0] not in _OWN_KEYS
-    ]
+    kept = [line for line in source.read_text(encoding="utf-8").splitlines() if line.split("=")[0] not in _OWN_KEYS]
     own = [f"CII_ENV={env}"]
     own += [] if enabled is None else [f"EXTERNAL_INTELLIGENCE_ENABLED={str(enabled).lower()}"]
     own += [f"EVIDENCE_SIMILARITY_THRESHOLD={threshold}"] if threshold else []
@@ -109,7 +96,6 @@ def test_the_uat_file_is_on_with_an_explicit_provisional_threshold() -> None:
     lines = _env_lines(".env.uat")
     assert lines["EXTERNAL_INTELLIGENCE_ENABLED"] == "true"
     assert float(lines["EVIDENCE_SIMILARITY_THRESHOLD"]) == 50
-    assert "CII_NVD_API_KEY" in lines  # a secret: any value
     text = (REPO / ".env.uat").read_text(encoding="utf-8")
     assert "NOT calibrated" in text.replace("NOT CALIBRATED", "NOT calibrated") and "To test in UAT" in text
 

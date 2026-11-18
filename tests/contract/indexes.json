@@ -237,6 +237,71 @@
   },
   "options": {}
  },
+ "tsg_attack": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "by_attack_id": {
+    "key": [
+     [
+      "attack_id",
+      1
+     ]
+    ]
+   },
+   "by_name_key": {
+    "key": [
+     [
+      "name_keys",
+      1
+     ]
+    ]
+   },
+   "by_source_and_version": {
+    "key": [
+     [
+      "source",
+      1
+     ],
+     [
+      "version",
+      1
+     ]
+    ]
+   },
+   "by_type_and_source_ref": {
+    "key": [
+     [
+      "type",
+      1
+     ],
+     [
+      "source_ref",
+      1
+     ]
+    ]
+   },
+   "by_type_and_target_ref": {
+    "key": [
+     [
+      "type",
+      1
+     ],
+     [
+      "target_ref",
+      1
+     ]
+    ]
+   }
+  },
+  "options": {}
+ },
  "tsg_audit": {
   "indexes": {
    "_id_": {

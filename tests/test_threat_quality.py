@@ -9,7 +9,7 @@ from typing import Any
 from app.core.constants import AiTask, CandidateRejection, PlanStage, StrideCategory
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import build_plan
-from app.models.scenario.plan import ActorPick, AttackPlace, Drop, PlannedThreat
+from app.schemas.scenario_internal import ActorPick, AttackPlace, Drop, PlannedThreat
 from tests.fakes import FakeEmbeddings, FakeRerankModel, items_in
 from tests.planner_samples import (
     CONTEXT,
@@ -123,9 +123,7 @@ def _merge_into(kept: PlannedThreat, twin: PlannedThreat, drops: list[Drop] | No
 
 
 def test_a_fold_keeps_each_categorys_own_reason() -> None:
-    merged = _merge_into(
-        _judged(S.SPOOFING, SPOOFING_WHY), _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY, "ai:x")
-    )
+    merged = _merge_into(_judged(S.SPOOFING, SPOOFING_WHY), _judged(S.ELEVATION_OF_PRIVILEGE, PRIVILEGE_WHY, "ai:x"))
     assert merged.categories == (S.SPOOFING, S.ELEVATION_OF_PRIVILEGE)
     record = merged.to_record({})
     assert record["reason"] == SPOOFING_WHY  # the main category's
@@ -162,12 +160,8 @@ def test_one_ai_name_under_two_categories_is_one_threat_in_stride_order_with_no_
     tampering = planned("ai:wipe", "Wipe", (321,), categories=(S.TAMPERING,))
     denial = planned("ai:wipe", "Wipe", (322,), categories=(S.DENIAL_OF_SERVICE,), impact=3)
     drops: list[Drop] = []
-    (merged,) = plan_module._merge_duplicate_threats(
-        [tampering, denial], FakeEmbeddings(WORDS), CONTEXT, drops
-    )  # type: ignore[arg-type]
-    assert (
-        merged.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and merged.main_place == tampering.main_place
-    )
+    (merged,) = plan_module._merge_duplicate_threats([tampering, denial], FakeEmbeddings(WORDS), CONTEXT, drops)  # type: ignore[arg-type]
+    assert merged.categories == (S.TAMPERING, S.DENIAL_OF_SERVICE) and merged.main_place == tampering.main_place
     assert (merged.systems, merged.impact, drops) == ((321, 322), 3, [])
 
 
@@ -201,9 +195,7 @@ def test_the_first_folded_twin_naming_an_attacker_gives_the_pick() -> None:
     """The library threat names none; twin B (fits) names Q, folded first; twin A (fits partly) names P."""
     library = planned("lib:1", "L", (321,), categories=(S.SPOOFING,), asset_type="OT")
     library = dataclasses.replace(library, actor_pick=ActorPick(None, "None could."))
-    fits = planned(
-        "ai:b", "B", (321,), categories=(S.INFORMATION_DISCLOSURE,), actor_pick=ActorPick("Q", "Q can.")
-    )
+    fits = planned("ai:b", "B", (321,), categories=(S.INFORMATION_DISCLOSURE,), actor_pick=ActorPick("Q", "Q can."))
     partly = planned("ai:a", "A", (321, 322), categories=(S.TAMPERING,), actor_pick=ActorPick("P", "P can."))
     merged = _merge_into(_merge_into(library, fits), partly)
     assert merged.actor_pick == ActorPick("Q", "Q can.")

@@ -10,9 +10,9 @@ from app.core.constants import AiOutage, BoardMessage, ControlMatch, RunActionKi
 from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
-from app.data_access.scenario.threat_scenario_session_repository import SESSION_STATUS_FIELDS
+from app.crud.scenarios import SESSION_STATUS_FIELDS
 from app.domain.scenario.session import build_scenario_view, build_status_board
-from app.models.scenario.views import ScenarioCount, SessionStatus, StageTimings, session_status_from_record
+from app.schemas.scenarios import ScenarioCount, SessionStatus, StageTimings, session_status_from_record
 
 _FAILED = {"error": {"code": "unavailable", "message": "The AI service is down."}, "attempts": 3}
 #: A run whose first set of 6 (of 10 planned) is written.
@@ -41,9 +41,7 @@ def _written(status: Status = Status.DONE, /, **counts: int) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("fields", "expected"),
     [
-        pytest.param(
-            {}, (S.PENDING, S.PENDING, S.PENDING, Overall.PENDING, Session.ACTIVE), id="just started"
-        ),
+        pytest.param({}, (S.PENDING, S.PENDING, S.PENDING, Overall.PENDING, Session.ACTIVE), id="just started"),
         pytest.param(
             {"status": Status.RUNNING, "job": {"attempts": 1}},
             (S.RUNNING, S.PENDING, S.PENDING, Overall.IN_PROGRESS, Session.ACTIVE),
@@ -178,8 +176,7 @@ def test_a_run_that_ended_never_shows_a_retry_notice(status: Status) -> None:
 def test_a_run_the_ai_failed_names_the_outage_any_other_failure_none() -> None:
     timed_out = {"code": "unavailable", "message": _RETRY["message"], "reason": AiOutage.TIMED_OUT}
     assert (
-        build_status_board(_run(status=Status.FAILED, job={"error": timed_out})).progress.error_reason
-        == "ai_timed_out"
+        build_status_board(_run(status=Status.FAILED, job={"error": timed_out})).progress.error_reason == "ai_timed_out"
     )
     assert build_status_board(_run(status=Status.FAILED, job=_FAILED)).progress.error_reason is None
 
@@ -207,14 +204,10 @@ def test_a_summary_shows_its_own_action_running_or_failed_never_the_one_before()
         assert board.progress.last_next_set == asked | {"outcome": outcome}
     done = {"outcome": "complete", "requested": 6, "delivered": 6}
     regenerating = {"kind": RunActionKind.REGENERATE, "outcome": "running"}
-    later = build_status_board(
-        _run(**_written(**_SET), last_action=regenerating, last_next_set=done)
-    ).progress
+    later = build_status_board(_run(**_written(**_SET), last_action=regenerating, last_next_set=done)).progress
     assert later.last_next_set == done  # another action runs: the last next set stays as it ended
     # Reviewer 2026-10-12: a next set whose job failed, then a regenerate: it never got its finish write.
-    stale = build_status_board(
-        _run(**_written(**_SET), last_action=regenerating, last_next_set=asked)
-    ).progress
+    stale = build_status_board(_run(**_written(**_SET), last_action=regenerating, last_next_set=asked)).progress
     assert stale.last_next_set == asked | {"outcome": "failed"}
 
 
@@ -240,11 +233,7 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
     }
     view = build_scenario_view(record)
     block = view.threat
-    assert (block.grounding_status, block.library_threat_type, block.library_threat_name) == (
-        "unverified",
-        None,
-        None,
-    )
+    assert (block.grounding_status, block.library_threat_type, block.library_threat_name) == ("unverified", None, None)
     assert view.threat_source is None and "AI_PROPOSED_THREAT" not in view.review_flags  # never the AI's
     assert view.library is not None and view.library.threat_type.status == "not_proposed"
     assert (block.threat_type, block.threat_name, block.is_threat_ai_generated) == (
@@ -259,10 +248,7 @@ def test_a_hand_written_threat_the_library_does_not_hold_is_the_persons() -> Non
     assert waiting.library is not None and waiting.library.threat.status == "inserted"
 
 
-@pytest.mark.parametrize(
-    ("status", "shown"),
-    [("queued", True), ("failed", True), ("running", False), ("done", False)],
-)
+@pytest.mark.parametrize(("status", "shown"), [("queued", True), ("failed", True), ("running", False), ("done", False)])
 def test_a_card_tells_why_its_controls_wait_or_failed(status: str, shown: bool) -> None:
     """Owner 2026-10-20: the AI outage its control mapping met (with the reason), while it waits or once it
     failed; never while it runs or once mapped."""
@@ -295,9 +281,7 @@ def test_a_control_shows_its_description_and_why_it_was_kept() -> None:
         "decided_at": datetime.now(UTC),
         "controls": {
             "status": "done",
-            "items": [
-                item | {"score": 81.5, "match": ControlMatch.NEAREST, "description": "Apply vendor patches."}
-            ],
+            "items": [item | {"score": 81.5, "match": ControlMatch.NEAREST, "description": "Apply vendor patches."}],
         },
         "created_at": datetime.now(UTC),
     }
@@ -306,6 +290,4 @@ def test_a_control_shows_its_description_and_why_it_was_kept() -> None:
     assert (control.control_description, control.itot, control.map_rank) == ("Apply vendor patches.", "OT", 1)
     assert control.match_type == "NEAREST" and control.match_reason.startswith("No control reached")
     assert (view.accepted, view.rejected_by, view.accepted_by) == (False, "u-7", None)
-    assert (
-        view.threat.grounding_status is None and view.scenario.scenario_statement is None
-    )  # nothing written
+    assert view.threat.grounding_status is None and view.scenario.scenario_statement is None  # nothing written

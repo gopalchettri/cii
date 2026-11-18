@@ -54,9 +54,6 @@
    "spoofing": 11,
    "tampering": 12
   },
-  "library_stamp": {
-   "Threat_Catalogue": "01"
-  },
   "library_threats": 45,
   "plan": {
    "paths": [
@@ -278,7 +275,6 @@
      "unselected_reason": "target_reached"
     }
    ],
-   "prompt_version": "planner-2",
    "target": 5,
    "threats": [
     {
@@ -897,16 +893,7 @@
     }
    ],
    "drops_total": 37,
-   "groups": {
-    "Historian": 2,
-    "SCADA server": 3,
-    "SCADA server + Historian": 3
-   },
-   "landscape_cut": false,
-   "turns": {
-    "Historian": 4,
-    "SCADA server": 4
-   }
+   "landscape_cut": false
   }
  }
 }

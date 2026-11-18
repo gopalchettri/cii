@@ -12,7 +12,7 @@
     open when its program stops, so an error stays readable. The monitoring tools (Grafana, Prometheus,
     Alertmanager, Loki, Alloy, Flower, redis_exporter) are started and stopped by scripts\monitoring.py.
 
-    MongoDB, SQL Server and Redis must already run (docs\RUNNING.md step 3). v1 and v2 share Redis databases 0
+    MongoDB, SQL Server and Redis must already run. v1 and v2 share Redis databases 0
     and 1 on this laptop (owner, 2026-10-09), so start refuses while v1's worker or beat runs.
 
 .PARAMETER Action
@@ -69,7 +69,7 @@ $ReaperName = "reaper@$env:COMPUTERNAME"
 $ReadyUrl = 'http://127.0.0.1:8000/ready'
 $GrafanaUrl = 'http://localhost:3000/grafana/'
 
-# The commands of docs\RUNNING.md steps 8 and 9. The workers' names are explicit so stop can address them.
+# The commands that start TSG. The workers' names are explicit so stop can address them.
 # The reaper and the controls sweep have a worker of their own (worker-reaper): they never wait behind long
 # jobs. With one worker for all queues, ten long mappings held every thread and a lost job was never re-sent
 # (live test 2026-10-11); library builds and intelligence refreshes, up to an hour each, get the maintenance one.
@@ -274,10 +274,10 @@ function Start-Window([string]$Name) {
 
 function Assert-CanStart {
     if (-not (Test-Path -LiteralPath $Python)) {
-        throw "No Python environment at $Python. Create it first (docs\RUNNING.md step 4)."
+        throw "No Python environment at $Python. Create it first."
     }
     if (-not (Test-Path -LiteralPath $EnvFile)) {
-        throw 'No .env file. Copy .env.example to .env and fill it in (docs\RUNNING.md step 6).'
+        throw 'No .env file. Copy .env.example to .env and fill it in.'
     }
     $v1 = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'celery.exe'" |
             Where-Object { $_.CommandLine -like '*app.pipeline.celery*' })
@@ -306,7 +306,7 @@ function Assert-StoresAnswer {
     if ($null -eq $stores) { throw "Could not check the stores. Run this to see why: $Python -c `"$check`"" }
     $down = @($stores.PSObject.Properties | Where-Object { -not $_.Value } | ForEach-Object { $_.Name })
     if ($down) {
-        throw ("Not reachable: $($down -join ', '). Start it first (docs\RUNNING.md step 3); a Windows service " +
+        throw ("Not reachable: $($down -join ', '). Start it first; a Windows service " +
                "starts in an administrator PowerShell, e.g. Start-Service Memurai for Redis.")
     }
 }

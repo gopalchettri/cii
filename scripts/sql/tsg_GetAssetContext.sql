@@ -33,8 +33,8 @@
 --   PART 5  DROPDOWN NAMES            DO NOT EDIT     lets the app turn saved dropdown values into their names
 --
 -- RULES
---   * Never hide id, name or category_code (marked ALWAYS NEEDED): without them every run stops with
---     "dbo.tsg_GetAssetContext must return id, name, category_code ...".
+--   * Never hide id, name or category_code (marked ALWAYS NEEDED): without them every start fails with a 500
+--     internal error (KeyError).
 --   * The name after AS is the name the AI sees, and the name ASSET_/SYSTEM_PROPERTIES_REQUIRED use in .env. Before
 --     .env requires a fact, make sure its line is shown here.
 --   * A NEW dropdown column must return the option's NAME, never its saved number. The platform saves the option's
@@ -112,8 +112,8 @@ BEGIN
         , @critical_service AS critical_service             -- the critical service(s) it supports (PART 0)
         , @sector AS sector                                 -- its sector, e.g. Energy (PART 0)
         , @sub_sector AS sub_sector                         -- its sub-sector, e.g. Electricity (PART 0)
-        --, e.data_handled                                    -- the data it handles
-        , e.type AS asset_type                                 -- how many hours of data it may lose at most
+        , e.data_handled                                    -- the data it handles
+        , e.type AS asset_type                                 -- its type, as the platform records it
         --, e.priority AS asset_priority                      -- its priority (dropdown: the option's id, the app shows the name)
         --, e.can_service_continue_without_asset              -- 1, 0 (Yes/No)
         --, e.has_disaster_recovery_setup                     -- 1, 0 (Yes/No)

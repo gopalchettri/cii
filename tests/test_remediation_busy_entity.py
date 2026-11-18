@@ -10,18 +10,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app import container
-from app.core.constants import (
-    AiTask,
-    Collection,
-    Decision,
-    Header,
-    Queue,
-    RunKind,
-    ScenarioStatus,
-    Status,
-    Worker,
-)
+from app.core.constants import AiTask, Collection, Decision, Header, Queue, RunKind, ScenarioStatus, Status, Worker
 from app.core.database import get_mongodb
 from app.worker.celery_app import celery_app
 from tests.plan_addresses import generated, plan_url
@@ -41,12 +30,7 @@ MAPPED = [{"control_id": 1, "code": "CII-CID-1", "score": 87.4, "match": "exact"
 
 
 def _identity(api_key: str, entity_id: int) -> dict[str, str]:
-    return {
-        Header.API_KEY: api_key,
-        Header.USER_ID: "u1",
-        Header.ENTITY_ID: str(entity_id),
-        Header.TENANT_ID: "DESC",
-    }
+    return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: str(entity_id), Header.TENANT_ID: "DESC"}
 
 
 def _scenario(entity_id: int) -> str:
@@ -67,9 +51,7 @@ def _scenario(entity_id: int) -> str:
 
 
 def _plan(client: TestClient, api_key: str, entity_id: int) -> str:
-    answer = client.post(
-        "/v1/remediation", json=generated(_scenario(entity_id)), headers=_identity(api_key, entity_id)
-    )
+    answer = client.post("/v1/remediation", json=generated(_scenario(entity_id)), headers=_identity(api_key, entity_id))
     assert answer.status_code == 202, answer.text
     return answer.json()["remediation_id"]
 
@@ -97,8 +79,7 @@ def test_a_busy_entitys_plans_wait_behind_another_entitys_new_work(
     another entity's first plan at new work's."""
     busy = random.randint(10_000_000, 99_999_999)  # noqa: S311 - test data, drawn per run: a rerun starts empty
     other_entity = busy + 1
-    sending = remediation_plan_service(library=fake_library(tuple(CONTROLS.values())))  # the real send_job
-    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: sending  # type: ignore[attr-defined]
+    world["plans"] = remediation_plan_service(library=fake_library(tuple(CONTROLS.values())))  # real send
     first, second, third = (_plan(client, api_key, busy) for _ in range(3))
     other = _plan(client, api_key, other_entity)
     world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))

@@ -7,14 +7,9 @@ from typing import Any
 import pytest
 
 from app.core.constants import ImplementationStatus, PlanWarning
-from app.domain.remediation import plan
-from app.domain.remediation.plan import (
-    assess_alternatives,
-    assess_controls,
-    list_affected_systems,
-    resolve_control_refs,
-)
-from app.models.library.library import LibraryControl
+from app.domain.remediation import write
+from app.domain.remediation.write import assess_controls, list_affected_systems, resolve_control_refs
+from app.schemas.library import LibraryControl
 from tests.planner_samples import CONTEXT
 from tests.test_remediation_plan import LIBRARY, _item, _refs, _register
 
@@ -49,7 +44,8 @@ def _job(controls: tuple[LibraryControl, ...]) -> tuple[Any, Any, Any]:
     items = [_item(1), _item(5), _item(6)]
     identified, warnings = assess_controls(items, stored, controls, affected, categories)
     found = [(controls[2], 61.0), (controls[3], 55.0), (controls[4], 50.0)]
-    alternatives = assess_alternatives(found, stored, controls, affected, categories)
+    offered = [{"control_id": c.control_id, "code": c.code, "score": s, "match": "alternative"} for c, s in found]
+    alternatives = assess_controls(offered, stored, controls, affected, categories)[0]
     return identified, warnings, alternatives
 
 
@@ -57,13 +53,13 @@ def _job(controls: tuple[LibraryControl, ...]) -> tuple[Any, Any, Any]:
 def described(monkeypatch: pytest.MonkeyPatch) -> Counter[int]:
     """How many times each library row's text is read."""
     seen: Counter[int] = Counter()
-    real = plan.describe_control
+    real = write.describe_control
 
     def counting(control: LibraryControl) -> str:
         seen[control.control_id] += 1
         return real(control)
 
-    monkeypatch.setattr(plan, "describe_control", counting)
+    monkeypatch.setattr(write, "describe_control", counting)
     return seen
 
 

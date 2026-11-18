@@ -71,11 +71,7 @@ def _record(**changes: Any) -> dict[str, Any]:
         "content": content,
         "controls": {"status": "done", "items": [control]},
         "findings": [],
-        "generation": {
-            "epoch": 1,
-            "started_at": WRITTEN_AT - timedelta(seconds=18.2),
-            "finished_at": WRITTEN_AT,
-        },
+        "generation": {"epoch": 1, "started_at": WRITTEN_AT - timedelta(seconds=18.2), "finished_at": WRITTEN_AT},
         "created_at": WRITTEN_AT,
     }
     return record | changes
@@ -102,24 +98,14 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
         "score",
         "mapping_relevance", "match_type", "match_reason", "tier",
     ]  # fmt: skip
-    for dropped in (
-        "requires",
-        "produces",
-        "moderation_checked",
-        "moderation_flagged",
-        "moderation_categories",
-    ):
+    for dropped in ("requires", "produces", "moderation_checked", "moderation_flagged", "moderation_categories"):
         assert dropped not in shown and dropped not in shown["scenario"]
     assert "standards" not in shown["controls"][0]
 
 
 def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
     view = build_scenario_view(_record())
-    assert (view.actor, view.threat_source, view.threat_type_source) == (
-        "Nation-state/APT",
-        "LIBRARY",
-        "LIBRARY",
-    )
+    assert (view.actor, view.threat_source, view.threat_type_source) == ("Nation-state/APT", "LIBRARY", "LIBRARY")
     assert view.scope is not None and view.scope.model_dump() == {
         "scope_key": "A+214+215",
         "scope_type": "COMBINATION",
@@ -127,11 +113,7 @@ def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
         "evidence": [],  # the stored why_applies is never shown
     }
     assert (view.review_flags, view.control_match_status) == ([], "EXACT")
-    assert (view.controls_mapped, view.controls_unavailable, view.controls_mapping_exhausted) == (
-        True,
-        False,
-        False,
-    )
+    assert (view.controls_mapped, view.controls_unavailable, view.controls_mapping_exhausted) == (True, False, False)
     assert view.controls_mapping_exhaustion_reason is None
     assert view.controls[0].mapping_relevance == view.controls[0].score == 92.0
     assert (view.scenario_number, view.generation_epoch, view.gen_seconds) == (1, 1, 18.2)
@@ -205,10 +187,7 @@ def test_the_controls_flags_follow_the_mapping(
 
 
 def test_a_failure_card_is_v1s_null_scenario_with_its_reason() -> None:
-    failure = {
-        "code": "unavailable",
-        "message": "The AI service did not answer for this attack path in 5 tries.",
-    }
+    failure = {"code": "unavailable", "message": "The AI service did not answer for this attack path in 5 tries."}
     record = _record(status="failed", failure=failure)
     record.pop("controls")
     view = build_scenario_view(record)
@@ -222,13 +201,7 @@ def test_a_failure_card_whose_attacker_no_check_supports_names_no_v1_actor() -> 
     refused so that none is attributed, yet v1's flat field named the nearest attacker; its actors keep their
     roles and how the attacker was decided."""
     failure = {"code": "invalid_plan", "message": "Path p1 cannot be written: no attacker fits its threat."}
-    acting = {
-        "id": 68,
-        "name": "Nation-state/APT",
-        "role": "acting",
-        "closest": True,
-        "selection": "none_fits",
-    }
+    acting = {"id": 68, "name": "Nation-state/APT", "role": "acting", "closest": True, "selection": "none_fits"}
     record = _record(status="failed", failure=failure) | _content(actors=[acting])
     record.pop("controls")
     view = build_scenario_view(record)

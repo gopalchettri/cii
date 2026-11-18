@@ -79,3 +79,8 @@ class AiLimits:
         "Your previous reply was rejected:\n{problems}\n"
         "Return the corrected JSON object only, in exactly the requested format."
     )
+    # An answer cut off at its limit that ran away is asked again at the same limit: more room only buys more
+    # of it. 1,605 good answers (2026-11-17): longest whitespace run 19 characters, longest string 1,520.
+    RUNAWAY_TAIL_CHARS: Final = 600  # it ends in this much whitespace, or in one piece said over and over ...
+    RUNAWAY_PIECE_CHARS: Final = 200  # ... of at most this many characters
+    RUNAWAY_STRING_CHARS: Final = 6000  # or its last string never closed in this many

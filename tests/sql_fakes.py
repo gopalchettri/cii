@@ -6,10 +6,8 @@ from typing import Any
 from app.core.constants import ErrorMessage, StoredProcedure
 from app.core.database import Row, StoredProcedureClient
 from app.core.exceptions import OutcomeUnknown
-from app.data_access.library.control_repository import ControlRepository
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.models.library.library import LoadedLibraries
+from app.crud.library import ControlRepository, SqlOperationRepository, ThreatRepository
+from app.schemas.library import LoadedLibraries
 from app.search.library_cache import load_libraries
 
 _NO_THREAT_LIBRARY: list[list[Row]] = [[] for _ in range(8)]

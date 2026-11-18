@@ -2,6 +2,7 @@
  "routes": {
   "tsg_build_library_indexes": "tsg_maintenance",
   "tsg_find_threats": "tsg_threats",
+  "tsg_link_mitigations": "tsg_maintenance",
   "tsg_map_controls": "tsg_controls",
   "tsg_map_services": "tsg_servicemapper",
   "tsg_reap": "tsg_reaper",

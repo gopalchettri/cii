@@ -144,11 +144,7 @@ def write_env(folder: Path, base: str) -> Path:
     for prefix, model in (("CII_SCENARIO_CHAT", "kimi-k2.5"), ("CII_REMEDIATION_CHAT", "glm-5.3"),
                           ("CII_SERVICE_MAPPER_CHAT", "glm-5.3"), ("CII_EMBEDDING", "qwen3-embedding-8b"),
                           ("CII_RERANK", "qwen3-reranker-8b")):  # fmt: skip
-        lines += [
-            f"{prefix}_BASE_URL={base}",
-            f'{prefix}_MODEL="litellm_proxy/{model}"',
-            f"{prefix}_API_KEY={KEY}",
-        ]
+        lines += [f"{prefix}_BASE_URL={base}", f'{prefix}_MODEL="litellm_proxy/{model}"', f"{prefix}_API_KEY={KEY}"]
     path = folder / ".env"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -175,9 +171,7 @@ def test_report_reads_limits_steps_until_a_429_and_hides_the_key(check, gateway,
     rerank = report.split("qwen3-reranker-8b (40 documents a call)")[1].split("qwen3-embedding-8b")[0]
     assert [row[:3] for row in step_rows(rerank)] == [["1", "1", "0"], ["5", "3", "2"]]
     assert "429 retry-after 60" in rerank and "Current limit: 3, Remaining: 0" in rerank
-    assert (
-        "no more calls were sent" in rerank and "one query a call" not in report
-    )  # the embedding not loaded
+    assert "no more calls were sent" in rerank and "one query a call" not in report  # the embedding not loaded
     assert {(auth, header) for _, auth, header in gateway.seen} == {(f"Bearer {KEY}", KEY)}
 
 
@@ -199,9 +193,7 @@ def test_a_redirect_is_not_followed(check, gateway):
     assert [path for path, *_ in gateway.seen] == ["/redirect"]
 
 
-def test_env_file_is_read_as_tsg_reads_it_and_the_environment_wins(
-    check, gateway, tmp_path, monkeypatch, capsys
-):
+def test_env_file_is_read_as_tsg_reads_it_and_the_environment_wins(check, gateway, tmp_path, monkeypatch, capsys):
     """Catches: quotes kept, an inline comment kept, 'export' kept as part of the name, the file winning over
     the environment (the pods' settings are environment variables)."""
     path = tmp_path / "settings.env"
@@ -222,7 +214,5 @@ def test_no_settings_is_a_plain_error(check, tmp_path, capsys):
 
 def test_no_answer_is_reported_not_raised(check):
     """Catches: send() raising on a refused connection, which would stop the whole report."""
-    answer = check.send(
-        check.Gateway("http://127.0.0.1:1", KEY, ""), "http://127.0.0.1:1/v1/rerank", {"a": 1}
-    )
+    answer = check.send(check.Gateway("http://127.0.0.1:1", KEY, ""), "http://127.0.0.1:1/v1/rerank", {"a": 1})
     assert answer.status == 0 and "Error" in answer.text

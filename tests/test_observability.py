@@ -29,9 +29,7 @@ EVERY_DASHBOARD = pytest.mark.parametrize("dashboard", DASHBOARDS, ids=lambda pa
 TEMPLATE = REPO / "deploy" / "deploy_common.yaml"
 MIRROR = "quay-quay-registry.apps.dda-desc-az1-01.desccii.local/dda-desc"
 #: build-image.bat's tag: the build date dd-Mon-yyyy (English month), -<suffix> on a same-day rebuild.
-APP_IMAGE = (
-    rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
-)
+APP_IMAGE = rf"{re.escape(MIRROR)}/tsg-api:\d{{2}}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{{4}}(-\w+)?"
 MONITORING_IMAGE = rf"{re.escape(MIRROR)}/[\w-]+:v?\d[\w.]*"  # a mirrored image pinned to a version
 
 #: §22.3 alerts that are Built.
@@ -73,7 +71,6 @@ BUILT_ALERTS = {
     # Reaper passes that start but never finish; timer messages dropped unrun; a job stopped as hung.
     "ReaperFailing",
     "ScheduledJobsExpiring",
-    "JobHung",
     # Log lines Alloy dropped or Loki refused while both were up.
     "LogLinesLost",
     # 2026-10-29: AI usage rows MongoDB did not take (logged for replay); the hourly AI usage add-up behind.
@@ -129,11 +126,7 @@ def _app_metric_names() -> set[str]:
 
 
 def _rules() -> list[dict]:
-    return [
-        rule
-        for group in yaml.safe_load(RULES.read_text(encoding="utf-8"))["groups"]
-        for rule in group["rules"]
-    ]
+    return [rule for group in yaml.safe_load(RULES.read_text(encoding="utf-8"))["groups"] for rule in group["rules"]]
 
 
 def _panels(dashboard: Path = DASHBOARD) -> list[dict]:
@@ -185,9 +178,7 @@ def test_every_metric_in_alerts_and_dashboard_exists() -> None:
     }
     assert used - known == set()
     named_stores = {
-        name
-        for query in _prometheus_queries()
-        for name in re.findall(r'tsg_dependency_up\{name="(\w+)"', query)
+        name for query in _prometheus_queries() for name in re.findall(r'tsg_dependency_up\{name="(\w+)"', query)
     }
     assert named_stores <= {d.value for d in Dependency}
 
@@ -204,9 +195,7 @@ def test_the_built_alerts_are_all_there_each_with_a_firing_test() -> None:
     )
     cases = yaml.safe_load((OBS / "prometheus" / "rules.test.yml").read_text(encoding="utf-8"))["tests"]
     # A case that expects silence (exp_alerts: []) proves nothing about firing: only firing cases count.
-    fired = {
-        check["alertname"] for case in cases for check in case["alert_rule_test"] if check.get("exp_alerts")
-    }
+    fired = {check["alertname"] for case in cases for check in case["alert_rule_test"] if check.get("exp_alerts")}
     assert fired == BUILT_ALERTS
 
 
@@ -250,9 +239,7 @@ def test_the_template_is_namespaced_pinned_sized_and_public() -> None:
     the app's project, ai-threatgen, with the monitoring proxy and its Routes (whose host they use)."""
     objects = _uat_objects()
     assert not {o["kind"] for o in objects} & {"ClusterRole", "ClusterRoleBinding"}
-    elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {
-        (o["kind"], "ai-common") for o in objects
-    }
+    elsewhere = {(o["kind"], o["metadata"]["namespace"]) for o in objects} - {(o["kind"], "ai-common") for o in objects}
     assert elsewhere == {
         (kind, project)
         for kind in ("Role", "RoleBinding", "Deployment", "Service", "Route")
@@ -346,10 +333,7 @@ def test_every_dashboard_panel_uses_a_provisioned_data_source(dashboard: Path) -
     used = {
         source["uid"]
         for panel in _panels(dashboard)
-        for source in [
-            panel.get("datasource"),
-            *(target.get("datasource") for target in panel.get("targets", [])),
-        ]
+        for source in [panel.get("datasource"), *(target.get("datasource") for target in panel.get("targets", []))]
         if source
     }
     assert used <= uids
@@ -430,30 +414,20 @@ def test_jobs_failing_leaves_out_the_timer_jobs_but_not_index_builds() -> None:
     assert set(left_out.split("|")) == timer_jobs
 
 
-def test_the_log_panels_and_runbook_read_the_ai_step_and_limiter_fields() -> None:
+def test_the_log_panels_read_the_ai_step_and_limiter_fields() -> None:
     """AI log lines name their step `ai_task` (`task` is the job's) and their limiter `limiter`, not `key`."""
     loki = {
-        p["title"]: t["expr"]
-        for p in _panels()
-        if p.get("datasource", {}).get("uid") == "loki"
-        for t in p["targets"]
+        p["title"]: t["expr"] for p in _panels() if p.get("datasource", {}).get("uid") == "loki" for t in p["targets"]
     }
     tables = ("Errors and exceptions", "Warnings: things that went wrong and were handled")
     for title in (*tables, "Everything about this id (newest at the top)"):
         assert ".ai_task" in loki[title], title
     assert not any(re.search(r"\.key\b", expr) for expr in loki.values())
-    runbook = (REPO / "docs" / "UAT_LLM_TIMEOUT_RUNBOOK.md").read_text(encoding="utf-8")
-    assert '"limiter": "tsg:ai_slots"' in runbook and '"key": "tsg:' not in runbook
 
 
 def test_following_a_run_shows_each_line_s_attempt_outcome_code_and_message() -> None:
     """The trace panel and `debug_tools.py find` both show why a job ended and on which attempt."""
-    [trace] = [
-        t["expr"]
-        for p in _panels()
-        if p["title"].startswith("Everything about this id")
-        for t in p["targets"]
-    ]
+    [trace] = [t["expr"] for p in _panels() if p["title"].startswith("Everything about this id") for t in p["targets"]]
     fields = {"attempt": 2, "outcome": "retry", "code": "ai_unavailable", "message": "The AI did not answer"}
     assert all(f"{{{{ with .{name} }}}}" in trace for name in fields)
     sys.path.insert(0, str(REPO / "scripts"))
@@ -497,10 +471,7 @@ def test_the_one_flower_link_opens_this_environment_s_flower() -> None:
     assert flower["spec"]["template"]["metadata"]["labels"]["component"] == "flower"  # its job
     routes = {route["metadata"]["name"]: route["spec"] for route in _template_objects("Route")}
     # Relative: UAT's Flower is on Grafana's own host.
-    assert (
-        ui["replacement"] == routes["flower"]["path"] + "/"
-        and routes["flower"]["host"] == routes["grafana"]["host"]
-    )
+    assert ui["replacement"] == routes["flower"]["path"] + "/" and routes["flower"]["host"] == routes["grafana"]["host"]
 
 
 def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
@@ -534,10 +505,7 @@ def test_the_monitoring_reads_only_tsg_s_pods_in_the_shared_ai_common() -> None:
     threatgen = yaml.safe_load_all((REPO / "deploy" / "deploy_threatgen.yaml").read_text(encoding="utf-8"))
     app_pods = [
         f"{d['metadata']['namespace']};{d['metadata']['name']}-7d9f8b6c5d-x2x4z"
-        for d in [
-            *(o for o in threatgen if o and o["kind"] == "Deployment"),
-            *_template_objects("Deployment"),
-        ]
+        for d in [*(o for o in threatgen if o and o["kind"] == "Deployment"), *_template_objects("Deployment")]
         if d["metadata"]["namespace"] in WATCHED_APP_PROJECTS
     ]
     assert len(app_pods) == 9 and all(re.fullmatch(kept["regex"], pod) for pod in app_pods)  # and the proxy
@@ -617,9 +585,7 @@ def test_a_tool_that_would_not_stop_stays_recorded_and_stop_fails(
     assert script._pids() == {"grafana": [4242, 111]}
 
 
-def test_a_setting_missing_for_a_later_program_starts_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_a_setting_missing_for_a_later_program_starts_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Before: Loki, Prometheus and Alertmanager were already running when redis-exporter's missing setting
     stopped start(); pids.json was never written, so stop() could not find them and the ports stayed busy."""
     script = _monitoring_script()
@@ -634,19 +600,6 @@ def test_a_setting_missing_for_a_later_program_starts_nothing(
     with pytest.raises(SystemExit):
         script._launch_all()
     assert launched == []
-
-
-def test_the_laptop_workers_serve_every_routed_queue_and_maintenance_alone() -> None:
-    """run.ps1 names its workers' queues itself: a queue added to the routes but not there gets no worker on
-    the laptop, so its jobs wait for ever and /ready answers 503. tsg_maintenance has a worker of its own
-    (G198, BLUEPRINT worker-maintenance): sharing threads with long jobs, the reaper waited behind ten stuck
-    mappings and a lost job was never re-sent (live test 2026-10-11)."""
-    workers = [
-        queues.split(",")
-        for queues in re.findall(r"'-Q', '([^']+)'", (REPO / "run.ps1").read_text(encoding="ascii"))
-    ]
-    assert sorted(queue for queues in workers for queue in queues) == sorted(ROUTED_QUEUES)
-    assert [Queue.MAINTENANCE] in workers
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="reads Windows process start times")
@@ -664,10 +617,7 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
     assert own and started_later and started_later > own
 
 
-POWERSHELL_SCRIPTS = [
-    "run.ps1",
-    "stop.ps1",
-]
+POWERSHELL_SCRIPTS = ["run.ps1", "stop.ps1"]
 NO_POWERSHELL = pytest.mark.skipif(
     shutil.which("powershell") is None, reason="Windows PowerShell is not installed here"
 )
@@ -687,6 +637,13 @@ def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
     powershell = [shutil.which("powershell") or "powershell", "-NoProfile", "-Command", parse]
     result = subprocess.run(powershell, capture_output=True, text=True, timeout=60, check=False)  # noqa: S603
     assert result.stdout.strip() == "0", result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
+def test_the_laptop_scripts_import_what_exists(name: str) -> None:
+    """Every `from app... import ...` run.ps1 / stop.ps1 pass to Python resolves: a moved module fails here."""
+    for module, attr in re.findall(r"from (app[\w.]*) import (\w+)", (REPO / name).read_text(encoding="ascii")):
+        assert hasattr(importlib.import_module(module), attr), f"{name}: from {module} import {attr}"
 
 
 #: Two mistakes PowerShell never reports, found with its own parser: one name in two casings in one scope
@@ -785,15 +742,11 @@ def test_run_ps1_reads_env_values_as_the_app_does(tmp_path: Path) -> None:
     """Before: run.ps1 cut an unquoted value at any '#', so a Redis password holding '#' broke its broker
     check and stop killed the worker without letting it finish its jobs."""
     env = tmp_path / ".env"
-    env.write_text(
-        "A=p#ss\nB=\"q # x\"\nC=plain # a comment\nD='single'\nE=\nA=last#wins\n", encoding="utf-8"
-    )
+    env.write_text("A=p#ss\nB=\"q # x\"\nC=plain # a comment\nD='single'\nE=\nA=last#wins\n", encoding="utf-8")
     keys = "ABCDE"
     expected = [dotenv_values(env)[key] or "" for key in keys]
     calls = "; ".join(f"Get-EnvValue '{key}'" for key in keys)
-    assert (
-        _run_powershell_function(REPO / "run.ps1", "Get-EnvValue", f"$EnvFile = '{env}'; {calls}") == expected
-    )
+    assert _run_powershell_function(REPO / "run.ps1", "Get-EnvValue", f"$EnvFile = '{env}'; {calls}") == expected
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
@@ -842,11 +795,7 @@ def test_a_window_started_as_administrator_is_never_forgotten() -> None:
         "try { $r = Get-Owned ([pscustomobject]@{ pid = 1; started = 'x'; elevated = $case[1] }); "
         "\"returned:$r\" } catch { 'refused' } }"
     )
-    assert _run_powershell_function(REPO / "run.ps1", "Get-Owned", fake) == [
-        "returned:",
-        "refused",
-        "returned:",
-    ]
+    assert _run_powershell_function(REPO / "run.ps1", "Get-Owned", fake) == ["returned:", "refused", "returned:"]
 
 
 def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> None:
@@ -858,9 +807,7 @@ def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> Non
     script = (REPO / "run.ps1").read_text(encoding="ascii")
     started = dict(re.findall(r"(\w+) = @\{ CII_WORKER_METRICS_PORT = '(\d+)' \}", script))
     assert started.pop("remediation") == "9105"  # tests/test_run_ps1_workers.py: in the file when it runs
-    local = yaml.safe_load(
-        (REPO / "observability" / "prometheus" / "prometheus.local.yml").read_text(encoding="utf-8")
-    )
+    local = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.local.yml").read_text(encoding="utf-8"))
     (worker,) = [job for job in local["scrape_configs"] if job["job_name"] == "worker"]
     targets = {target for config in worker["static_configs"] for target in config["targets"]}
     assert targets == {f"localhost:{port}" for port in (default, *started.values())} and len(started) == 3

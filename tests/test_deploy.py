@@ -20,13 +20,7 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import (
-    LITELLM_MODEL_PREFIX,
-    ChatModule,
-    Lease,
-    Queue,
-    Worker,
-)
+from app.core.constants import LITELLM_MODEL_PREFIX, ChatModule, Lease, Queue, Worker
 from app.worker import ROUTED_QUEUES, celery_app
 
 REPO = Path(__file__).resolve().parents[1]
@@ -52,10 +46,7 @@ API_HOST = "threatgen-api.apps.dda-desc-az1-01.desccii.local"
 PROXY = "monitoring-proxy"
 #: Each project's quota in limits (CPU, memory Gi, storage Gi); in ai-common, TSG's share of it (the chatbot
 #: has the rest).
-QUOTAS = {
-    "ai-threatgen": (6.0, 12.0, 60.0),
-    MONITORING_NAMESPACE: (3.0, 6.0, 60.0),
-}
+QUOTAS = {"ai-threatgen": (6.0, 12.0, 60.0), MONITORING_NAMESPACE: (3.0, 6.0, 60.0)}
 SECRET_NAMES = {
     "CII_DB_DSN",
     "CII_PROXY_URL",  # an address can carry a password
@@ -66,7 +57,6 @@ SECRET_NAMES = {
     "CII_EMBEDDING_API_KEY",
     "CII_RERANK_API_KEY",
     "CII_ADMIN_API_KEY",
-    "CII_NVD_API_KEY",
 }
 #: Connection strings carry their password: they are secrets, with the keys.
 CONNECTIONS = {"db_dsn", "mongo_url", "redis_url", "redis_celery_broker_url"}
@@ -87,19 +77,8 @@ HARDENED = {
 MONITORING_PEER = {"namespaceSelector": {}, "podSelector": {"matchLabels": {"part-of": "tsg-monitoring"}}}
 ROUTER_PEER = {"namespaceSelector": {"matchLabels": {"policy-group.network.openshift.io/ingress": ""}}}
 DNS = {(53, "UDP"), (53, "TCP"), (5353, "UDP"), (5353, "TCP")}  # 5353: where OpenShift's DNS pods listen
-#: Each config file configmap.yaml embeds, and the observability/ file the laptop runs.
-EMBEDDED_CONFIGS = {
-    "prometheus.yml": "observability/prometheus/prometheus.yml",
-    "rules.yml": "observability/prometheus/rules.yml",
-    "alertmanager.yml": "observability/alertmanager/alertmanager.yml",
-    "loki.yaml": "observability/loki/loki.yaml",
-    "config.alloy": "observability/alloy/uat.alloy",
-    "datasources.yaml": "observability/grafana/provisioning/datasources/datasources.yaml",
-    "dashboards.yaml": "observability/grafana/provisioning/dashboards/dashboards.yaml",
-    "tsg.json": "observability/grafana/dashboards/tsg.json",
-    "ai_usage.json": "observability/grafana/dashboards/ai_usage.json",
-    "nginx.conf": "observability/nginx/nginx.conf",  # the monitoring proxy's: UAT only
-}
+#: Makes the monitoring's ConfigMaps from observability/'s files (oc apply -k observability, ADR-001).
+KUSTOMIZATION = REPO / "observability" / "kustomization.yaml"
 #: How a pod names a ConfigMap or Secret it reads (envFrom, env valueFrom).
 REFERENCES = {
     "configMapRef": "ConfigMap",
@@ -129,6 +108,20 @@ def _objects(*paths: Path, kind: str = "") -> list[dict]:
             if document:
                 found += document["items"] if document["kind"] == "List" else [document]
     return [o for o in found if not kind or o["kind"] == kind]
+
+
+def _monitoring_config_maps() -> list[dict]:
+    """The ConfigMaps KUSTOMIZATION makes, built here as kustomize builds them: one key per file, its name
+    or the name before `=`, holding the file's text."""
+    spec = yaml.safe_load(KUSTOMIZATION.read_text(encoding="utf-8"))
+    made = []
+    for entry in spec["configMapGenerator"]:
+        pairs = (item.split("=", 1) if "=" in item else (Path(item).name, item) for item in entry["files"])
+        data = {key: (KUSTOMIZATION.parent / source).read_text(encoding="utf-8") for key, source in pairs}
+        labels = spec["generatorOptions"]["labels"]
+        metadata = {"name": entry["name"], "namespace": entry["namespace"], "labels": labels}
+        made.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata, "data": data})
+    return made
 
 
 def _app_deployments() -> list[dict]:
@@ -240,11 +233,7 @@ def _reachable(rules: Path) -> set[tuple[str, str]]:
     found = set()
     for policy in _objects(rules, kind="NetworkPolicy"):
         for rule in policy["spec"].get("egress", []):
-            hosts = [
-                peer["ipBlock"]["cidr"].removesuffix("/32")
-                for peer in rule.get("to", [])
-                if "ipBlock" in peer
-            ]
+            hosts = [peer["ipBlock"]["cidr"].removesuffix("/32") for peer in rule.get("to", []) if "ipBlock" in peer]
             found |= {(host, str(port["port"])) for host in hosts for port in rule.get("ports", [])}
     return found
 
@@ -294,9 +283,7 @@ def _reads(deployment: dict) -> set[tuple[str, str, str]]:
     spec = deployment["spec"]["template"]["spec"]
     reads = set()
     for container in _containers(deployment):
-        sources = container.get("envFrom", []) + [
-            v["valueFrom"] for v in container.get("env", []) if "valueFrom" in v
-        ]
+        sources = container.get("envFrom", []) + [v["valueFrom"] for v in container.get("env", []) if "valueFrom" in v]
         for source in sources:
             for reference, target in source.items():
                 if reference in REFERENCES:
@@ -325,10 +312,7 @@ def test_no_deploy_file_names_kubernetes_io_but_the_node_label_that_spreads_pods
         assert line.split(" #")[0].strip() == ": ".join(NODE_TOPOLOGY), line
         assert line.count(KUBERNETES_IO) == 1, line  # not in the line's comment
     parsed = [
-        found
-        for document in yaml.safe_load_all(text)
-        for found in _scalars(document)
-        if KUBERNETES_IO in str(found[1])
+        found for document in yaml.safe_load_all(text) for found in _scalars(document) if KUBERNETES_IO in str(found[1])
     ]
     # Each such line is a real topologyKey, not text inside a string (an embedded file, say).
     assert parsed == [NODE_TOPOLOGY] * len(lines)
@@ -364,10 +348,13 @@ def test_every_object_is_in_its_file_s_project() -> None:
             assert where == MONITORING_NAMESPACE, (item["kind"], name)
     for path, shared in ((CONFIG_FILE, "tsg-config"), (SECRETS_FILE, "tsg-secrets")):
         assert sorted(_shared(path, shared)) == sorted(WATCHED), path.name  # every project with TSG pods
-        others = {
-            o["metadata"]["namespace"] for o in _objects(path) if o["metadata"]["name"] not in {shared, PROXY}
-        }
-        assert others == {MONITORING_NAMESPACE}, path.name  # the monitoring's files and Grafana's password
+    secrets = [o for o in _objects(SECRETS_FILE) if o["metadata"]["name"] != "tsg-secrets"]
+    assert {o["metadata"]["namespace"] for o in secrets} == {MONITORING_NAMESPACE}  # Grafana's password
+    assert [o for o in _objects(CONFIG_FILE) if o["metadata"]["name"] != "tsg-config"] == []
+    for item in _monitoring_config_maps():  # the monitoring's files; the proxy's is in ai-threatgen
+        name = item["metadata"]["name"]
+        home = "ai-threatgen" if name == PROXY else MONITORING_NAMESPACE
+        assert item["metadata"]["namespace"] == home, name
 
 
 def test_every_app_pod_runs_the_deployed_image_with_the_shared_settings_hardened_and_sized() -> None:
@@ -435,9 +422,7 @@ def test_beat_runs_once_the_api_only_in_ai_threatgen_and_only_two_copies_get_a_b
     assert command[3] == "beat" and command[command.index("-s") + 1].startswith(mount["mountPath"] + "/")
     [api] = [d for d in deployments if d["metadata"]["name"] == "api"]
     assert api["metadata"]["namespace"] == "ai-threatgen"
-    budgets = {
-        b["metadata"]["name"] for b in _objects(*APP_FILES.values(), COMMON_FILE, kind="PodDisruptionBudget")
-    }
+    budgets = {b["metadata"]["name"] for b in _objects(*APP_FILES.values(), COMMON_FILE, kind="PodDisruptionBudget")}
     assert budgets == {d["metadata"]["name"] for d in deployments if d["spec"]["replicas"] >= 2} == {"api"}
     for deployment in deployments:
         if deployment["spec"]["strategy"]["type"] == "RollingUpdate":
@@ -514,14 +499,10 @@ def test_prometheus_alloy_and_kube_state_metrics_see_the_app_in_both_projects() 
     alloy = (REPO / "observability" / "alloy" / "uat.alloy").read_text(encoding="utf-8")
     assert all(f'"{namespace}"' in alloy for namespace in WATCHED)
     for pod_label, log_label in (("part_of", "app"), ("component", "component")):
-        rule = (
-            rf'source_labels = \["__meta_kubernetes_pod_label_{pod_label}"\]\s+target_label\s+= "{log_label}"'
-        )
+        rule = rf'source_labels = \["__meta_kubernetes_pod_label_{pod_label}"\]\s+target_label\s+= "{log_label}"'
         assert re.search(rule, alloy), log_label
     for namespace in APP_FILES:
-        [binding] = [
-            b for b in _objects(COMMON_FILE, kind="RoleBinding") if b["metadata"]["namespace"] == namespace
-        ]
+        [binding] = [b for b in _objects(COMMON_FILE, kind="RoleBinding") if b["metadata"]["namespace"] == namespace]
         assert {(s["name"], s["namespace"]) for s in binding["subjects"]} == {
             (name, MONITORING_NAMESPACE) for name in ("prometheus", "alloy", "kube-state-metrics")
         }, namespace
@@ -571,11 +552,7 @@ def test_every_app_pod_lists_its_pinned_ai_gateway_on_both_no_proxy_spellings() 
     """D23 (UAT, 2026-10-21): through the corporate proxy every AI call timed out; the pods list the gateway
     on NO_PROXY and no_proxy themselves, so every tool in the pod goes direct, the app's own bypass aside."""
     for deployment in _app_deployments():
-        hosts = {
-            name
-            for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
-            for name in alias["hostnames"]
-        }
+        hosts = {name for alias in deployment["spec"]["template"]["spec"]["hostAliases"] for name in alias["hostnames"]}
         env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
         assert env["NO_PROXY"] == env["no_proxy"], deployment["metadata"]["name"]
         assert hosts <= set(env["NO_PROXY"].split(",")), deployment["metadata"]["name"]
@@ -587,9 +564,7 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
     NO_PROXY and no_proxy in every app pod, and the app must bypass the proxy for it."""
     settings = _settings()
     assert settings["CII_AI_BYPASS_PROXY"] == "true"
-    gateways = {
-        settings[url] for model, url in GATEWAYS if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)
-    }
+    gateways = {settings[url] for model, url in GATEWAYS if settings.get(model, "").startswith(LITELLM_MODEL_PREFIX)}
     assert gateways
     for address in gateways:
         parts = urlsplit(address)
@@ -597,9 +572,7 @@ def test_every_ai_gateway_is_https_on_443_pinned_and_off_the_proxy_in_every_app_
         for deployment in _app_deployments():
             name = deployment["metadata"]["name"]
             pinned = {
-                host
-                for alias in deployment["spec"]["template"]["spec"]["hostAliases"]
-                for host in alias["hostnames"]
+                host for alias in deployment["spec"]["template"]["spec"]["hostAliases"] for host in alias["hostnames"]
             }
             env = {variable["name"]: variable["value"] for variable in _container(deployment)["env"]}
             assert parts.hostname in pinned, (address, name)
@@ -634,9 +607,7 @@ def test_the_secret_template_holds_every_secret_and_placeholders_only() -> None:
     assert not set(_settings()) & SECRET_NAMES
     git = shutil.which("git") or "git"
     ignored = subprocess.run(  # noqa: S603
-        [git, "check-ignore", "-q", str(SECRETS_COPY.relative_to(REPO).as_posix())],
-        cwd=REPO,
-        check=False,
+        [git, "check-ignore", "-q", str(SECRETS_COPY.relative_to(REPO).as_posix())], cwd=REPO, check=False
     )
     assert ignored.returncode == 0, "deploy/secrets.yaml must be git-ignored"
 
@@ -654,10 +625,8 @@ def test_every_project_gets_the_same_settings_and_only_ones_the_app_reads() -> N
 def test_every_config_map_secret_and_volume_a_pod_reads_is_written_in_its_project() -> None:
     """A pod that reads a ConfigMap, Secret, key or volume its project does not have never starts."""
     written = {
-        (o["kind"], o["metadata"]["namespace"], o["metadata"]["name"]): o.get("data")
-        or o.get("stringData")
-        or {}
-        for o in _objects(CONFIG_FILE, SECRETS_FILE, COMMON_FILE)
+        (o["kind"], o["metadata"]["namespace"], o["metadata"]["name"]): o.get("data") or o.get("stringData") or {}
+        for o in [*_objects(CONFIG_FILE, SECRETS_FILE, COMMON_FILE), *_monitoring_config_maps()]
         if o["kind"] in {"ConfigMap", "Secret", "PersistentVolumeClaim"}
     }
     for deployment in _all_deployments():
@@ -667,22 +636,21 @@ def test_every_config_map_secret_and_volume_a_pod_reads_is_written_in_its_projec
             assert not key or key in written[(kind, namespace, target)], (namespace, name, target, key)
 
 
-def test_each_embedded_monitoring_config_is_its_observability_file_byte_for_byte() -> None:
-    """The laptop runs observability/'s files and OpenShift configmap.yaml's copies: a change made to one
-    only must fail here."""
-    embedded = {
-        key: text
-        for config_map in _objects(CONFIG_FILE, kind="ConfigMap")
-        if config_map["metadata"]["name"] != "tsg-config"
-        for key, text in config_map["data"].items()
+def test_the_kustomization_makes_exactly_the_monitoring_config_maps_the_pods_mount() -> None:
+    """One copy of each monitoring file: OpenShift gets observability/'s own files under the fixed names the
+    Deployments mount. Fails when a listed file is missing, a ConfigMap no pod mounts is made, one a pod
+    mounts is not, or the names get kustomize's hash suffix."""
+    spec = yaml.safe_load(KUSTOMIZATION.read_text(encoding="utf-8"))
+    assert spec["generatorOptions"]["disableNameSuffixHash"] is True
+    made = {(m["metadata"]["namespace"], m["metadata"]["name"]) for m in _monitoring_config_maps()}
+    mounted = {
+        (deployment["metadata"]["namespace"], target)
+        for deployment in _all_deployments()
+        for kind, target, _ in _reads(deployment)
+        if kind == "ConfigMap" and target != "tsg-config"
     }
-    assert set(embedded) == set(EMBEDDED_CONFIGS)
-    differ = [
-        key
-        for key, source in EMBEDDED_CONFIGS.items()
-        if embedded[key].encode("utf-8") != (REPO / source).read_bytes()
-    ]
-    assert differ == []
+    assert made == mounted
+    assert not [o for o in _objects(CONFIG_FILE, kind="ConfigMap") if o["metadata"]["name"] != "tsg-config"]
 
 
 def test_grafana_mounts_every_dashboard_file_in_the_folder_it_loads() -> None:
@@ -699,9 +667,8 @@ def test_grafana_mounts_every_dashboard_file_in_the_folder_it_loads() -> None:
     names = {source["configMap"]["name"] for source in volume["projected"]["sources"]}
     mounted = {
         key
-        for config_map in _objects(CONFIG_FILE, kind="ConfigMap")
-        if config_map["metadata"]["name"] in names
-        and config_map["metadata"]["namespace"] == MONITORING_NAMESPACE
+        for config_map in _monitoring_config_maps()
+        if config_map["metadata"]["name"] in names and config_map["metadata"]["namespace"] == MONITORING_NAMESPACE
         for key in config_map["data"]
     }
     dashboards = REPO / "observability" / "grafana" / "dashboards"
@@ -713,7 +680,7 @@ def test_every_object_fits_oc_apply_s_last_applied_annotation() -> None:
     """Client-side oc apply keeps each object, as JSON, in one annotation of at most 262,144 bytes; kubectl
     writes <, > and & as 6-byte escapes, so each object stays under 250,000 bytes (about 5% margin). Fails
     when a second dashboard is added to tsg.json's ConfigMap instead of its own."""
-    for item in _objects(CONFIG_FILE, COMMON_FILE):
+    for item in [*_objects(CONFIG_FILE, COMMON_FILE), *_monitoring_config_maps()]:
         size = len(json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         assert size < 250_000, (item["kind"], item["metadata"]["name"], size)
 
@@ -783,8 +750,11 @@ def test_tsg_config_holds_uat_s_own_values_never_a_placeholder() -> None:
         assert not [key for key, value in values.items() if "CHANGE_ME" in str(value)], namespace
 
 
-def test_a_running_job_s_message_is_never_redelivered_to_another_worker() -> None:
-    """The broker hands an unacknowledged message to another worker after its visibility timeout: it outlasts
-    the longest job plus the lease the reaper waits out."""
+def test_a_killed_pod_s_job_comes_back_through_the_reaper_only() -> None:
+    """A message is acknowledged when its job starts, so Redis never re-sends a started job (it did 70 min
+    after a pod was killed, a copy the claim then dropped); the reaper re-sends it in about 2 min. A retry's
+    message is held unacknowledged while it waits, so the visibility timeout outlasts the longest wait.
+    Mutation: task_acks_late=True."""
+    assert celery_app.conf.task_acks_late is False
     timeout = celery_app.conf.broker_transport_options["visibility_timeout"]
-    assert timeout > Lease.MAX_JOB_SECONDS + Lease.SECONDS
+    assert timeout > max(Lease.RETRY_DELAYS_SECONDS)

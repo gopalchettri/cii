@@ -16,8 +16,8 @@ from structlog.testing import capture_logs
 from app.core import clock, metrics
 from app.core.constants import Clock, Collection, LogEvent, Queue, Status, TaskName, Worker
 from app.core.database import get_mongodb, get_redis_client
-from app.data_access.jobs.job_repository import JobRepository
-from app.worker import heartbeat
+from app.crud.jobs import JobRepository
+from app.worker import lifecycle
 
 
 def _pod_behind(monkeypatch: pytest.MonkeyPatch, seconds: float, *, corrected: bool) -> None:
@@ -25,10 +25,7 @@ def _pod_behind(monkeypatch: pytest.MonkeyPatch, seconds: float, *, corrected: b
     against MongoDB (the fix); else it trusts its own clock, as every pod did before."""
     real = clock._local_epoch
     monkeypatch.setattr(clock, "_local_epoch", lambda: real() - seconds)
-    pod = clock.StoreClock()
-    if not corrected:
-        pod._next_check = math.inf  # never asks MongoDB
-    monkeypatch.setattr(clock, "_clock", pod)
+    monkeypatch.setattr(clock, "_next_check", 0.0 if corrected else math.inf)  # inf: never asks MongoDB
 
 
 def _jobs() -> JobRepository:
@@ -42,14 +39,7 @@ def _queued_now(due_ago_seconds: float = 0) -> str:
     due_at = now - timedelta(seconds=due_ago_seconds)
     job = {"task": TaskName.FIND_THREATS, "epoch": 1, "attempts": 0, "due_at": due_at}
     get_mongodb()[Collection.SESSIONS].insert_one(
-        {
-            "_id": record_id,
-            "entity_id": 86,
-            "asset_id": 103,
-            "status": Status.QUEUED,
-            "updated_at": now,
-            "job": job,
-        }
+        {"_id": record_id, "entity_id": 86, "asset_id": 103, "status": Status.QUEUED, "updated_at": now, "job": job}
     )
     return record_id
 
@@ -60,8 +50,6 @@ def test_a_worker_76_s_behind_takes_a_job_another_pod_queued_now(monkeypatch: py
     record_id = _queued_now()
     _pod_behind(monkeypatch, 76, corrected=False)
     assert _jobs().claim_job(record_id, 1, TaskName.FIND_THREATS, "before") is None
-    why = _jobs().why_not_claimed(record_id, 1, TaskName.FIND_THREATS)
-    assert why["reason"] == "not_due" and 70 < why["due_in_seconds"] < 80
     _pod_behind(monkeypatch, 76, corrected=True)
     assert _jobs().claim_job(record_id, 1, TaskName.FIND_THREATS, "after") is not None
 
@@ -88,7 +76,7 @@ def test_a_worker_70_s_behind_still_counts_as_online(monkeypatch: pytest.MonkeyP
     for corrected, counted in ((False, False), (True, True)):
         name = f"celery@behind-{uuid.uuid4().hex}"
         _pod_behind(monkeypatch, 70, corrected=corrected)
-        worker = heartbeat.WorkerHeartbeat([Queue.THREATS], name)
+        worker = lifecycle.WorkerHeartbeat([Queue.THREATS], name)
         worker.beat()
         try:
             stamp = get_redis_client().zscore(key, name)
@@ -117,23 +105,22 @@ def test_the_offset_is_mongodbs_clock_minus_the_pods_with_half_the_round_trip_ea
     monkeypatch.setattr(clock, "_local_epoch", lambda: next(local))
     mongo = _MongoClock(1_076.01)  # read halfway through a 20 ms round trip: MongoDB is 76 s ahead
     monkeypatch.setattr(clock, "get_mongodb", lambda: mongo)
-    pod = clock.StoreClock()
+    monkeypatch.setattr(clock, "_next_check", 0.0)
+    monkeypatch.setattr(clock, "_off", False)
     with capture_logs() as logs:
-        assert pod.epoch_seconds() == pytest.approx(1_076.5, abs=1e-6)
-        assert Clock.CHECK_EVERY_SECONDS - 1 < pod._next_check - time.monotonic() <= Clock.CHECK_EVERY_SECONDS
+        assert clock.epoch_seconds() == pytest.approx(1_076.5, abs=1e-6)
+        assert Clock.CHECK_EVERY_SECONDS - 1 < clock._next_check - time.monotonic() <= Clock.CHECK_EVERY_SECONDS
         assert metrics.CLOCK_OFFSET._value.get() == pytest.approx(76.0, abs=1e-6)
-        pod._next_check = 0.0  # a minute later: measured again, still off, not logged again
+        clock._next_check = 0.0  # a minute later: measured again, still off, not logged again
         mongo.server_epoch = 2_080.0
-        assert pod.epoch_seconds() == pytest.approx(2_080.0)
-        pod._next_check = 0.0  # MongoDB down: the last offset stands
+        assert clock.epoch_seconds() == pytest.approx(2_080.0)
+        clock._next_check = 0.0  # MongoDB down: the last offset stands
         mongo.server_epoch = None
-        assert pod.epoch_seconds() == pytest.approx(3_080.0)
+        assert clock.epoch_seconds() == pytest.approx(3_080.0)
     assert [line["offset_seconds"] for line in logs if line["event"] == LogEvent.CLOCK_OFF] == [76.0]
 
 
 def test_utc_now_is_the_same_instant_as_epoch_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
-    pod = clock.StoreClock()
-    pod._offset, pod._next_check = 76.0, math.inf
-    monkeypatch.setattr(clock, "_clock", pod)
+    monkeypatch.setattr(clock, "_offset", 76.0)
     assert abs(clock.utc_now().timestamp() - clock.epoch_seconds()) < 0.01
     assert abs(clock.epoch_seconds() - time.time() - 76.0) < 0.01

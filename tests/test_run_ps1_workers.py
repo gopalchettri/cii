@@ -48,9 +48,7 @@ def _start(tmp_path: Path, env_lines: list[str]) -> tuple[dict[str, list[str]], 
     result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)  # noqa: S603
     assert result.returncode == 0 and not result.stderr, result.stderr
     found = json.loads(result.stdout)
-    return found["programs"], [
-        target for group in json.loads(found["targets"]) for target in group["targets"]
-    ]
+    return found["programs"], [target for group in json.loads(found["targets"]) for target in group["targets"]]
 
 
 def _option(arguments: list[str], flag: str) -> str:
@@ -62,15 +60,7 @@ def _option(arguments: list[str], flag: str) -> str:
 def test_a_remote_reranker_gives_remediation_a_worker_sized_by_its_ai_cap(tmp_path: Path) -> None:
     """Plans waiting for AI slots hold their own scraped worker's threads (cap + 2), not the Starts'."""
     programs, targets = _start(tmp_path, REMOTE)
-    assert list(programs) == [
-        "api",
-        "worker",
-        "remediation",
-        "service_mapper",
-        "maintenance",
-        "reaper",
-        "beat",
-    ]
+    assert list(programs) == ["api", "worker", "remediation", "service_mapper", "maintenance", "reaper", "beat"]
     remediation = programs["remediation"]
     assert (_option(remediation, "-Q"), _option(remediation, "-c")) == ("tsg_remediation", "6")
     assert _option(remediation, "-n").startswith("remediation@")  # logs/worker-remediation.log
@@ -93,15 +83,14 @@ def test_a_local_reranker_keeps_remediation_on_the_job_worker(tmp_path: Path) ->
 @NO_POWERSHELL
 @pytest.mark.parametrize("env_lines", [LOCAL, REMOTE], ids=["local reranker", "remote reranker"])
 def test_every_routed_queue_has_exactly_one_worker(tmp_path: Path, env_lines: list[str]) -> None:
-    """In either layout each routed queue is served once: none waits for ever, none twice."""
+    """In either layout each routed queue is served once (none waits for ever, none twice), and
+    tsg_maintenance by a worker of its own: sharing threads with long jobs, the reaper waited behind them."""
     programs, _ = _start(tmp_path, env_lines)
     queues = [
-        queue
-        for arguments in programs.values()
-        if "-Q" in arguments
-        for queue in _option(arguments, "-Q").split(",")
+        queue for arguments in programs.values() if "-Q" in arguments for queue in _option(arguments, "-Q").split(",")
     ]
     assert sorted(queues) == sorted(ROUTED_QUEUES)
+    assert _option(programs["maintenance"], "-Q") == "tsg_maintenance"
 
 
 @NO_POWERSHELL
@@ -123,9 +112,7 @@ def test_the_mapper_s_threads_follow_its_ai_cap(tmp_path: Path, cap: list[str], 
 @pytest.mark.parametrize("cap", ["CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS=0", ""])
 def test_a_remediation_worker_with_no_cap_gets_the_app_s_own_cap_of_threads(tmp_path: Path, cap: str) -> None:
     """No limit (0) or none set: the app's own cap (16) plus 2 threads, never 2 plans at a time."""
-    programs, _ = _start(
-        tmp_path, ["CII_WORKER_THREADS=40", cap, "CII_RERANK_BASE_URL=https://rerank.example"]
-    )
+    programs, _ = _start(tmp_path, ["CII_WORKER_THREADS=40", cap, "CII_RERANK_BASE_URL=https://rerank.example"])
     assert _option(programs["remediation"], "-c") == "18"
 
 
@@ -141,9 +128,7 @@ def test_stop_asks_every_worker_to_finish_and_start_checks_every_metrics_port() 
     """A worker missing from stop's list is killed mid-job; a port missing from start's check fails it."""
     stop = RUN_PS1[RUN_PS1.index("function Invoke-Stop") : RUN_PS1.index("function Show-Status")]
     programs = re.findall(
-        r"^    (\w+) += @\('-m', 'celery', '-A', 'app.worker', 'worker',.*?'-n', (\$\w+)",
-        RUN_PS1,
-        re.M | re.S,
+        r"^    (\w+) += @\('-m', 'celery', '-A', 'app.worker', 'worker',.*?'-n', (\$\w+)", RUN_PS1, re.M | re.S
     )
     assert len(programs) == 5 and all(f"'{name}'" in stop and variable in stop for name, variable in programs)
     checked = re.search(r"foreach \(\$port in ([\d, ]+)\)", RUN_PS1)

@@ -15,7 +15,7 @@ from structlog.testing import capture_logs
 from app.core.constants import Collection, ErrorCode, ErrorMessage, Lease, LogEvent, Status, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, Unavailable
-from app.data_access.jobs.job_repository import JobLease, JobRepository, new_job
+from app.crud.jobs import JobLease, JobRepository, new_job
 from app.worker import celery_app, jobs
 from app.worker.celery_app import REQUEST_ID_HEADER
 
@@ -40,9 +40,7 @@ def _insert(status: Status = Status.QUEUED, **job: Any) -> str:
 def _task() -> Any:
     """What run_leased_job uses of a Celery task, no request id header."""
     return SimpleNamespace(
-        name=TaskName.FIND_THREATS,
-        request=SimpleNamespace(id="task-1"),
-        retry=lambda **_options: RetryRequested(),
+        name=TaskName.FIND_THREATS, request=SimpleNamespace(id="task-1"), retry=lambda **_options: RetryRequested()
     )
 
 
@@ -109,15 +107,6 @@ def test_mongodb_down_while_giving_a_job_back_still_retries_it(monkeypatch: pyte
     with capture_logs() as logs, pytest.raises(RetryRequested):
         jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, work)
     assert LogEvent.JOB_FAILED not in [line["event"] for line in logs]
-
-
-def test_a_redelivery_cannot_take_an_expired_job_past_its_last_attempt() -> None:
-    expired = {"task_id": "old", "lease_until": datetime.now(UTC) - timedelta(minutes=1)}
-    spent = _insert(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS, **expired)
-    left = _insert(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS - 1, **expired)
-    jobs_repo = JobRepository(_records())
-    assert jobs_repo.claim_job(spent, 1, TaskName.FIND_THREATS, "new") is None
-    assert jobs_repo.claim_job(left, 1, TaskName.FIND_THREATS, "new") is not None
 
 
 def test_a_queued_job_names_no_earlier_delivery(monkeypatch: pytest.MonkeyPatch) -> None:

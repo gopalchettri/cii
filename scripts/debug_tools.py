@@ -1,4 +1,4 @@
-"""What the VS Code tasks run for debugging (docs/DEBUGGING.md): read-only checks of the stores, workers and
+"""What the VS Code tasks run for debugging (.vscode/tasks.json): read-only checks of the stores, workers and
 queues; one run's job; the log lines of one request, run or job; sending the timer jobs now; and, on the
 laptop only, a test run to watch live updates with.
 
@@ -38,8 +38,8 @@ def set_debug_value(name: str, value: str) -> None:
 
 # ---------------------------------------------------------------- read-only checks
 def stores(_: str) -> int:
-    from app.container import get_control_repository, get_threat_repository
     from app.core.readiness import check_readiness
+    from app.crud.library import get_control_repository, get_threat_repository
     from app.search.library_cache import load_libraries
 
     dependencies, workers = check_readiness()

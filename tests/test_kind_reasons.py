@@ -6,7 +6,7 @@ import dataclasses
 from app.core.constants import StrideCategory
 from app.domain.scenario.session import _build_threat_block, build_scenario_view
 from app.domain.scenario.write import build_scenario_card, build_writer_input
-from app.models.scenario.write import WrittenScenario
+from app.schemas.scenario_internal import WrittenScenario
 from tests.planner_samples import CONTEXT
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 
@@ -55,11 +55,7 @@ def test_the_cards_threat_block_shows_the_threats_own_category() -> None:
 def test_the_threat_blocks_category_id_is_its_own_categorys() -> None:
     """A plan threat stored without its category id: the kind's id never stands beside another category's
     name."""
-    old_plan = {
-        "category": S.TAMPERING,
-        "category_id": 12,
-        "threat": {"key": "lib:1", "category": S.SPOOFING},
-    }
+    old_plan = {"category": S.TAMPERING, "category_id": 12, "threat": {"key": "lib:1", "category": S.SPOOFING}}
     block = _build_threat_block(old_plan)
     assert (block.threat_category, block.threat_category_id) == (S.SPOOFING, None)  # before: (Spoofing, 12)
     same_kind = old_plan | {"threat": {"key": "lib:1", "category": S.TAMPERING}}

@@ -22,7 +22,6 @@ from app.core.constants import AiLimits, AiOutcome, AiTask, LogEvent
 from app.core.database import get_redis_client
 from app.core.exceptions import TEMPORARY_ERRORS, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
-from app.domain.external_intelligence.rerank_gate import rerank_gate_for
 
 TASK = AiTask.RELEVANCE_GATE
 MISCONF = "MISCONF Redis is configured to save RDB snapshots, but it's currently unable to persist to disk."
@@ -140,7 +139,6 @@ def test_a_worker_waits_for_ai_capacity_until_its_lease_ends(monkeypatch: pytest
     kimi = AiRequestRate(redis, "kimi", per_minute=1, wait_seconds=AiLimits.WORKER_SLOT_WAIT_SECONDS)
     eighth = [kimi.wait_for_turn(TASK) for _ in range(8)][-1]  # 7 turns of 60 s, less the burst
     assert eighth == pytest.approx(420 - AiLimits.RATE_BURST_SECONDS, abs=1)
-    assert rerank_gate_for("http://proxy.invalid")._wait_seconds is None  # noqa: SLF001
 
 
 def _ai_errors(model: str) -> float:

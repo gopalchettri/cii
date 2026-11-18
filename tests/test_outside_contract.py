@@ -20,7 +20,7 @@ CONTRACT = REPO / "tests" / "contract"
 WRITE = os.environ.get("TSG_WRITE_CONTRACT") == "1"
 #: Index set-up in a fresh process, so the pin covers the intelligence collections too (off in the suite).
 INDEX_SETUP = (
-    "from app.container import create_all_indexes\n"
+    "from app.crud.indexes import create_all_indexes\n"
     "from app.worker.jobs import JOB_COLLECTIONS\n"
     "create_all_indexes(JOB_COLLECTIONS)\n"
 )
@@ -71,8 +71,7 @@ def test_celery_routes_and_schedule_are_unchanged() -> None:
         {
             "routes": {str(task): str(route["queue"]) for task, route in conf.task_routes.items()},
             "schedule": {
-                str(name): [str(entry["task"]), entry["schedule"]]
-                for name, entry in conf.beat_schedule.items()
+                str(name): [str(entry["task"]), entry["schedule"]] for name, entry in conf.beat_schedule.items()
             },
         },
     )

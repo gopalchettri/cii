@@ -26,7 +26,6 @@ class StrideCategory(StrEnum):
     ELEVATION_OF_PRIVILEGE = "Elevation of Privilege"
 
 
-#: What each category means: in each relevance-gate and gap-fill prompt and at the head of each threat search.
 STRIDE_DEFINITIONS: Final[dict[StrideCategory, str]] = {
     StrideCategory.SPOOFING: "pretending to be another user, device or service to be trusted as them",
     StrideCategory.TAMPERING: "unauthorised modification of data, configuration, commands or code",
@@ -106,15 +105,13 @@ class Search:
     VECTOR_FLOOR: Final = 0.60  # the vector leg keeps rows at least this similar when any reach it
 
 
-#: What a search of each corpus asks: sent before the query to a model with a query instruction.
 QUERY_TASKS: Final[dict[EmbeddingCorpus, str]] = {
     EmbeddingCorpus.THREAT: "Given a proposed threat, retrieve the library threats that are the same threat",
     EmbeddingCorpus.THREAT_TYPE: "Given a threat type name, retrieve the threat types with the same meaning",
     EmbeddingCorpus.THREAT_ACTOR: "Given a cyber threat, retrieve the threat actors likely to carry it out",
     EmbeddingCorpus.CONTROL: "Given a threat scenario, retrieve the security controls that mitigate it",
     EmbeddingCorpus.SERVICE: (
-        "Given a description of a service or of what flows to or from it, retrieve the catalog services that "
-        "match it"
+        "Given a description of a service or of what flows to or from it, retrieve the catalog services that match it"
     ),
     EmbeddingCorpus.EXTERNAL_INTELLIGENCE: (
         "Given a cyber threat, retrieve the threat intelligence records (attack techniques, exploited "
@@ -126,26 +123,17 @@ QUERY_TASKS: Final[dict[EmbeddingCorpus, str]] = {
 class ContextProperties:
     """The columns of dbo.tsg_GetAssetContext: every one but these is a fact of the asset or a system."""
 
-    # every asset and system row must return them
     HEAD: Final[tuple[str, ...]] = ("id", "name", "category_code")
-    OPTION_COLUMNS: Final[tuple[str, ...]] = ("code", "name")  # a dropdown name's columns (part 5) ...
-    # ... and the number its facts hold, under either name
-    OPTION_KEYS: Final[tuple[str, ...]] = ("value", "id")
     ALWAYS_USED: Final[tuple[str, ...]] = (*HEAD, "alias")  # never a required fact: always there
-    # an asset column about the whole organisation, not this asset
     ORGANISATION_PREFIX: Final[str] = "entity_"
-    ORGANISATION_BRIEF_KEY: Final[str] = (
-        "organisation_background_not_this_asset"  # the brief's key for those facts
-    )
+    ORGANISATION_BRIEF_KEY: Final[str] = "organisation_background_not_this_asset"  # the brief's key for those facts
     COUNTRY_KEY: Final[str] = "country"  # THREAT_CONTEXT_COUNTRY, read while external intelligence is on
     UNNAMED_SYSTEM: Final[str] = "Supporting system {id}"  # a linked system not sent, saved without a name
-    # the request field a refusal names for the facts the request decides
     REQUEST_FIELDS: Final[dict[str, str]] = {
         "sector": "sector_id",
         "sub_sector": "subsector_id",
         "critical_service": "service_id",
     }
-    #: Coded columns holding one saved option value, and the option code that names it.
     SINGLE_SELECT_CODES: Final[dict[str, str]] = {
         "accessability_channel": "acc-channel",
         "hosting_location": "hosting-location",
@@ -153,11 +141,7 @@ class ContextProperties:
         "dr_drill_frequency": "dr-drill",
         "managed_by": "managed-by",
     }
-    SINGLE_SELECT_CODES_WITH_PRIORITY: Final[dict[str, str]] = {
-        **SINGLE_SELECT_CODES,
-        "asset_priority": "priority",
-    }
-    #: Coded columns holding a JSON array of saved option values, or the names the procedure already joined.
+    SINGLE_SELECT_CODES_WITH_PRIORITY: Final[dict[str, str]] = {**SINGLE_SELECT_CODES, "asset_priority": "priority"}
     MULTI_SELECT_CODES: Final[dict[str, str]] = {
         "technology_used": "technology-used",
         "database_platforms": "database-platforms",
@@ -165,13 +149,8 @@ class ContextProperties:
         "saas_platform_list": "saas-platforms",
         "public_cloud_platforms": "pub-c-platforms",
     }
-    NAME_FACTS: Final[tuple[str, ...]] = (
-        "critical_service",
-        "sector",
-        "sub_sector",
-    )  # names, spaces collapsed
+    NAME_FACTS: Final[tuple[str, ...]] = ("critical_service", "sector", "sub_sector")  # names, spaces collapsed
     NEVER_TESTED_YEAR: Final[int] = 1900  # SQL Server's minimum date: "never", not a real date
-    # the settings naming the required facts
     ASSET_REQUIRED_SETTING: Final[str] = "ASSET_PROPERTIES_REQUIRED"
     SYSTEM_REQUIRED_SETTING: Final[str] = "SYSTEM_PROPERTIES_REQUIRED"
 
@@ -181,11 +160,6 @@ class PropertyMessage(StrEnum):
     NOT_RETURNED = (
         "{setting} names {names}, which dbo.tsg_GetAssetContext does not return: add the column to the "
         "procedure or remove the name from the setting."
-    )
-    HEAD_MISSING = "dbo.tsg_GetAssetContext must return {columns} in its {rows} rows; it does not."
-    OPTIONS_OUT_OF_DATE = (
-        "dbo.tsg_GetAssetContext's dropdown names (part 5) must return code, name and value (or id), not "
-        "{found}. Fix the procedure's part 5."
     )
     RESERVED = (
         "dbo.tsg_GetAssetContext returns {columns} in its {rows} rows: reserved names, never shown to the "
@@ -201,8 +175,6 @@ class ThreatFinding:
     GAP_FILL_MAX_CHARS: Final = 3_500  # a gap-fill proposal's type + threat
     LIBRARY_MATCH_CANDIDATES: Final = 10  # hybrid hits reranked against one proposal
     AI_DUPLICATE_COSINE: Final = 0.98  # an AI threat this close to a kept threat is a rewording of it
-    # A library threat this close to a kept one of its type and asset type is a near copy, wherever each was
-    # placed (laptop library, 2026-11-14: its closest pair, 0.81, is one attack's IT and OT variants).
     LIBRARY_DUPLICATE_COSINE: Final = 0.80
     AI_BATCHES_AT_ONCE: Final = TUNING.threat_questions_at_once  # gate batches at once
     THREATS_PER_QUESTION: Final = TUNING.threats_per_question  # one gate batch's threats, each whole
@@ -225,8 +197,6 @@ class AttackerCheck(StrEnum):
     CHOSEN = "chosen"  # the gate's pick, from the threat's own list, with its reason
     BALANCED = "balanced"  # older plans only: rated as suitable as the pick, acting for fewer threats
     NONE_FITS = "none_fits"  # the gate found no listed attacker plausible: the threat is not planned
-    NOT_CHECKED = "not_checked"  # older plans only: no usable pick, the top-ranked linked actor acted
-    RANKED = "ranked"  # older plans only: never judged by the gate, the ranking decided
 
 
 class CandidateRejection(StrEnum):
@@ -252,12 +222,6 @@ class AnswerProblem(StrEnum):
     """Why an AI answer item breaks its contract: quoted to the AI in the re-ask."""
 
     TEXT_REQUIRED = "must not be empty"
-    RULE_VERDICTS_REQUIRED = (
-        'every numbered rule needs a verdict: "holds", or broken: "<the exact words of the scenario>" '
-        "- <reason>"
-    )
-    THREAT_ACTIONS_REQUIRED = 'the reply must be {"actions": [...]}: a non-empty list of short verb phrases'
-    THREAT_ACTION_VERDICTS_REQUIRED = "threat_actions must judge every item of PLAN.threat.threat_actions"
     ACTION_SENTENCES_MISSING = (
         "action_sentences must give the number of the statement's sentence for each of: {actions}"
     )
@@ -281,10 +245,6 @@ class Controls:
 
 
 class ControlMessage(StrEnum):
-    NEAREST_ONLY = (
-        "No control reached the control similarity threshold of {cutoff:g}; the {nearest} nearest compatible "
-        "controls are kept (NEAREST_CONTROLS)."
-    )
     STRONG_REASON = "Score {score:.0f} is at or above the threshold of {cutoff:g}: strong."
     FALLBACK_REASON = (
         "Score {score:.0f} is below the threshold of {cutoff:g}: fallback, among the nearest kept to reach "
@@ -293,11 +253,6 @@ class ControlMessage(StrEnum):
     NEAREST_REASON = (
         "Score {score:.0f} is below the threshold of {cutoff:g}: fallback, one of the {nearest} nearest kept "
         "because no control reached it."
-    )
-    SHORTFALL = "{kept} control(s) kept: the minimum is {least}, but only {kept} compatible control(s) exist."
-    OTHER_TYPE = (
-        "No control of asset type(s) {types} exists; the nearest control(s) of another type are kept: check "
-        "that they fit."
     )
     OTHER_TYPE_REASON = (
         "Score {score:.0f}, asset type {asset_type}: another type than the scenario's, one of the {nearest} "
@@ -311,20 +266,17 @@ class ControlMatch(StrEnum):
     GIVEN = "given"  # named by the person for a hand-written scenario, in the order given
 
 
-#: The selection tier of each match (the results' match tier).
 CONTROL_TIERS: Final[dict[str, str]] = {
     ControlMatch.EXACT: "strong",
     ControlMatch.NEAREST: "fallback",
     ControlMatch.GIVEN: "given",
 }
-#: Why a control was kept for a scenario, in words (the results' match_reason).
 CONTROL_MATCH_REASONS: Final[dict[str, str]] = {
     ControlMatch.EXACT: "Scored at or above the control similarity threshold for this scenario.",
     ControlMatch.NEAREST: "No control reached the threshold; this is the nearest relevant library control.",
     ControlMatch.GIVEN: "Named by the person who wrote this scenario.",
 }
 
-#: The library AssetTypes that fit an asset or system of each category; an untyped row fits everywhere.
 COMPATIBLE_ASSET_TYPES: Final[dict[str, frozenset[str]]] = {
     AssetType.IT: frozenset({AssetType.IT, AssetType.IT_OT}),
     AssetType.OT: frozenset({AssetType.OT, AssetType.IT_OT}),

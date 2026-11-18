@@ -13,14 +13,13 @@ import structlog
 from fastapi.testclient import TestClient
 
 from app import ai
+from app.ai.profiles import ChatModelProfile
 from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, AiTask, Collection, Status, Step, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin.ai_call_repository import AiCallRepository
-from app.data_access.jobs.job_repository import JobRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.crud.jobs import JobRepository
+from app.crud.scenarios import ThreatScenarioSessionRepository
 from app.domain.scenario.write import write_scenario_set
-from app.models.ai.profiles import ChatModelProfile
 from tests.fakes import FakeChatModel
 from tests.test_run_actions import _deliver, _regenerate, api_key, queued  # noqa: F401 - fixtures by name
 from tests.test_scenario_writing import _brief_of, _plan_threat
@@ -38,17 +37,11 @@ from tests.test_writing_job import (  # noqa: F401 - fixtures used by name
 )
 
 _ROOMY_CHAT = ChatModelProfile(
-    max_output_tokens=8192,
-    timeout_seconds=5,
-    supports_json_mode=True,
-    reasoning_effort="none",
-    context_tokens=200_000,
+    max_output_tokens=8192, timeout_seconds=5, supports_json_mode=True, reasoning_effort="none", context_tokens=200_000
 )
 
 
-def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """The set's asks are the same on a re-delivery (slots in the batch's order, the second round built only
     from the first's answers), so a re-delivery of the same job (same record, epoch and stage) takes every
     answer its first delivery got: 0 AI calls, and the same scenarios come out."""
@@ -63,7 +56,7 @@ def test_a_redelivery_of_the_same_job_reads_back_the_whole_set_with_no_ai_call(
         return SimpleNamespace(choices=[reply], usage=None)
 
     monkeypatch.setattr(litellm, "completion", complete)
-    calls = AiCallRepository(get_mongodb()["test_ai_calls"])
+    calls = get_mongodb()["test_ai_calls"]
     model = ai.ChatModel("test-chat", _ROOMY_CHAT, "http://ai.invalid", "key", calls)
     threats = [_plan_threat(), _plan_threat(key="lib:298", name="Historian wipe")]
     briefs = [(f"SC{place}", _brief_of(threat)) for place, threat in enumerate(threats, start=1)]

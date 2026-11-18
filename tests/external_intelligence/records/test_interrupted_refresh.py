@@ -5,20 +5,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app import container
 from app.core.constants import Collection, IntelKind, IntelLimits, IntelSource
 from app.core.database import get_mongodb
-from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
-from app.data_access.external_intelligence.intel_record_repository import IntelRecordRepository
-from app.models.external_intelligence.fetch_result import FetchResult
-from app.models.external_intelligence.intel_record import IntelRecord
-from app.models.external_intelligence.source_health import (
-    SourceHealth,
-    refresh_success_fields,
+from app.crud.intel import (
+    IntelFeedRepository,
+    IntelRecordRepository,
+    get_intel_feed_repository,
+    get_intel_record_repository,
 )
+from app.schemas.intel_records import FetchResult, IntelRecord, SourceHealth, refresh_success_fields
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
-SOURCE = IntelSource.CISA_KEV
+SOURCE = IntelSource.ATTACK_ENTERPRISE
 STALE = timedelta(seconds=IntelLimits.CLAIM_STALE_SECONDS)
 
 
@@ -28,16 +26,7 @@ class Killed(Exception):
 
 def _result() -> FetchResult:
     records = tuple(
-        IntelRecord(
-            SOURCE,
-            f"CVE-2024-{n:04d}",
-            IntelKind.VULNERABILITY,
-            "IT",
-            "t",
-            f"text {n}",
-            "https://x.test",
-            "v2",
-        )
+        IntelRecord(SOURCE, f"T{n:04d}", IntelKind.TECHNIQUE, "IT", "t", f"text {n}", "https://x.test", "v2")
         for n in range(40)
     )
     return FetchResult(records, (), "v2", "v2")
@@ -48,12 +37,12 @@ def stores() -> tuple[IntelRecordRepository, IntelFeedRepository]:
     db = get_mongodb()
     for name in (Collection.INTEL, Collection.EXTERNAL_FEED_STATUS):
         db[name].delete_many({})
-    records, feeds = container.get_intel_record_repository(), container.get_intel_feed_repository()
+    records, feeds = get_intel_record_repository(), get_intel_feed_repository()
     records.create_indexes()
     feeds.create_missing_intel_feeds()
     claim = feeds.claim_intel_feed_refresh(SOURCE, NOW - timedelta(days=1), NOW - timedelta(days=2))
     feeds.release_intel_feed_refresh(
-        SOURCE, claim, refresh_success_fields("v1", "v1", NOW - timedelta(days=1), more=False, records=0)
+        SOURCE, claim, refresh_success_fields("v1", "v1", NOW - timedelta(days=1), records=0)
     )
     return records, feeds
 
@@ -70,12 +59,10 @@ def _run(
         for start in range(0, len(result.records), 10):
             if kill_after is not None and start >= kill_after:
                 raise Killed
-            records.save_intel_records(result.records[start : start + 10], [], now)
+            records.save_intel_records(result.records[start : start + 10], now)
         count = len(result.records)
         feeds.release_intel_feed_refresh(
-            SOURCE,
-            claim,
-            refresh_success_fields(result.checkpoint, result.source_version, now, more=False, records=count),
+            SOURCE, claim, refresh_success_fields(result.checkpoint, result.source_version, now, records=count)
         )
     except Killed:
         pass  # the process is gone: no failure is recorded and the claim is left behind
@@ -93,9 +80,7 @@ def test_a_batch_half_stored_then_rerun_gives_the_state_of_one_clean_run(stores)
     clean = _state()
     get_mongodb()[Collection.INTEL].delete_many({})
     claim = feeds.claim_intel_feed_refresh(SOURCE, NOW, NOW - STALE)
-    feeds.release_intel_feed_refresh(
-        SOURCE, claim, refresh_success_fields("v1", "v1", NOW, more=False, records=0)
-    )
+    feeds.release_intel_feed_refresh(SOURCE, claim, refresh_success_fields("v1", "v1", NOW, records=0))
 
     day2 = NOW + timedelta(days=1)
     _run(records, feeds, day2, kill_after=20)

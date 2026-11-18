@@ -5,102 +5,58 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
+from app.core.config import get_settings
 from app.core.constants import AssetType, FeedStatus, IntelKind, IntelSource
-from app.models.external_intelligence.evidence_request import (
-    EvidenceRequest,
-    RecordedProduct,
-    RecordedProducts,
-)
-from app.models.external_intelligence.fetch_result import FetchResult
-from app.models.external_intelligence.intel_record import IntelRecord, SaveCounts
-from app.models.external_intelligence.sanitised_text import SanitisedText
-from app.models.external_intelligence.source_health import SourceHealth, sources_in_registry_order
+from app.domain.intel import evidence
+from app.domain.intel.evidence import RerankGate
+from app.domain.intel.index import EvidenceIndex
+from app.schemas.intel_records import EvidenceRequest, FetchResult, IntelRecord, SanitisedText, SourceHealth
 from tests.fakes import FakeEmbeddings, FakeRerankModel
 
 NOW = datetime(2026, 10, 12, tzinfo=UTC)
 ALL_SOURCES = list(IntelSource)
 
 
-def technique_doc(
-    ref: str, asset_type: str = "IT", text: str = "ransomware encrypts files", **data: Any
-) -> dict:
+def technique_doc(ref: str, asset_type: str = "IT", text: str = "ransomware encrypts files", **data: Any) -> dict:
     source = IntelSource.ATTACK_ICS if asset_type == "OT" else IntelSource.ATTACK_ENTERPRISE
     full = f"{ref} Technique {ref}. {text} Tactics: impact."
     record = IntelRecord(
-        source,
-        ref,
-        IntelKind.TECHNIQUE,
-        asset_type,
-        f"Technique {ref}",
-        full,
-        f"https://x/{ref}",
-        "r1",
-        data=data,
+        source, ref, IntelKind.TECHNIQUE, asset_type, f"Technique {ref}", full, f"https://x/{ref}", "r1", data=data
     )
     return record.as_doc(NOW)
 
 
-def vulnerability_doc(cve: str, vendor: str, product: str, **data: Any) -> dict:
-    data = {"cve": cve, "vendor": vendor, "product": product, "date_added": "2024-03-01"} | data
-    text = f"{cve} ransomware flaw. {vendor} {product}."
-    record = IntelRecord(
-        IntelSource.CISA_KEV,
-        cve,
-        IntelKind.VULNERABILITY,
-        "IT",
-        cve,
-        text,
-        f"https://x/{cve}",
-        "v1",
-        data=data,
-    )
-    return record.as_doc(NOW)
+def request_of(text: str = "Threat: Ransomware encrypts backup servers", types: set[str] | None = None):
+    return EvidenceRequest(text, frozenset(types or {"IT", AssetType.IT_OT}))
 
 
-def advisory_doc(ident: str, *entries: Any, **data: Any) -> dict:
-    data = {"advisory_id": ident, "vendor": "Siemens", "cves": [], "affected": list(entries)} | data
-    text = f"{ident} advisory. Ransomware encrypts files."
-    record = IntelRecord(
-        IntelSource.CISA_ICS,
-        ident,
-        IntelKind.ADVISORY,
-        "OT",
-        ident,
-        text,
-        f"https://x/{ident}",
-        "a1",
-        data=data,
-    )
-    return record.as_doc(NOW)
-
-
-def epss_doc(cve: str, epss: float = 0.5) -> dict:
-    data = {"cve": cve, "epss": epss, "percentile": 0.9}
-    record = IntelRecord(
-        IntelSource.FIRST_EPSS, cve, IntelKind.EXPLOIT_SCORE, "IT", cve, "score", "u", "d", data=data
-    )
-    return record.as_doc(NOW)
-
-
-def detail_doc(cve: str, **data: Any) -> dict:
-    full = {"cve": cve, "cvss": 9.8, "severity": "CRITICAL", "cwes": [], "affected": [{"vendor": "V"}]} | data
-    record = IntelRecord(
-        IntelSource.NIST_NVD, cve, IntelKind.VULNERABILITY_DETAIL, "IT", cve, "detail", "u", "n1", data=full
-    )
-    return record.as_doc(NOW)
-
-
-def request_of(
-    text: str = "Threat: Ransomware encrypts backup servers", types: set[str] | None = None, **product: Any
-):
-    rows = (RecordedProduct(**{k: tuple(v) for k, v in product.items()}),) if product else ()
-    return EvidenceRequest(text, frozenset(types or {"IT", AssetType.IT_OT}), RecordedProducts(rows))
+def use_index(
+    monkeypatch: pytest.MonkeyPatch,
+    index: EvidenceIndex | Callable[[], EvidenceIndex],
+    threshold: float = 1.0,
+    candidates: int = 6,
+    kept: int = 3,
+    gate: RerankGate | None = None,
+) -> None:
+    """evidence.find_evidence searches `index` (or the index its provider gives) with these settings and gate;
+    the rerank score cache starts empty."""
+    provider = index if callable(index) else (lambda: index)
+    one_gate = gate or RerankGate(2)
+    monkeypatch.setattr(evidence, "get_evidence_index_keeper", lambda: SimpleNamespace(current_index=provider))
+    monkeypatch.setattr(evidence, "get_rerank_gate", lambda: one_gate)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "evidence_similarity_threshold", threshold)
+    monkeypatch.setattr(settings, "evidence_candidates", candidates)
+    monkeypatch.setattr(settings, "evidence_kept_per_threat", kept)
+    evidence._scored.clear()  # noqa: SLF001
 
 
 class ScoredBy(FakeRerankModel):
@@ -167,19 +123,16 @@ class FlaggingSanitiser:
 class MemoryRecords:
     def __init__(self, docs: list[dict] | None = None) -> None:
         self.docs = docs or []
-        self.saved: list[tuple[Sequence[IntelRecord], int]] = []
+        self.saved: list[Sequence[IntelRecord]] = []
         self.retired: list[tuple[str, set[str]]] = []
-        self.purged: list[str] = []
         self.counts = 0
 
-    def stream_current_intel_records(self, sources: Sequence[IntelSource]) -> Iterator[dict]:
-        return iter([doc for doc in self.docs if doc["source"] in sources])
+    def stream_current_intel_records(self) -> Iterator[dict]:
+        return iter(self.docs)
 
-    def save_intel_records(
-        self, records: Sequence[IntelRecord], rejected: Sequence[Any], fetched_at: datetime
-    ) -> SaveCounts:
-        self.saved.append((records, len(rejected)))
-        return SaveCounts(len(records), 0, len(rejected))
+    def save_intel_records(self, records: Sequence[IntelRecord], fetched_at: datetime) -> int:
+        self.saved.append(records)
+        return len(records)
 
     def retire_intel_records_missing_from(
         self, source: IntelSource, seen_ids: set[str], retired_at: datetime | None = None
@@ -193,24 +146,15 @@ class MemoryRecords:
     def count(self, **where: Any) -> int:
         return len(self.saved)
 
-    def delete(self, **where: Any) -> int:
-        source = where["source"]
-        self.purged.append(source)
-        self.docs = [doc for doc in self.docs if doc["source"] != source]
-        return 1
-
 
 class MemoryPointer:
     def __init__(self) -> None:
         self.saved: list[dict] = []
         self.active: dict | None = None
 
-    def save(self, record: dict, only_if: Any = None) -> bool:
-        self.saved.append({name: value for name, value in record.items() if name != "_id"})
-        return True
-
-    def activate_intel_snapshot(self, snapshot_id: str) -> bool:
-        self.active = next(d for d in self.saved if d["snapshot_id"] == snapshot_id)
+    def activate_intel_snapshot(self, description: dict) -> bool:
+        self.saved.append(description)
+        self.active = description
         return True
 
     def get(self, fields: Any = None, **where: Any) -> dict | None:
@@ -218,12 +162,12 @@ class MemoryPointer:
 
 
 class MemoryFeeds:
-    """tsg_external_feed_status in memory, answering the base verbs the services ask with."""
+    """tsg_external_feed_status in memory, answering the base verbs the services ask with; `sources`: the
+    ones it holds (every one unless given)."""
 
-    def __init__(self, approved: list[IntelSource] | None = None) -> None:
-        self.approved = list(ALL_SOURCES if approved is None else approved)
+    def __init__(self, sources: list[IntelSource] | None = None) -> None:
+        self.sources = list(ALL_SOURCES if sources is None else sources)
         self.health: dict[IntelSource, SourceHealth] = {}
-        self.more: set[IntelSource] = set()
         self.claimed: dict[IntelSource, str] = {}  # source -> claim token
         self.successes: list[tuple] = []
         self.failures: list[tuple[IntelSource, str]] = []
@@ -231,54 +175,27 @@ class MemoryFeeds:
         self.lock = threading.Lock()
 
     def create_missing_intel_feeds(self) -> None:
-        for source in self.approved:
+        for source in self.sources:
             self.health.setdefault(source, SourceHealth(source))
 
-    def set_source_approved(self, source: IntelSource, approved: bool) -> None:
-        if approved and source not in self.approved:
-            self.approved.append(source)
-        if not approved and source in self.approved:
-            self.approved.remove(source)
-
     def _doc(self, source: IntelSource) -> dict:
-        doc = self.health[source].as_doc()
-        return {
-            **doc,
-            "_id": source,
-            "approved": source in self.approved,
-            "more_pending": source in self.more,
-        }
+        return {**self.health[source].as_doc(), "_id": source}
 
     def get(self, fields: Any = None, **where: Any) -> dict | None:
         return self._doc(where["_id"]) if where["_id"] in self.health else None
 
     def list(self, fields: Any = None, **where: Any) -> list[dict]:
-        if where.get("approved"):
-            return [{"_id": source} for source in self.approved]
         return [self._doc(source) for source in self.health]
 
-    def list_approved_sources(self) -> list[IntelSource]:
-        return sources_in_registry_order(self.list(approved=True))
-
-    def count(self, **where: Any) -> int:
-        source = where["_id"]
-        if where.get("more_pending"):
-            return int(source in self.more)
-        return int(source in self.approved)
-
-    def claim_intel_feed_refresh(
-        self, source: IntelSource, now: datetime, stale_before: datetime
-    ) -> str | None:
+    def claim_intel_feed_refresh(self, source: IntelSource, now: datetime, stale_before: datetime) -> str | None:
         with self.lock:
             self.claims_made += 1
-            if source in self.claimed or source not in self.approved:
+            if source in self.claimed:
                 return None
             self.claimed[source] = f"token-{self.claims_made}"
             return self.claimed[source]
 
-    def release_intel_feed_refresh(
-        self, source: IntelSource, claim: str, outcome: dict | None = None
-    ) -> bool:
+    def release_intel_feed_refresh(self, source: IntelSource, claim: str, outcome: dict | None = None) -> bool:
         if self.claimed.get(source) != claim:
             return False
         del self.claimed[source]
@@ -291,7 +208,7 @@ class MemoryFeeds:
     def _record_success(self, source: IntelSource, done: dict) -> None:
         now, records = done["last_success_at"], done["records"]
         checkpoint, version = done["checkpoint"], done["source_version"]
-        self.successes.append((source, checkpoint, version, done["more_pending"], records))
+        self.successes.append((source, checkpoint, version, records))
         self.health[source] = SourceHealth(source, FeedStatus.OK, checkpoint, version, records, now, now)
 
     def _record_failure(self, source: IntelSource, failed: dict) -> None:
@@ -301,14 +218,6 @@ class MemoryFeeds:
             source, FeedStatus.FAILED, previous.checkpoint, previous.source_version, previous.records,
             failed["last_attempt_at"], previous.last_success_at, failed["last_error"],
         )  # fmt: skip
-
-
-class MemoryCatalogue:
-    def __init__(self, fetchers: dict) -> None:
-        self._fetchers = fetchers
-
-    def fetchers(self) -> dict:
-        return self._fetchers
 
 
 class StubFetcher:
@@ -327,7 +236,7 @@ class StubFetcher:
 
 
 class MemoryKeeper:
-    """What the refresher, health and purge need of the index keeper."""
+    """What the refresher and health need of the index keeper."""
 
     def __init__(self, fail: bool | Exception = False) -> None:
         self.rebuilds, self.fail = 0, fail  # an exception: the rebuild fails with it; True: RuntimeError
@@ -344,6 +253,6 @@ class MemoryKeeper:
         return future
 
     def peek_index(self):
-        from app.search.external_intelligence.evidence_index import empty_index
+        from app.domain.intel.index import empty_index
 
         return empty_index(FakeEmbeddings(), ScoredBy())  # type: ignore[arg-type]

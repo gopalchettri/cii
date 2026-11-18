@@ -10,11 +10,10 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pymongo.errors import ServerSelectionTimeoutError
 
-from app import container
 from app.core.constants import Audit, AuditAction, AuditTarget, Collection, Timeouts
 from app.core.database import get_mongodb
-from app.data_access.admin import audit_repository
-from app.data_access.admin.audit_repository import AuditRepository
+from app.crud import audit as audit_repository
+from app.crud.audit import AuditRepository
 from app.domain.shared import audit
 from tests.conftest import ADMIN
 
@@ -31,9 +30,7 @@ def _failures() -> float:
 
 def test_mint_is_recorded_with_the_admin_user_and_the_request_id(client: TestClient) -> None:
     response = client.post(
-        URL,
-        json={"name": "audit-a"},
-        headers={**ADMIN, "X-User-Id": "admin-1", "X-Request-Id": "req-audit-a"},
+        URL, json={"name": "audit-a"}, headers={**ADMIN, "X-User-Id": "admin-1", "X-Request-Id": "req-audit-a"}
     )
     assert response.status_code == 201, response.text
     client_id = response.json()["client_id"]
@@ -68,7 +65,7 @@ def test_an_audit_outage_never_fails_the_action_and_is_counted(
         def insert_one(self, _record: dict) -> None:
             raise ServerSelectionTimeoutError("audit store down")
 
-    monkeypatch.setattr(container.get_audit_repository(), "_collection", MongoIsDown())
+    monkeypatch.setattr(audit_repository.get_audit_repository(), "_collection", MongoIsDown())
     failures_before = _failures()
     response = client.post(URL, json={"name": "audit-d"}, headers=ADMIN)
     assert response.status_code == 201, response.text
@@ -102,9 +99,7 @@ def test_an_audit_record_is_one_insert_no_index_work() -> None:
     assert calls == ["insert_one"]
 
 
-def test_an_audit_write_is_bounded_so_a_slow_store_cannot_hold_the_answer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_audit_write_is_bounded_so_a_slow_store_cannot_hold_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: the insert could wait the 30 s socket timeout after the action had already happened."""
     deadlines: list[float] = []
     inside: list[bool] = []

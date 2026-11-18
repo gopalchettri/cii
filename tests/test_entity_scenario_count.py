@@ -9,16 +9,16 @@ from typing import Any
 
 import pytest
 
-from app import container
 from app.core.constants import Collection, Decision, ScenarioStatus
 from app.core.database import get_mongodb
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.services.scenario.threat_scenario_service import ThreatScenarioService
+from app.crud import scenarios as scenario_crud
+from app.crud.scenarios import ThreatScenarioRepository
+from app.domain.scenario import runs
 
 
 @pytest.fixture
 def scenarios() -> ThreatScenarioRepository:
-    repository = container.get_threat_scenario_repository()
+    repository = scenario_crud.get_threat_scenario_repository()
     repository.create_indexes()
     return repository
 
@@ -55,8 +55,7 @@ def _mixed_entity(scenarios: ThreatScenarioRepository) -> tuple[int, str]:
 
 
 @pytest.mark.parametrize(
-    ("decision", "expected"),
-    [(None, 7), (Decision.PENDING, 2), (Decision.ACCEPTED, 2), (Decision.REJECTED, 2)],
+    ("decision", "expected"), [(None, 7), (Decision.PENDING, 2), (Decision.ACCEPTED, 2), (Decision.REJECTED, 2)]
 )
 def test_the_total_equals_the_served_current_count(
     scenarios: ThreatScenarioRepository, decision: Decision | None, expected: int
@@ -70,8 +69,7 @@ def test_the_total_equals_the_served_current_count(
 
 
 @pytest.mark.parametrize(
-    ("where", "index"),
-    [("entity", "entity_counts"), ("entity_accepted", "entity_counts"), ("session", "run_counts")],
+    ("where", "index"), [("entity", "entity_counts"), ("entity_accepted", "entity_counts"), ("session", "run_counts")]
 )
 def test_the_total_reads_one_index_only(scenarios: ThreatScenarioRepository, where: str, index: str) -> None:
     entity_id, first = _mixed_entity(scenarios)
@@ -91,11 +89,13 @@ def test_the_total_reads_one_index_only(scenarios: ThreatScenarioRepository, whe
     assert index in winning and '"FETCH"' not in winning
 
 
-def test_a_full_page_takes_its_total_from_the_covered_count(scenarios: ThreatScenarioRepository) -> None:
+def test_a_full_page_takes_its_total_from_the_covered_count(
+    scenarios: ThreatScenarioRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
     entity_id, _ = _mixed_entity(scenarios)
     counted: list[dict[str, Any]] = []
     spy = copy.copy(scenarios)
     spy.count = lambda **where: counted.append(where) or 0  # type: ignore[method-assign]
-    owner = SimpleNamespace(_scenarios=spy)
-    records, total = ThreatScenarioService._scenario_page(owner, "-created_at", 0, 1, entity_id=entity_id)  # type: ignore[arg-type]
+    monkeypatch.setattr(runs, "get_threat_scenario_repository", lambda: spy)
+    records, total = runs._scenario_page("-created_at", 0, 1, entity_id=entity_id)
     assert (len(records), total, counted) == (1, 7, [])

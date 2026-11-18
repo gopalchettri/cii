@@ -14,23 +14,22 @@ from sqlalchemy import Engine
 from starlette.middleware.cors import CORSMiddleware
 from structlog.testing import capture_logs
 
-from app import container
-from app.api import dependencies
+from app import worker
+from app.api import deps
 from app.core.constants import Collection, Header, LogEvent, Status, TaskName
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.logging import mask_secret_values
-from app.data_access.admin.audit_repository import AuditRepository
-from app.data_access.scenario.asset_repository import AssetRepository
-from app.data_access.service_mapper.mapping_repository import MappingRepository
-from app.services.service_mapper.service_mapper_service import ServiceMapperService
+from app.crud import scenarios as scenario_crud
+from app.realtime import publisher
+from app.search.library_cache import get_library_cache
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
     CONTROLS,
     api_key_fixture,
     fake_library,
     remediation_plan_service,
+    use_plan_service,
     world_fixture,
 )
-from tests.service_builders import threat_scenario_service
 
 START = {"asset_id": 103, "supporting_system_id": [321, 322], "subsector_id": 11}
 MAPPING = {
@@ -60,7 +59,7 @@ DUPLICATE = "duplicate_request"
 def window(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
     """The derived key's clock, held still so a minute boundary never splits a test's two requests."""
     now = {"seconds": 1_800_000_000.0}
-    monkeypatch.setattr(dependencies, "epoch_seconds", lambda: now["seconds"], raising=False)
+    monkeypatch.setattr(deps, "epoch_seconds", lambda: now["seconds"], raising=False)
     return now
 
 
@@ -72,37 +71,24 @@ def caller(api_key: str) -> dict[str, str]:
 
 
 @pytest.fixture
-def runs(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
+def runs(client: TestClient, sql_test_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """The scenario and remediation services on the SQL test database's asset 103 (entity 86)."""
-    assets = AssetRepository(StoredProcedureClient(sql_test_engine))
-    plans = remediation_plan_service(
-        library=fake_library(tuple(CONTROLS.values())), assets=assets, send_job=lambda *args: None
-    )
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_threat_scenario_service] = lambda: threat_scenario_service(assets=assets)
-    overrides[container.get_remediation_plan_service] = lambda: plans
+    monkeypatch.setattr(scenario_crud, "get_stored_procedure_client", lambda: StoredProcedureClient(sql_test_engine))
+    plans = remediation_plan_service(library=fake_library(tuple(CONTROLS.values())), send_job=lambda *args: None)
+    use_plan_service(client, monkeypatch, lambda: plans)
     get_mongodb()[Collection.SESSIONS].delete_many({"entity_id": 86, "asset_id": 103})
     yield
-    overrides.pop(container.get_threat_scenario_service, None)
-    overrides.pop(container.get_remediation_plan_service, None)
+    client.app.dependency_overrides.pop(get_library_cache, None)  # type: ignore[attr-defined]
 
 
 @pytest.fixture
-def mapper(client: TestClient) -> Iterator[None]:
+def mapper(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """The service mapper on the test database, sending and publishing nothing; no mapping left by an earlier
     test (a service has one)."""
     get_mongodb()[Collection.SERVICE_MAPPINGS].delete_many({})
-    service = ServiceMapperService(
-        MappingRepository(),
-        container.get_settings(),
-        lambda *args: True,
-        None,
-        AuditRepository(),
-        lambda _mapping_id: None,
-    )
-    client.app.dependency_overrides[container.get_service_mapper_service] = lambda: service  # type: ignore[attr-defined]
+    monkeypatch.setattr(worker, "send_job", lambda *args: True)
+    monkeypatch.setattr(publisher, "publish_mapping_status", lambda _mapping_id: None)
     yield
-    client.app.dependency_overrides.pop(container.get_service_mapper_service, None)  # type: ignore[attr-defined]
 
 
 def _refused_as_duplicate(answer: Any, **first: Any) -> None:
@@ -132,9 +118,7 @@ def test_a_keyless_repeat_start_is_refused_naming_the_first_run(
     assert client.post("/v1/sessions", json=START, headers=other_user).status_code == 202
 
 
-def test_a_callers_own_key_still_replays_and_is_echoed(
-    client: TestClient, caller: dict[str, str], runs: None
-) -> None:
+def test_a_callers_own_key_still_replays_and_is_echoed(client: TestClient, caller: dict[str, str], runs: None) -> None:
     """A key the caller sent: the repeat answers 200 with the same run, and both answers carry that key."""
     keyed = caller | {Header.IDEMPOTENCY_KEY: uuid.uuid4().hex}
     first = client.post("/v1/sessions", json=START, headers=keyed)
@@ -167,11 +151,7 @@ def _sent_again_with_its_echoed_key(
 
 
 def test_a_retry_with_the_echoed_key_replays_on_every_route(
-    client: TestClient,
-    caller: dict[str, str],
-    runs: None,
-    mapper: None,
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient, caller: dict[str, str], runs: None, mapper: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 202 lost on the way back, retried with the Idempotency-Key it echoed: the caller sent that key, so
     each route answers 200 with what the first request started (a manual plan also when it looked before the
@@ -180,12 +160,10 @@ def test_a_retry_with_the_echoed_key_replays_on_every_route(
     assert (again.status_code, again.json()["session_id"]) == (200, run["session_id"]), again.text
     plan, again = _sent_again_with_its_echoed_key(client, "/v1/remediation", caller, MANUAL)
     assert (again.status_code, again.json()["remediation_id"]) == (200, plan["remediation_id"]), again.text
-    sessions = container.get_threat_scenario_session_repository()
+    sessions = scenario_crud.get_threat_scenario_session_repository()
     real_get = sessions.get
     monkeypatch.setattr(
-        sessions,
-        "get",
-        lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
+        sessions, "get", lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where)
     )
     echoed = caller | {Header.IDEMPOTENCY_KEY: again.headers[Header.IDEMPOTENCY_KEY]}
     raced = client.post("/v1/remediation", json=MANUAL, headers=echoed)
@@ -201,11 +179,7 @@ def test_a_retry_with_the_echoed_key_replays_on_every_route(
 
 
 def test_a_keyless_manual_plan_starts_and_its_repeat_is_refused(
-    client: TestClient,
-    caller: dict[str, str],
-    window: dict[str, float],
-    runs: None,
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient, caller: dict[str, str], window: dict[str, float], runs: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A hand-written plan needs no key any more: 202; the same body again is 409 naming its run and
     scenario, also when it was sent at the same moment (it looked before the first saved)."""
@@ -213,12 +187,10 @@ def test_a_keyless_manual_plan_starts_and_its_repeat_is_refused(
     assert first.status_code == 202, first.text
     ids = {name: first.json()[name] for name in ("session_id", "scenario_id")}
     _refused_as_duplicate(client.post("/v1/remediation", json=MANUAL, headers=caller), **ids)
-    sessions = container.get_threat_scenario_session_repository()
+    sessions = scenario_crud.get_threat_scenario_session_repository()
     real_get = sessions.get
     monkeypatch.setattr(
-        sessions,
-        "get",
-        lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
+        sessions, "get", lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where)
     )
     _refused_as_duplicate(client.post("/v1/remediation", json=MANUAL, headers=caller), **ids)
 
@@ -230,9 +202,7 @@ def test_a_keyless_repeat_mapping_or_regenerate_is_refused(
     created = client.post("/v1/service-mapper", json=MAPPING, headers=caller)
     assert created.status_code == 202, created.text
     mapping_id = created.json()["mapping_id"]
-    _refused_as_duplicate(
-        client.post("/v1/service-mapper", json=MAPPING, headers=caller), mapping_id=mapping_id
-    )
+    _refused_as_duplicate(client.post("/v1/service-mapper", json=MAPPING, headers=caller), mapping_id=mapping_id)
     get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(
         {"_id": mapping_id}, {"$set": {"status": Status.DONE, "updated_at": datetime.now(UTC)}}
     )

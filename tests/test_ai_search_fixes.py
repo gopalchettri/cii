@@ -11,14 +11,14 @@ import structlog
 from structlog.testing import capture_logs
 
 from app import ai
-from app.ai.chat_messages import update_call_metrics
+from app.ai.chat import _note_call as update_call_metrics
 from app.ai.slots import AiSlots
 from app.core.constants import AiOutcome, AiTask
 from app.core.exceptions import JobFailed, LeaseLost
 from app.core.lease_signal import lease_lost_signal, raise_if_lease_lost
-from app.domain.remediation.plan import write_plan
+from app.domain.remediation.write import write_plan
 from app.domain.scenario.write import write_scenario_set
-from app.search.service import _SnapshotKeeper
+from app.search.service import LibrarySearch
 from tests.fakes import FakeChatModel, draft_answer
 from tests.test_remediation_plan import _snapshot
 from tests.test_scenario_writing import _CLEAN, _brief_of, _plan_threat
@@ -32,6 +32,13 @@ class _HeldLibrary:
 
     def get_loaded_libraries(self) -> Any:
         return self.library
+
+
+def _keeper(held: _HeldLibrary, build: Any) -> LibrarySearch:
+    """The library search over `held`, building each snapshot with `build`."""
+    search = LibrarySearch(held, None)  # type: ignore[arg-type]
+    search._build = build  # type: ignore[method-assign]
+    return search
 
 
 def test_one_jobs_cancel_during_the_shared_library_build_fails_no_other_job() -> None:
@@ -52,18 +59,18 @@ def test_one_jobs_cancel_during_the_shared_library_build_fails_no_other_job() ->
             raise_if_lease_lost()  # as each AI call of the build does
             return snapshot
 
-        keeper = _SnapshotKeeper(_HeldLibrary(library), build)  # type: ignore[arg-type]
+        keeper = _keeper(_HeldLibrary(library), build)
 
         def job_b() -> None:
             with lease_lost_signal("B"):
                 b_waits.set()
                 try:
-                    outcomes["B"] = keeper.get(wait=False)
+                    outcomes["B"] = keeper.snapshot(wait=False)
                 except LeaseLost as exc:
                     outcomes["B"] = exc
 
         waiter = threading.Thread(target=job_b)
-        assert keeper.get(wait=False) is snapshot
+        assert keeper.snapshot(wait=False) is snapshot
         waiter.join(5)
         with pytest.raises(LeaseLost):
             raise_if_lease_lost()
@@ -84,13 +91,13 @@ def test_a_background_library_build_keeps_the_callers_log_fields_but_not_its_lea
         built.set()
         return SimpleNamespace(library=library)
 
-    keeper = _SnapshotKeeper(held, build)  # type: ignore[arg-type]
-    keeper.get(wait=False)  # the first snapshot
+    keeper = _keeper(held, build)
+    keeper.snapshot(wait=False)  # the first snapshot
     built.clear()
     held.library = new
     with structlog.contextvars.bound_contextvars(record_id="r-1"), lease_lost_signal("r-1") as lost:
         lost.set()
-        assert keeper.get(wait=False).library is old  # the older snapshot serves while the new one builds
+        assert keeper.snapshot(wait=False).library is old  # the older snapshot serves while the new one builds
     assert built.wait(5)
     assert seen["fields"]["record_id"] == "r-1"
 
@@ -119,11 +126,7 @@ def test_the_reviewer_remediation_plan_and_writer_reuse_answers() -> None:
 
     writer.ask_for_checked_json = recorded  # type: ignore[method-assign]
     list(write_scenario_set(writer, [("SC1", _brief_of(_plan_threat()))]))  # type: ignore[arg-type]
-    assert reuse_of == {
-        AiTask.REMEDIATION_PLAN: True,
-        AiTask.WRITE_SCENARIO: True,
-        AiTask.REPAIR_SCENARIO: True,
-    }
+    assert reuse_of == {AiTask.REMEDIATION_PLAN: True, AiTask.WRITE_SCENARIO: True, AiTask.REPAIR_SCENARIO: True}
 
 
 def test_ai_log_lines_keep_the_jobs_task_and_name_the_limiter_unmasked() -> None:

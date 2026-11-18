@@ -11,10 +11,8 @@ import pytest
 import structlog
 from pydantic import ValidationError
 
-from app.ai.module_chat import module_chat
 from app.core.ai_tuning_settings import AiTuningSettings
-from app.core.chat_settings import ChatModelSettings
-from app.core.config import Settings, get_settings
+from app.core.config import ChatModelSettings, Settings, get_settings
 from app.core.constants import ChatModule, Env, LogEvent
 from app.core.logging import configure_logging
 
@@ -37,9 +35,7 @@ def _env_name(field_name: str) -> str:
 def _env_keys(path: Path) -> set[str]:
     """The key NAMES set in an env file; values are never read out."""
     lines = path.read_text(encoding="utf-8").splitlines()
-    return {
-        line.split("=", 1)[0].strip() for line in lines if "=" in line and not line.lstrip().startswith("#")
-    }
+    return {line.split("=", 1)[0].strip() for line in lines if "=" in line and not line.lstrip().startswith("#")}
 
 
 @pytest.mark.parametrize("name", [".env.example", ".env", ".env.uat"])
@@ -59,9 +55,7 @@ def test_env_files_match_settings(name: str) -> None:
     assert (missing, unknown) == ([], []), f"{name}: missing {missing}, not read by the app {unknown}"
 
 
-def test_each_module_reads_its_own_chat_lines_and_a_missing_one_stops_start_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_each_module_reads_its_own_chat_lines_and_a_missing_one_stops_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner 2026-10-28: no shared chat lines; each module's are its own, the same or a different model per
     module. URL, key and model are required."""
     glm = "litellm_proxy/glm-5.3"
@@ -69,11 +63,9 @@ def test_each_module_reads_its_own_chat_lines_and_a_missing_one_stops_start_up(
     monkeypatch.setenv("CII_REMEDIATION_CHAT_MODEL_THINKING", "true")
     monkeypatch.setenv("CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE", "30")
     settings = Settings()  # type: ignore[call-arg]
-    scenario, remediation, _ = (module_chat(settings, module) for module in ChatModule)
+    scenario, remediation, _ = (settings.chat_of(module) for module in ChatModule)
     assert (remediation.model, remediation.model_thinking, remediation.requests_per_minute) == (glm, True, 30)
-    assert (
-        scenario.model == settings.scenario_chat_model != glm
-    )  # remediation's lines are remediation's alone
+    assert scenario.model == settings.scenario_chat_model != glm  # remediation's lines are remediation's alone
     without_model = settings.model_dump()
     del without_model["service_mapper_chat_model"]  # its line missing, or blank (a blank line is no line)
     with pytest.raises(ValidationError, match="service_mapper_chat_model"):
@@ -100,9 +92,7 @@ def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
     """config.py and .env.example agree: each AI tuning setting's default is the value .env.example writes,
     and each module's model limits are blank there (the model's own, app/ai/profiles.py)."""
     lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
-    written = {
-        key: value for key, _, value in (line.partition("=") for line in lines if line.startswith("CII_"))
-    }
+    written = {key: value for key, _, value in (line.partition("=") for line in lines if line.startswith("CII_"))}
     for field, info in AiTuningSettings.model_fields.items():
         assert written[f"CII_{field.upper()}"] == str(info.default).lower(), field  # a bool is "false"
     limits = [f for f in ChatModelSettings.model_fields if f.endswith(("_tokens", "_timeout_seconds"))]
@@ -111,9 +101,7 @@ def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
     assert all(written[f"CII_{f.upper()}"] == "" and Settings.model_fields[f].default is None for f in limits)
 
 
-def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_configmap_ai_value_reaches_the_code_and_a_bad_one_stops_start_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """Changed in the ConfigMap, then a rollout restart: no new image. A fresh process, as a restarted pod.
     Every value differs from its default, so a setting the code ignores fails here."""
     changed = {
@@ -161,15 +149,10 @@ def test_service_mapper_counts_come_from_the_environment(monkeypatch: pytest.Mon
     monkeypatch.setenv("SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT", "7")
     monkeypatch.setenv("SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT", "0")  # 0 turns a direction off
     settings = Settings()  # type: ignore[call-arg]
-    assert (settings.service_mapper_upstream_total_count, settings.service_mapper_downstream_total_count) == (
-        7,
-        0,
-    )
+    assert (settings.service_mapper_upstream_total_count, settings.service_mapper_downstream_total_count) == (7, 0)
 
 
-def test_service_mapper_runs_per_mapping_default_to_5_and_0_means_no_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_service_mapper_runs_per_mapping_default_to_5_and_0_means_no_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner 2026-10-28: SERVICE_MAPPER_MAX_GENERATIONS, the first run included; 0 = no limit."""
     assert Settings.model_fields["service_mapper_max_generations"].default == 5
     monkeypatch.setenv("SERVICE_MAPPER_MAX_GENERATIONS", "0")
@@ -248,10 +231,7 @@ def test_a_library_error_with_a_traceback_is_one_json_line_with_its_level(tmp_pa
             logging.getLogger("celery.app.trace").exception("Task %s raised unexpected", "tsg_reap")
         for handler in root.handlers:
             handler.flush()
-        [line] = [
-            json.loads(text)
-            for text in (tmp_path / "worker-test.log").read_text(encoding="utf-8").splitlines()
-        ]
+        [line] = [json.loads(text) for text in (tmp_path / "worker-test.log").read_text(encoding="utf-8").splitlines()]
         assert (line["level"], line["logger"], line["event"]) == (
             "error",
             "celery.app.trace",
@@ -275,12 +255,7 @@ def test_a_laptop_log_file_rolls_over_and_keeps_three_old_copies(
         configure_logging(_settings(log_dir=str(tmp_path)), "api")
         for line in range(40):
             logging.getLogger("app.test").warning("line %d", line)
-        assert sorted(path.name for path in tmp_path.iterdir()) == [
-            "api.log",
-            "api.log.1",
-            "api.log.2",
-            "api.log.3",
-        ]
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["api.log", "api.log.1", "api.log.2", "api.log.3"]
         assert all(path.stat().st_size <= 300 for path in tmp_path.iterdir())
     finally:
         for handler in set(root.handlers) - set(before):
@@ -306,9 +281,7 @@ def test_total_scenario_count_reads_the_owners_unprefixed_name(monkeypatch: pyte
 
 
 @pytest.mark.parametrize("value", ["-1", "1.5", "abc", "true"])
-def test_total_scenario_count_refuses_negative_decimal_and_text(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
+def test_total_scenario_count_refuses_negative_decimal_and_text(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     monkeypatch.setenv("TOTAL_SCENARIO_COUNT", value)
     with pytest.raises(ValidationError, match="TOTAL_SCENARIO_COUNT"):
         Settings()  # type: ignore[call-arg]

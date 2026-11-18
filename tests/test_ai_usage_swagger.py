@@ -15,16 +15,11 @@ from pydantic import BaseModel
 from pymongo.errors import ServerSelectionTimeoutError
 
 from app.api.openapi_ai_usage import ERROR_EXAMPLES, EXAMPLE_ANSWERS, EXAMPLES, route_of
-from app.api.routers import ai_usage as ai_usage_routes
+from app.api.routes import ai_usage as ai_usage_routes
 from app.core.constants import API_INFO, AiApi, AiBucket, AiTask, AiUsageGroup, ApiTag, Module, Problem
+from app.domain import ai_usage
 from app.main import create_app
-from app.models.ai_usage.usage_report import (
-    RequestUsageDetail,
-    RequestUsageList,
-    UsageCallList,
-    UsageTotals,
-)
-from app.services.ai_usage.ai_usage_service import AiUsageService
+from app.schemas.ai_usage import RequestUsageDetail, RequestUsageList, UsageCallList, UsageTotals
 from tests.test_ai_usage_report import _NoPlace
 
 #: Each report: its route, and the shape its example answers must have.
@@ -148,7 +143,7 @@ def test_the_busy_example_is_what_a_busy_report_answers(
     client: TestClient, document: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutation: change the busy example's detail."""
-    monkeypatch.setattr(ai_usage_routes, "_KEPT_REPORTS", _NoPlace())
+    monkeypatch.setattr(ai_usage_routes, "_REPORTS", _NoPlace())
     response = client.get("/v1/ai-usage")
     busy = _problem_examples(_operation(document, "/v1/ai-usage"), "503")["busy"]
     assert response.status_code == 503 and response.headers.get("Retry-After")
@@ -163,7 +158,7 @@ def test_the_database_example_is_what_a_report_answers_with_mongodb_down(
     def mongodb_down(*_args: Any) -> dict[str, Any]:
         raise ServerSelectionTimeoutError("no server")
 
-    monkeypatch.setattr(AiUsageService, "list_ai_usage_calls", mongodb_down)
+    monkeypatch.setattr(ai_usage, "list_ai_usage_calls", mongodb_down)
     response = client.get("/v1/ai-usage/calls", params={"request_id": "any"})
     database = _problem_examples(_operation(document, "/v1/ai-usage/calls"), "503")["database"]
     assert response.status_code == 503 and _same_problem(response.json(), database)
