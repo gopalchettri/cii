@@ -417,6 +417,7 @@
     "description": "The API call that started a job's AI work (job.origin.api), stored on every usage row.",
     "enum": [
      "create_scenario",
+     "create_session",
      "next_set",
      "regenerate",
      "create_plan",
@@ -459,6 +460,8 @@
      "repair_scenario",
      "plan_check",
      "remediation_plan",
+     "link_controls",
+     "pick_controls",
      "embed",
      "rerank"
     ],
@@ -701,6 +704,153 @@
     ],
     "title": "ControlCoverage",
     "type": "string"
+   },
+   "ControlLinksJobOut": {
+    "description": "A control-links preparation as its own routes show it (AdminJobOut's shape stays as the UI reads it).",
+    "properties": {
+     "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Error"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Finished At"
+     },
+     "job_id": {
+      "title": "Job Id",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "requested_by": {
+      "title": "Requested By",
+      "type": "string"
+     },
+     "result": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ControlLinksResult"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Started At"
+     },
+     "status": {
+      "$ref": "#/components/schemas/Status"
+     }
+    },
+    "required": [
+     "job_id",
+     "kind",
+     "status",
+     "requested_by",
+     "created_at"
+    ],
+    "title": "ControlLinksJobOut",
+    "type": "object"
+   },
+   "ControlLinksResult": {
+    "properties": {
+     "failed": {
+      "default": 0,
+      "description": "Mitigations that could not be judged; their earlier links stay.",
+      "title": "Failed",
+      "type": "integer"
+     },
+     "judged": {
+      "default": 0,
+      "description": "Mitigations the AI judged in this run; their links were saved.",
+      "title": "Judged",
+      "type": "integer"
+     },
+     "unchanged": {
+      "default": 0,
+      "description": "Mitigations the same as stored: no AI call.",
+      "title": "Unchanged",
+      "type": "integer"
+     }
+    },
+    "title": "ControlLinksResult",
+    "type": "object"
+   },
+   "ControlLinksSummary": {
+    "description": "How far the ATT&CK mitigations are linked to library controls.",
+    "properties": {
+     "linked": {
+      "title": "Linked",
+      "type": "integer"
+     },
+     "mitigations": {
+      "title": "Mitigations",
+      "type": "integer"
+     },
+     "not_prepared": {
+      "default": 0,
+      "title": "Not Prepared",
+      "type": "integer"
+     },
+     "prepared_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Prepared At"
+     },
+     "without_links": {
+      "title": "Without Links",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "mitigations",
+     "linked",
+     "without_links"
+    ],
+    "title": "ControlLinksSummary",
+    "type": "object"
    },
    "ControlMatchStatus": {
     "enum": [
@@ -1620,7 +1770,7 @@
    },
    "IntelRefreshBody": {
     "additionalProperties": false,
-    "description": "`source`: refresh only this approved source now; none = every source that is due.",
+    "description": "`source`: refresh only this source now; none = every source.",
     "properties": {
      "source": {
       "anyOf": [
@@ -1668,69 +1818,132 @@
     "title": "IntelRefreshResult",
     "type": "object"
    },
+   "IntelScheduleBody": {
+    "additionalProperties": false,
+    "description": "Body of PUT /v1/tsg/intel/schedule: when the import runs by itself. An unknown field is refused.",
+    "properties": {
+     "day_of_week": {
+      "anyOf": [
+       {
+        "maximum": 6.0,
+        "minimum": 0.0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Day Of Week"
+     },
+     "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "frequency": {
+      "$ref": "#/components/schemas/ScheduleFrequency"
+     },
+     "time": {
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+      "title": "Time",
+      "type": "string"
+     },
+     "timezone": {
+      "title": "Timezone",
+      "type": "string"
+     }
+    },
+    "required": [
+     "enabled",
+     "frequency",
+     "time",
+     "timezone"
+    ],
+    "title": "IntelScheduleBody",
+    "type": "object"
+   },
+   "IntelScheduleOut": {
+    "description": "The saved schedule, or the defaults while none is saved.",
+    "properties": {
+     "day_of_week": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Day Of Week"
+     },
+     "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+     },
+     "frequency": {
+      "$ref": "#/components/schemas/ScheduleFrequency"
+     },
+     "last_run_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Run At"
+     },
+     "next_run_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Next Run At"
+     },
+     "time": {
+      "title": "Time",
+      "type": "string"
+     },
+     "timezone": {
+      "title": "Timezone",
+      "type": "string"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated At"
+     }
+    },
+    "required": [
+     "enabled",
+     "frequency",
+     "time",
+     "timezone"
+    ],
+    "title": "IntelScheduleOut",
+    "type": "object"
+   },
    "IntelSource": {
-    "description": "The approved source set.",
+    "description": "The sources imported.",
     "enum": [
-     "cisa_kev",
-     "first_epss",
      "mitre_attack_enterprise",
-     "mitre_attack_ics",
-     "cisa_ics_advisories",
-     "nist_nvd"
+     "mitre_attack_ics"
     ],
     "title": "IntelSource",
     "type": "string"
-   },
-   "IntelSourceApproved": {
-    "properties": {
-     "refresh_job_id": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Refresh Job Id"
-     },
-     "refresh_not_queued": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Refresh Not Queued"
-     },
-     "source": {
-      "$ref": "#/components/schemas/IntelSource"
-     }
-    },
-    "required": [
-     "source"
-    ],
-    "title": "IntelSourceApproved",
-    "type": "object"
-   },
-   "IntelSourceRevoked": {
-    "properties": {
-     "records_purged": {
-      "title": "Records Purged",
-      "type": "integer"
-     },
-     "source": {
-      "$ref": "#/components/schemas/IntelSource"
-     }
-    },
-    "required": [
-     "source",
-     "records_purged"
-    ],
-    "title": "IntelSourceRevoked",
-    "type": "object"
    },
    "IntelSwitchBody": {
     "additionalProperties": false,
@@ -6125,6 +6338,15 @@
     "title": "ScenarioView",
     "type": "object"
    },
+   "ScheduleFrequency": {
+    "description": "How often the saved schedule imports.",
+    "enum": [
+     "daily",
+     "weekly"
+    ],
+    "title": "ScheduleFrequency",
+    "type": "string"
+   },
    "ScopeType": {
     "enum": [
      "ASSET",
@@ -7672,7 +7894,7 @@
   }
  },
  "info": {
-  "description": "\n**Threat Scenario Generator (TSG) | Remedation | Service Mapper.\n\n**Who is calling.** Every call in groups 5-9 and 11 sends four headers: `X-API-Key` (from group 2),\n`X-User-Id`, `X-Entity-Id` (a number) and `X-Tenant-Id`. Groups 2, 3 and 10 send `X-Admin-Key` instead.\nGroups 1 and 4 need no key.\n\n**Long work runs in the background.** A start answers 202 with an id; poll its status (or open its live\nupdates, group 9) until it is done. Errors come as `application/problem+json`: `code`, `detail`, and a\n`reason` on a 409.\n",
+  "description": "\n**Threat Scenario Generator (TSG) | Remedation | Service Mapper.\n\n**Who is calling.** Every call in groups 5-9 and 11 sends four headers: `X-API-Key` (from group 2),\n`X-User-Id`, `X-Entity-Id` (a number) and `X-Tenant-Id`. Groups 2, 3 and 10 send `X-Admin-Key` instead.\nGroups 1 and 4 need no key.\n\n**Long work runs in the background.** A start answers 202 with an id; poll its status (or open its live\nupdates, group 9) until it is done. Errors come as `application/problem+json`: `code`, `detail`, and a\n`reason` on a 409.\n\n**Admin web page.** [Open `/ui/`](/ui/): data ingestion, the import schedule, control links, jobs, API keys,\nlibrary curation, AI usage and system state, in a browser.\n",
   "title": "DESC - Critical Information Infrastructure",
   "version": "1.0.0"
  },
@@ -7929,7 +8151,7 @@
   },
   "/v1/admin/jobs/{job_id}/cancel": {
    "post": {
-    "description": "Queued: it never starts. Running: an import stops at its next NVD request or source, keeping what it\nread (the next import continues from there); a build finishes but its outcome is dropped. The job reads\n`cancelled`, a new one of its kind can start at once, and the cancel is audited. 409 `nothing_to_cancel`\nfor a job already ended or another module's job (a run or plan has its own cancel).",
+    "description": "Queued: it never starts. Running: an import stops before its next source, keeping what it\nread (the next import continues from there); a build finishes but its outcome is dropped. The job reads\n`cancelled`, a new one of its kind can start at once, and the cancel is audited. 409 `nothing_to_cancel`\nfor a job already ended or another module's job (a run or plan has its own cancel).",
     "operationId": "cancel_admin_job_v1_admin_jobs__job_id__cancel_post",
     "parameters": [
      {
@@ -9411,7 +9633,7 @@
            "errors": [
             {
              "field": "query.api",
-             "message": "Input should be 'create_scenario', 'next_set', 'regenerate', 'create_plan' or 'create_mapping'"
+             "message": "Input should be 'create_scenario', 'create_session', 'next_set', 'regenerate', 'create_plan' or 'create_mapping'"
             }
            ],
            "request_id": "56589d66a1a742c5b6860e4a4259001f",
@@ -9759,6 +9981,135 @@
     "summary": "3. One request's AI calls by activity",
     "tags": [
      "12. AI usage"
+    ]
+   }
+  },
+  "/v1/create_session": {
+   "post": {
+    "description": "The same body, answer and `Idempotency-Key` rules as `POST /v1/sessions`. The AI writes the scenarios\nfrom its MITRE ATT&CK knowledge (Enterprise for an IT asset, ICS for an OT one), each with its group,\ntechniques and mitigations; the ATT&CK data imported in group 4 confirms them, and what it does not\nconfirm is not shown. Follow, review and extend the run with the same calls as any other run. 409\n`intel_no_data`: MITRE ATT&CK is not imported yet (group 4).",
+    "operationId": "create_session_v1_create_session_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "Idempotency-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Idempotency-Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StartRunRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RunBoard"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "1b. Start a run the AI writes from MITRE ATT&CK",
+    "tags": [
+     "5. Threat scenarios: runs"
     ]
    }
   },
@@ -14231,6 +14582,123 @@
     ]
    }
   },
+  "/v1/tsg/intel/control-links": {
+   "get": {
+    "description": "The MITRE ATT&CK mitigations prepared so far, of those the stored data lists: `linked` have at least\none library control, `without_links` have none; `not_prepared` are listed but not judged yet (or their\njudging failed); `prepared_at` is the newest preparation (null: nothing prepared yet).",
+    "operationId": "read_control_links_v1_tsg_intel_control_links_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ControlLinksSummary"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "8. How far are the controls linked?",
+    "tags": [
+     "4. Set-up: external intelligence"
+    ]
+   }
+  },
+  "/v1/tsg/intel/control-links/prepare": {
+   "post": {
+    "description": "A background preparation, 202 `{job_id}`: the AI judges which library controls do what each mitigation\nsays; a mitigation that did not change costs no AI call. It also runs by itself after every import, as a\njob requested by `import`. Audited. 409 while the switch is off, or while one is queued or running\n(`details.job_id` names it).",
+    "operationId": "start_control_links_v1_tsg_intel_control_links_prepare_post",
+    "parameters": [
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     }
+    ],
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminJobStarted"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "9. Link the ATT&CK mitigations to library controls now",
+    "tags": [
+     "4. Set-up: external intelligence"
+    ]
+   }
+  },
+  "/v1/tsg/intel/control-links/{job_id}": {
+   "get": {
+    "description": "Poll until `status` is `done` (or `failed`, with `error`); `result` counts the mitigations `judged`,\n`unchanged` and `failed` (a failed one keeps its earlier links).",
+    "operationId": "read_control_links_job_v1_tsg_intel_control_links__job_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "job_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Job Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ControlLinksJobOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "10. Read a preparation",
+    "tags": [
+     "4. Set-up: external intelligence"
+    ]
+   }
+  },
   "/v1/tsg/intel/health": {
    "get": {
     "description": "Each source's state, the active `snapshot_id` (set once data is imported and indexed: runs need it),\n`pending_sources`, `no_data`, and the evidence settings (reranker, threshold).",
@@ -14255,7 +14723,7 @@
   },
   "/v1/tsg/intel/refresh": {
    "post": {
-    "description": "A background import, 202 `{job_id}`: every source that is due (all 6 the first time), or one with\n`{\"source\": \"cisa_kev\"}`. Needed by hand only the first time; then it runs every hour by itself. 409 while\nthe switch is off, or while an import runs (`details.job_id` names it); 422 an unknown or withdrawn\nsource.",
+    "description": "A background import, 202 `{job_id}`: every source, or one with\n`{\"source\": \"mitre_attack_enterprise\"}`. The import also runs by itself on the saved schedule (6); this\nstarts one now. 409 while the switch is off, or while an import runs (`details.job_id` names it); 422 an\nunknown source.",
     "operationId": "start_intel_refresh_v1_tsg_intel_refresh_post",
     "parameters": [
      {
@@ -14365,78 +14833,31 @@
     ]
    }
   },
-  "/v1/tsg/intel/sources/{source}/approve": {
-   "post": {
-    "description": "It starts empty and an import of it is queued (`refresh_job_id`; null when one already runs or the\nswitch is off). 409 while the env file switches the feature off.",
-    "operationId": "approve_intel_source_v1_tsg_intel_sources__source__approve_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "source",
-      "required": true,
-      "schema": {
-       "$ref": "#/components/schemas/IntelSource"
-      }
-     },
-     {
-      "in": "header",
-      "name": "X-User-Id",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "maxLength": 256,
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-User-Id"
-      }
-     }
-    ],
+  "/v1/tsg/intel/schedule": {
+   "get": {
+    "description": "The saved schedule with `next_run_at` and `last_run_at` (UTC). None saved yet: weekly, Sunday 02:00\nUTC, enabled, with one first import at the next check (the schedule is checked every minute). An import\nthat failed is tried again within the hour.",
+    "operationId": "read_intel_schedule_v1_tsg_intel_schedule_get",
     "responses": {
      "200": {
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/IntelSourceApproved"
+         "$ref": "#/components/schemas/IntelScheduleOut"
         }
        }
       },
       "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
      }
     },
-    "summary": "7. Approve a withdrawn source again",
+    "summary": "6. When is the import run by itself?",
     "tags": [
      "4. Set-up: external intelligence"
     ]
-   }
-  },
-  "/v1/tsg/intel/sources/{source}/revoke": {
-   "post": {
-    "description": "Audited first; then the source's records and vectors are deleted and it is no longer imported.\nScenarios already written keep what they cite.",
-    "operationId": "revoke_intel_source_v1_tsg_intel_sources__source__revoke_post",
+   },
+   "put": {
+    "description": "`{\"enabled\": true, \"frequency\": \"weekly\", \"day_of_week\": 6, \"time\": \"02:00\", \"timezone\": \"Asia/Dubai\"}`:\n`frequency` daily or weekly; `day_of_week` 0 (Monday) to 6 (Sunday), needed when weekly; `time` HH:MM in\n`timezone`, an IANA name. `{\"enabled\": false, ...}`: nothing is imported by itself; an import by hand (3)\nstill runs. Audited. 422 an unknown time zone, a bad time or weekly without a day; 409 while the env file\nsays EXTERNAL_INTELLIGENCE_ENABLED=false.",
+    "operationId": "change_intel_schedule_v1_tsg_intel_schedule_put",
     "parameters": [
-     {
-      "in": "path",
-      "name": "source",
-      "required": true,
-      "schema": {
-       "$ref": "#/components/schemas/IntelSource"
-      }
-     },
      {
       "in": "header",
       "name": "X-User-Id",
@@ -14455,12 +14876,22 @@
       }
      }
     ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/IntelScheduleBody"
+       }
+      }
+     },
+     "required": true
+    },
     "responses": {
      "200": {
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/IntelSourceRevoked"
+         "$ref": "#/components/schemas/IntelScheduleOut"
         }
        }
       },
@@ -14477,7 +14908,7 @@
       "description": "Validation Error"
      }
     },
-    "summary": "6. Withdraw a source and delete its data",
+    "summary": "7. Change when the import is run by itself",
     "tags": [
      "4. Set-up: external intelligence"
     ]
@@ -14505,7 +14936,7 @@
     ]
    },
    "put": {
-    "description": "`{\"enabled\": false}`: no more hourly imports, imports by hand are refused, new scenarios are written\nwithout the feeds; nothing is deleted. `{\"enabled\": true}`: back on, and an import starts. Audited.\n409 while the env file says EXTERNAL_INTELLIGENCE_ENABLED=false (only the env file and a restart change\nthat).",
+    "description": "`{\"enabled\": false}`: no more scheduled imports, imports by hand are refused, new scenarios are written\nwithout the feeds; nothing is deleted. `{\"enabled\": true}`: back on, and an import starts. Audited.\n409 while the env file says EXTERNAL_INTELLIGENCE_ENABLED=false (only the env file and a restart change\nthat).",
     "operationId": "change_intel_switch_v1_tsg_intel_switch_put",
     "parameters": [
      {
@@ -14730,11 +15161,11 @@
    "name": "3. Set-up: library embeddings"
   },
   {
-   "description": "Public threat feeds (CISA KEV, EPSS, MITRE ATT&CK, ICS advisories, NVD), when the env file says `EXTERNAL_INTELLIGENCE_ENABLED=true`. First time: `POST /refresh`, read it until `done`, then `GET /health` until `snapshot_id` is set. Turn it on or off with `PUT /switch`. No key.",
+   "description": "Public threat feeds (MITRE ATT&CK Enterprise and ICS), when the env file says `EXTERNAL_INTELLIGENCE_ENABLED=true`. First time: `POST /refresh`, read it until `done`, then `GET /health` until `snapshot_id` is set. Turn it on or off with `PUT /switch`. The import then runs by itself on the saved schedule (`GET`/`PUT /schedule`: daily or weekly; weekly on Sunday 02:00 UTC until one is saved), and after every import the ATT&CK mitigations are linked to library controls (`GET /control-links`, `POST /control-links/prepare`). The admin web page at `/ui/` does all of this from a browser. No key.",
    "name": "4. Set-up: external intelligence"
   },
   {
-   "description": "Start a run for one asset and its supporting systems, follow it, read its scenarios.",
+   "description": "Start a run for one asset and its supporting systems, follow it, read its scenarios. Two ways to start: `POST /v1/sessions` finds the threats in the threat library first; `POST /v1/create_session` has the AI write the scenarios from MITRE ATT&CK, confirmed against the ATT&CK data of group 4.",
    "name": "5. Threat scenarios: runs"
   },
   {
@@ -14762,7 +15193,7 @@
    "name": "11. Service mapper"
   },
   {
-   "description": "How many AI calls each module, API call, session and request made, per part of the work\nand per model, successful and failed, with each activity's name and description. Counts only, never a prompt\nor an answer. No key.\n\n| You want to know | Use |\n|---|---|\n| AI calls over a time range, per module and API call (or per day, model, part \u2026) | 1. `GET /v1/ai-usage` |\n| One session's API calls (a run and its plans, or a mapping) | 2. `GET /v1/ai-usage/requests` |\n| What one API call asked the AI to do, and on which models | 3. `GET /v1/ai-usage/requests/{request_id}` |\n| Every AI attempt of an API call or a session, and why one failed | 4. `GET /v1/ai-usage/calls` |\n\n**Modules and their API calls.** Pick them from the `module` and `api` lists; there is nothing to type.\n\n| module | api | name | what it starts |\n|---|---|---|---|\n| `threat_scenarios` | `create_scenario` | Create scenario | Starts a run: finds threats, writes the first set, picks controls |\n| `threat_scenarios` | `next_set` | Next set | Writes the next set of scenarios for the run |\n| `threat_scenarios` | `regenerate` | Regenerate scenarios | Rewrites the chosen scenarios |\n| `remediation` | `create_plan` | Create remediation plan | Writes a treatment plan for one scenario |\n| `remediation` | `regenerate` | Regenerate plan | Writes a new version of the plan |\n| `service_mapper` | `create_mapping` | Map services | Finds upstream and downstream services for a service |\n| `service_mapper` | `regenerate` | Regenerate mapping | Runs the mapping again to add new services |\n\n`external_intelligence`, `library_embeddings`, `maintenance` are background jobs with no API call. AI calls no request asked for (library and\nevidence indexing) are counted in the part `shared`.\n\n**Each module's parts of the work** (`bucket`; a report lists every part of the module, 0 when none):\n\n| module | its parts of the work (`bucket`), in report order |\n|---|---|\n| `threat_scenarios` | `threats` (Finding threats), `scenario` (Writing scenarios), `controls` (Picking controls) |\n| `remediation` | `remediation` (Writing the plan), `controls` (Picking controls) |\n| `service_mapper` | `service_mapper` (Mapping services) |\n",
+   "description": "How many AI calls each module, API call, session and request made, per part of the work\nand per model, successful and failed, with each activity's name and description. Counts only, never a prompt\nor an answer. No key.\n\n| You want to know | Use |\n|---|---|\n| AI calls over a time range, per module and API call (or per day, model, part \u2026) | 1. `GET /v1/ai-usage` |\n| One session's API calls (a run and its plans, or a mapping) | 2. `GET /v1/ai-usage/requests` |\n| What one API call asked the AI to do, and on which models | 3. `GET /v1/ai-usage/requests/{request_id}` |\n| Every AI attempt of an API call or a session, and why one failed | 4. `GET /v1/ai-usage/calls` |\n\n**Modules and their API calls.** Pick them from the `module` and `api` lists; there is nothing to type.\n\n| module | api | name | what it starts |\n|---|---|---|---|\n| `threat_scenarios` | `create_scenario` | Create scenario | Starts a run: finds threats, writes the first set, picks controls |\n| `threat_scenarios` | `create_session` | Create session | Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it |\n| `threat_scenarios` | `next_set` | Next set | Writes the next set of scenarios for the run |\n| `threat_scenarios` | `regenerate` | Regenerate scenarios | Rewrites the chosen scenarios |\n| `remediation` | `create_plan` | Create remediation plan | Writes a treatment plan for one scenario |\n| `remediation` | `regenerate` | Regenerate plan | Writes a new version of the plan |\n| `service_mapper` | `create_mapping` | Map services | Finds upstream and downstream services for a service |\n| `service_mapper` | `regenerate` | Regenerate mapping | Runs the mapping again to add new services |\n\n`external_intelligence`, `library_embeddings`, `maintenance` are background jobs with no API call. AI calls no request asked for (library and\nevidence indexing) are counted in the part `shared`.\n\n**Each module's parts of the work** (`bucket`; a report lists every part of the module, 0 when none):\n\n| module | its parts of the work (`bucket`), in report order |\n|---|---|\n| `threat_scenarios` | `threats` (Finding threats), `scenario` (Writing scenarios), `controls` (Picking controls) |\n| `remediation` | `remediation` (Writing the plan), `controls` (Picking controls) |\n| `service_mapper` | `service_mapper` (Mapping services) |\n",
    "name": "12. AI usage"
   }
  ]

@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
@@ -25,12 +24,13 @@ from app.core.constants import (
     UnselectedReason,
 )
 from app.core.database import get_mongodb
+from app.crud import admin as admin_crud
 from app.domain.scenario.plan import build_plan, build_plan_trace
 from app.domain.scenario.session import build_plan_trace_view
-from app.models.library.library import LibraryThreat
-from app.models.scenario.views import PlanCounts
+from app.schemas.library import LibraryThreat
+from app.schemas.scenarios import PlanCounts
 from app.worker import jobs
-from app.worker.scenario.plan_job import PLAN_JOB_FIELDS
+from app.worker.scenario.tasks import PLAN_JOB_FIELDS
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -58,13 +58,7 @@ from tests.test_attack_paths import (  # noqa: F401 - `sent` is a fixture used b
 
 #: A library threat whose type links no attacker: never shown to the gate.
 UNLINKED = LibraryThreat(7, "Rogue vendor update", 6, "Supply chain", (S.TAMPERING,), ())
-_LOST = (
-    "not_judged",
-    "not_relevant",
-    "needs_unrecorded",
-    "asset_type_mismatch",
-    "needs_unrecorded_elsewhere",
-)
+_LOST = ("not_judged", "not_relevant", "needs_unrecorded", "asset_type_mismatch", "needs_unrecorded_elsewhere")
 
 
 def _gate(answers: dict[str, dict[str, Any]], needs_by_threat: dict[str, list[str]] | None = None) -> Any:
@@ -93,9 +87,7 @@ def _trace(chat: Any, threats: tuple[LibraryThreat, ...] = THREATS, **found: Any
 
 
 def _drops(trace: dict[str, Any], stage: PlanStage) -> list[tuple[str, str | None, str, str]]:
-    return [
-        (d["threat_name"], d["kind"], d["reason"], d["detail"]) for d in trace["drops"] if d["stage"] == stage
-    ]
+    return [(d["threat_name"], d["kind"], d["reason"], d["detail"]) for d in trace["drops"] if d["stage"] == stage]
 
 
 def test_the_counts_add_up_and_each_threat_left_out_says_where_and_why() -> None:
@@ -104,8 +96,7 @@ def test_the_counts_add_up_and_each_threat_left_out_says_where_and_why() -> None
     library = (dataclasses.replace(RANSOMWARE, asset_type="IT"), *THREATS[1:], UNLINKED)
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = _gate(
-        {PHISHING.name: {"systems": ["SYS2"]}, FLOOD.name: {"systems": ["SYS1"]}},
-        {LOG_WIPE.name: ["jump server"]},
+        {PHISHING.name: {"systems": ["SYS2"]}, FLOOD.name: {"systems": ["SYS1"]}}, {LOG_WIPE.name: ["jump server"]}
     )
     trace = _trace(chat, library)
     counts = trace["counts"]
@@ -149,17 +140,11 @@ def test_a_skipped_batch_and_a_threat_no_attacker_fits_are_traced(monkeypatch: p
     monkeypatch.setattr(ThreatFinding, "THREATS_PER_QUESTION", 1)
     chat = planner_chat({})
     gate = _gate({FLOOD.name: {"systems": ["SYS1"], "attacker": None, "attacker_reason": "None could."}})
-    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: (
-        {"verdicts": "?"} if PHISHING.name in user else gate(user)
-    )
+    chat.responders[AiTask.RELEVANCE_GATE] = lambda user: {"verdicts": "?"} if PHISHING.name in user else gate(user)
     trace = _trace(chat, is_last_attempt=True)
     assert (PHISHING.name, S.SPOOFING, PlanLoss.NOT_JUDGED, "") in _drops(trace, PlanStage.GATE)
     assert _drops(trace, PlanStage.ATTACKER) == [(FLOOD.name, None, AttackerCheck.NONE_FITS, "None could.")]
-    assert (trace["counts"]["not_judged"], trace["counts"]["no_attacker"], trace["counts"]["threats"]) == (
-        1,
-        1,
-        0,
-    )
+    assert (trace["counts"]["not_judged"], trace["counts"]["no_attacker"], trace["counts"]["threats"]) == (1, 1, 0)
 
 
 def test_the_drops_are_bounded_and_the_most_telling_come_first(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,18 +169,8 @@ def test_the_view_adds_what_became_of_the_planned_paths() -> None:
         path | {"path_id": "p1", "rank": 1, "served": "s1"},
         path | {"path_id": "p2", "rank": 2},
         path
-        | {
-            "path_id": "p3",
-            "rank": 3,
-            "abandoned": True,
-            "abandoned_reason": "near_duplicate",
-            "repeats": "h1",
-        }
-        | {
-            "selected": False,
-            "unselected_reason": UnselectedReason.REPLACED_AFTER_FAILURE,
-            "replaced_by": "p2",
-        },
+        | {"path_id": "p3", "rank": 3, "abandoned": True, "abandoned_reason": "near_duplicate", "repeats": "h1"}
+        | {"selected": False, "unselected_reason": UnselectedReason.REPLACED_AFTER_FAILURE, "replaced_by": "p2"},
     ]
     view = build_plan_trace_view("run-1", stored, paths)
     writing = view.writing
@@ -211,17 +186,12 @@ def test_the_view_adds_what_became_of_the_planned_paths() -> None:
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = container.get_admin_service().create_api_client(f"trace-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = admin_crud.create_api_client(get_mongodb(), f"trace-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 def _who(api_key: str, entity_id: int = 86) -> dict[str, str]:
-    return {
-        Header.API_KEY: api_key,
-        Header.USER_ID: "u1",
-        Header.ENTITY_ID: str(entity_id),
-        Header.TENANT_ID: "T",
-    }
+    return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: str(entity_id), Header.TENANT_ID: "T"}
 
 
 def test_the_route_serves_a_planned_runs_trace_and_404_before_403_for_another_entity(
@@ -240,13 +210,7 @@ def test_the_route_serves_a_planned_runs_trace_and_404_before_403_for_another_en
     assert answer.status_code == 200, answer.text
     body = answer.json()
     assert body["counts"] == _stored_run(planned)["plan_trace"]["counts"] and body["counts"]["paths"] == 2
-    assert body["writing"] == {
-        "served": 0,
-        "still_to_write": 2,
-        "given_up": 0,
-        "replaced": 0,
-        "given_up_paths": [],
-    }
+    assert body["writing"] == {"served": 0, "still_to_write": 2, "given_up": 0, "replaced": 0, "given_up_paths": []}
     assert client.get(f"/v1/sessions/{waiting}/plan-trace", headers=_who(api_key)).status_code == 404
     assert client.get(f"/v1/sessions/{planned}/plan-trace", headers=_who(api_key, 99)).status_code == 403
     get_mongodb()[Collection.SESSIONS].delete_many({"_id": {"$in": [planned, waiting]}})
@@ -255,11 +219,7 @@ def test_the_route_serves_a_planned_runs_trace_and_404_before_403_for_another_en
 def test_a_gap_fill_proposal_not_kept_is_traced_with_its_reason() -> None:
     """Elevation of Privilege has nothing accepted: the AI proposes a threat that repeats a library one the
     gate already judged, so it is not kept, and the trace says so (aliases turned to system names)."""
-    proposal = {
-        "applies": True,
-        "threat_type": "Privilege misuse",
-        "threat": "Insider misuses SYS1 admin rights",
-    }
+    proposal = {"applies": True, "threat_type": "Privilege misuse", "threat": "Insider misuses SYS1 admin rights"}
     proposal |= {"attacker": "Malicious insider", "systems": [], "reason": "Admins exist."}
     chat = planner_chat({FLOOD.name: ["SYS1"]})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(proposal)

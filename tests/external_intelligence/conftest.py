@@ -1,17 +1,18 @@
 """The whole suite runs with external intelligence OFF (tests/conftest.py sets
 EXTERNAL_INTELLIGENCE_ENABLED=false), so the app's existing tests exercise the original path. A test of
-the ON path asks for the `intel` fixture: the master switch on, and the app's own switch, evidence finder
-and feeds answering from fakes, with a fake refresher."""
+the ON path asks for the `intel` fixture: the master switch on, and the app's own switch and evidence finder
+answering from fakes, with a fake refresher."""
 
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from app import container
 from app.core.config import get_settings
-from app.core.constants import AiTask, IntelSource
-from app.data_access.external_intelligence.intel_feed_repository import IntelFeedRepository
+from app.core.constants import AiTask
+from app.domain.intel import evidence
+from app.domain.intel import refresh as intel_refresh
+from app.domain.intel.switch import get_intelligence_switch
 from tests.external_intelligence.fakes import FakeFinder, FakeRefresher, FakeSwitch
 from tests.fakes import brief_of
 
@@ -36,22 +37,22 @@ class Intel:
     finder: FakeFinder
     switch: FakeSwitch
     refresher: FakeRefresher
-    feeds: IntelFeedRepository
 
 
 @pytest.fixture
 def intel(monkeypatch: pytest.MonkeyPatch) -> Intel:
-    """The app's own switch, finder and feeds answer from the fakes, so every job built with them (whenever it
+    """The app's own switch and finder answer from the fakes, so every job built with them (whenever it
     was built) sees the test's state; the refresher is asked for by the task each time it runs. The app's
     switch is fetched before the master switch turns on: built now, it keeps the suite's env value."""
     finder, switch, refresher = FakeFinder(), FakeSwitch(), FakeRefresher()
-    monkeypatch.setattr(container.get_intelligence_switch(), "state", switch.state)
-    monkeypatch.setattr(container.get_evidence_finder(), "find_evidence", finder.find_evidence)
+    monkeypatch.setattr(get_intelligence_switch(), "state", switch.state)
+    monkeypatch.setattr(evidence, "find_evidence", finder.find_evidence)
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    feeds = container.get_intel_feed_repository()
-    monkeypatch.setattr(feeds, "list_approved_sources", lambda: list(IntelSource))  # a test revokes its own
-    monkeypatch.setattr(container, "get_source_refresher", lambda: refresher)
-    return Intel(finder, switch, refresher, feeds)
+    monkeypatch.setattr(
+        intel_refresh, "refresh_all_sources", lambda now, keep_going=None: refresher.refresh_all_sources(now)
+    )
+    monkeypatch.setattr(intel_refresh, "refresh_one_source", refresher.refresh_one_source)
+    return Intel(finder, switch, refresher)
 
 
 def story_answer(user_prompt: str) -> dict[str, Any]:

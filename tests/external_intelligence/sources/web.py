@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import httpx
 
-from app.worker.external_intelligence.sources.http_download import HttpDownloader
+from app.domain.intel.sources.common import HttpDownloader
 
 
 def downloader(handler: Callable[[httpx.Request], httpx.Response]) -> HttpDownloader:

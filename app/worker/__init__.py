@@ -1,9 +1,4 @@
-"""Background work (Celery, threads pool): the app and how jobs are sent (celery_app), the worker process's
-start and stop (lifecycle), leased jobs and their retries (jobs; the lease renewed by lease_renewal), the
-reaper that repairs abandoned jobs (reaper), the heartbeat /ready reads (heartbeat), and one folder of jobs
-per module (scenario, remediation, external_intelligence, admin).
-
-`celery -A app.worker …` finds `celery_app` here. Importing `lifecycle` registers its signal receivers."""
+"""`celery -A app.worker` finds `celery_app` here; importing `lifecycle` connects its receivers."""
 
 from app.core.constants import ROUTED_QUEUES
 from app.worker import lifecycle

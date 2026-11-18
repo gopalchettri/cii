@@ -7,8 +7,7 @@ from typing import Any
 
 from app.core.constants import ActorRole, AiTask
 from app.domain.scenario.write import build_writer_input, build_writer_system_prompt, write_scenario_set
-from app.models.scenario.plan import PlannedActor
-from app.models.scenario.write import LiveLibrary, ScenarioDraft, WriterBrief
+from app.schemas.scenario_internal import LiveLibrary, PlannedActor, ScenarioDraft, WriterBrief
 from tests.fakes import FakeChatModel, brief_of, draft_answer, shared_facts, slot_blocks
 from tests.planner_samples import CONTEXT, planned
 
@@ -81,9 +80,7 @@ def test_a_fact_only_some_slots_hold_stays_in_their_own_brief() -> None:
     fit one brief differs from another's: each such fact stays in its own slot's BRIEF, the rest is shared."""
     story = _brief(1)
     scada = story.systems[0] | {"technology_used": ["Windows"]}
-    story = dataclasses.replace(
-        story, asset=story.asset | {"country": "United Arab Emirates"}, systems=(scada,)
-    )
+    story = dataclasses.replace(story, asset=story.asset | {"country": "United Arab Emirates"}, systems=(scada,))
     plain = _brief(4)  # also on the SCADA server
     (write,) = _written([("SC1", story), ("SC2", plain)]).asked(AiTask.WRITE_SCENARIO)
     asset, systems = shared_facts(write)
@@ -113,9 +110,7 @@ def test_the_set_note_says_every_slot_reads_the_shared_facts() -> None:
     """The writer's BRIEF spans the shared block and the slot: the set note says so and keeps a "no"
     system's facts out of the story."""
     writer = build_writer_system_prompt()
-    shared = (
-        'which includes ASSET and its "yes" systems\' SYSTEMS entries (its own asset or systems field adds'
-    )
+    shared = 'which includes ASSET and its "yes" systems\' SYSTEMS entries (its own asset or systems field adds'
     assert f"Each slot has its own BRIEF, {shared}" in writer
     assert "The user prompt opens with ASSET and SYSTEMS (by name), then one or more SLOTs" in writer
     assert "never use a \"no\" system's facts or another slot's threat, attacker or evidence" in writer

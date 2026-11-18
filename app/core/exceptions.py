@@ -1,5 +1,4 @@
-"""Application errors: each fixes its HTTP status and error code (app/api/errors.py turns them into problem
-responses, titled with the status phrase), and which driver errors mean a store is unreachable."""
+"""Application errors, each with its HTTP status and code, and the driver errors that mean a store is down."""
 
 from http import HTTPStatus
 from typing import Any, ClassVar
@@ -12,22 +11,17 @@ from redis.exceptions import OutOfMemoryError as RedisOutOfMemoryError
 from redis.exceptions import ReadOnlyError as RedisReadOnlyError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from app.core.constants import ErrorCode, ErrorMessage, IntelMessage, Limits
+from app.core.constants import AiOutage, ErrorCode, ErrorMessage, IntelMessage, Limits
 
-#: Driver errors meaning "the store cannot serve us right now": unreachable (timeouts, lost connections, no
-#: primary), past its time limit, or a write the replicas did not confirm (WTimeoutError is a
-#: WriteConcernError; a bulk write raises it through app/data_access/base.py bulk_write). The API answers
-#: them with 503 + Retry-After; workers retry them with back-off.
-#: ponytail: a misconfigured write concern is retried as an outage too and fails as unavailable after
-#: Lease.MAX_ATTEMPTS (the start-up mongodb.topology line shows it).
+#: Unreachable, past its time limit, or a write the replicas did not confirm: the API answers 503, workers retry.
+#: ponytail: a misconfigured write concern is retried as an outage too, until Lease.MAX_ATTEMPTS.
 MONGO_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
     MongoConnectionFailure,
     MongoExecutionTimeout,
     MongoWriteConcernError,
 )
 
-
-#: Redis also refuses writes for a while on a failover (READONLY replica) or when its memory is full.
+#: Redis also refuses writes on a failover (READONLY replica) or when its memory is full.
 REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
     RedisConnectionError,
     RedisTimeoutError,
@@ -37,8 +31,7 @@ REDIS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
 
 
 class AppError(Exception):
-    """Base error: each subclass fixes its HTTP status and error code; with no detail, the detail is the
-    status phrase."""
+    """Base error: each subclass fixes its HTTP status and code; the detail defaults to the status phrase."""
 
     status: ClassVar[int] = 500
     code: ClassVar[ErrorCode] = ErrorCode.INTERNAL_ERROR
@@ -53,8 +46,7 @@ class AppError(Exception):
         details: dict[str, Any] | None = None,
         retry_after: int | None = None,
     ) -> None:
-        """`reason`: which rule refused it (409, e.g. generation_in_progress) · `errors`: the fields at fault
-        (422, `[{field, message}]`) · `details`: facts the caller can act on (e.g. the running job's id)."""
+        """`reason`: the rule that refused it; `errors`: the fields at fault; `details`: facts to act on."""
         self.detail = detail or HTTPStatus(self.status).phrase
         super().__init__(self.detail)
         self.reason = reason
@@ -103,17 +95,14 @@ class SetupError(AppError):
 
 class Unavailable(AppError):
     status, code = 503, ErrorCode.UNAVAILABLE
-    # Set here, not by each raiser: every 503 tells the caller when to retry, whoever raised it.
     default_retry_after = Limits.RETRY_AFTER_SECONDS
 
 
 class OutcomeUnknown(Unavailable):
-    """A SQL Server call was sent but its answer was lost (a timeout, a broken link): it may have applied.
-    Retried through its operation record (tsg_sql_operations), which replays the same parameters."""
+    """A SQL Server call was sent but its answer was lost: retried through its tsg_sql_operations record."""
 
 
-#: A store or AI service busy or down for now, or a SQL Server write still in progress: the job is given back
-#: and retried later.
+#: A store or AI service down for now, or a SQL write still in progress: the job is retried later.
 TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
     Unavailable,
     OperationInProgress,
@@ -123,18 +112,15 @@ TEMPORARY_ERRORS: tuple[type[Exception], ...] = (
 
 
 class LeaseLost(Exception):
-    """This job no longer owns its record (its owner cancelled or deleted the run, or its lease ran out and
-    another delivery took it over): stop without writing anything, and make no more AI calls."""
+    """This job no longer owns its record: stop without writing anything, and make no more AI calls."""
 
 
 class WaitingForAnotherJob(Exception):
-    """Another job holds what this job needs, a normal step and not an outage: the job is given back to look
-    again soon, using none of its attempts, and its delivery counts as waiting, never as a retry."""
+    """Another job holds what this job needs: given back to look again soon, using none of its attempts."""
 
 
-class JobFailed(Exception):
-    """A job's own final error, e.g. plan_refused: run_leased_job fails the job with this code and message and
-    never retries it (a retry cannot change the asset's facts or the library)."""
+class CodedFailure(Exception):
+    """A final error with its code and message."""
 
     def __init__(self, code: ErrorCode, message: str) -> None:
         super().__init__(message)
@@ -142,14 +128,16 @@ class JobFailed(Exception):
         self.message = message
 
 
+class JobFailed(CodedFailure):
+    """A job's own final error: run_leased_job fails the job with it and never retries."""
+
+
 class PlanRefused(JobFailed):
-    """The planner cannot plan this asset at all (no threat actor is live): the run fails with this code and
-    a message written for the user."""
+    """The planner cannot plan this asset at all (no threat actor is live): the run fails."""
 
 
 class PathNotWritable(Exception):
-    """One planned path lacks what its scenario needs (its one threat, a type and name, an acting attacker, a
-    system of the run): its final failure card says why, and no AI is asked to invent the missing fact."""
+    """One planned path lacks what its scenario needs: its failure card says why, and no AI invents it."""
 
     def __init__(self, path_id: str, problem: str, code: ErrorCode = ErrorCode.INVALID_PLAN) -> None:
         self.code = code
@@ -157,21 +145,29 @@ class PathNotWritable(Exception):
         super().__init__(self.message)
 
 
-class ControlsNotMapped(Exception):
-    """One scenario's controls cannot be mapped for a reason a retry cannot change now (the control library is
-    empty, or no control fits): its controls fail with this code and message, and the sweep tries later."""
-
-    def __init__(self, code: ErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+class ControlsNotMapped(CodedFailure):
+    """One scenario's controls cannot be mapped now (empty library, nothing fits): the sweep tries later."""
 
 
 class IntelFetchFailed(Exception):
-    """An external intelligence source could not be read (no answer, a refusal, an unexpected format): the
-    refresh of that source fails, the others go on, and the last good data stays in use. Not an AppError:
-    it never reaches an API caller."""
+    """An intelligence source could not be read: only its refresh fails, and its last good data stays."""
 
     def __init__(self, message: IntelMessage, **fields: object) -> None:
         self.message = message.format(**fields)
         super().__init__(self.message)
+
+
+def outage_reason(error: BaseException) -> AiOutage | None:
+    """Which AI outage an error carries (an Unavailable's reason); None for any other error."""
+    reason = error.reason if isinstance(error, AppError) else None
+    return AiOutage(reason) if reason and reason in AiOutage else None
+
+
+def job_error_of(exc: Exception) -> dict[str, str]:
+    """The failure as an admin job shows it: its own code and message, else only the exception's type."""
+    if isinstance(exc, AppError):
+        reason = outage_reason(exc)
+        return {"code": exc.code, "message": exc.detail} | ({"reason": reason} if reason else {})
+    if isinstance(exc, JobFailed):
+        return {"code": exc.code, "message": exc.message}
+    return {"code": ErrorCode.INTERNAL_ERROR, "message": type(exc).__name__}

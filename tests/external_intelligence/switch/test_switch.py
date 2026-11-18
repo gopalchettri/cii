@@ -8,10 +8,10 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.config import get_settings
-from app.core.constants import AuditAction, Collection, IntelDocId, IntelLimits, SwitchTiming
+from app.core.constants import AuditAction, Collection, IntelDocId, IntelLimits
 from app.core.database import get_mongodb
 from app.core.exceptions import MONGO_UNAVAILABLE_ERRORS, Unavailable
-from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
+from app.domain.intel.switch import RETRY_AFTER_OUTAGE_SECONDS, IntelligenceSwitch
 from tests.external_intelligence.fakes import intelligence_service
 
 LATER = datetime(2026, 10, 12, tzinfo=UTC)
@@ -101,7 +101,7 @@ def test_with_no_value_yet_an_outage_reads_off_and_is_asked_again_soon() -> None
     with pytest.raises(Unavailable):  # in doubt: a writer that must be sure waits
         switch.is_on(sure=True)
     flags.down = False
-    clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
+    clock.now += RETRY_AFTER_OUTAGE_SECONDS + 1
     assert switch.is_on() and switch.state().known is True
 
 
@@ -111,20 +111,18 @@ def test_a_second_failed_read_with_no_value_yet_still_asks_again_soon() -> None:
     flags.down = True
     switch = _switch(flags, clock)
     assert not switch.is_on()
-    clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
+    clock.now += RETRY_AFTER_OUTAGE_SECONDS + 1
     assert not switch.is_on() and flags.reads == 2
     flags.down = False
-    clock.now += SwitchTiming.RETRY_AFTER_OUTAGE_SECONDS + 1
+    clock.now += RETRY_AFTER_OUTAGE_SECONDS + 1
     assert switch.is_on() and switch.state().known is True
 
 
-def test_a_change_that_cannot_be_stored_changes_nothing_and_audits_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_change_that_cannot_be_stored_changes_nothing_and_audits_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
     clock, flags = Clock(), MemoryFlags()
     switch = _switch(flags, clock)
-    service = intelligence_service(switch=switch, index_keeper=None)
+    service = intelligence_service(monkeypatch, switch=switch, index_keeper=None)
     assert switch.is_on()
     flags.down = True
     before = _audit_count()

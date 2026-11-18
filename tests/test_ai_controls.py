@@ -5,17 +5,13 @@ import copy
 
 import pytest
 
-from app.core.constants import Controls
-from app.domain.scenario.write import ControlMapper, build_control_query, build_controls_record
-from app.models.library.library import LibraryControl
+from app.core.constants import ControlMatch, Controls
+from app.domain.scenario.write import build_control_query, map_controls
+from app.schemas.library import LibraryControl
 from tests.test_control_mapping import _OT_CONTEXT, _SCENARIO, _ScoresByText, _snapshot
 
-_AI_CONTROL = LibraryControl(
-    4, "C-AI", "OT", Controls.AI_DOMAIN, "Sensitive OT Data Protection in AI", "OT data"
-)
-_ACCESS = LibraryControl(
-    5, "C-ACC", "OT", "Identification & Authentication", "Account Management", "Accounts"
-)
+_AI_CONTROL = LibraryControl(4, "C-AI", "OT", Controls.AI_DOMAIN, "Sensitive OT Data Protection in AI", "OT data")
+_ACCESS = LibraryControl(5, "C-ACC", "OT", "Identification & Authentication", "Account Management", "Accounts")
 
 
 @pytest.mark.parametrize(
@@ -30,25 +26,17 @@ _ACCESS = LibraryControl(
         ({"type": "Protocol/Command Abuse", "name": "OT protocol command abuse"}, False),
         ({"type": "Social Engineering", "name": "Email account takeover of maintenance staff"}, False),
         ({"type": "Injection", "name": "HTML injection on the operator portal"}, False),  # "ML" in a word
-        (
-            {"type": "Physical", "name": "Rail signal cabinet tampering"},
-            False,
-        ),  # "ai" inside words, lower case
+        ({"type": "Physical", "name": "Rail signal cabinet tampering"}, False),  # "ai" inside words, lower case
         ({}, False),
     ],
 )
-def test_a_threat_is_about_ai_only_when_its_type_or_name_says_so(
-    threat: dict[str, str], about_ai: bool
-) -> None:
+def test_a_threat_is_about_ai_only_when_its_type_or_name_says_so(threat: dict[str, str], about_ai: bool) -> None:
     assert build_control_query({"threat": threat}, _OT_CONTEXT).is_about_ai is about_ai
 
 
 _API_THREAT = {"type": "Web/API Exploitation", "name": "Unauthorized API or record access"}
 _CITED = {
-    "facts": [
-        "The Anthropic AI-orchestrated Campaign used this technique.",
-        "APT41, a group, has used this technique.",
-    ]
+    "facts": ["The Anthropic AI-orchestrated Campaign used this technique.", "APT41, a group, has used this technique."]
 }
 
 
@@ -57,11 +45,7 @@ _CITED = {
     [
         ("The chatbot API forwards questions to a large language model with incident records.", [], True),
         ("The attacker abuses the operators' AI assistant to close incidents.", [], True),
-        (
-            "In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique.",
-            [_CITED],
-            False,
-        ),
+        ("In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique.", [_CITED], False),
         ("In real-world attacks, the Anthropic AI-orchestrated Campaign used the technique.", [], True),
         ("APT41 (AI-assisted, say its reports) is not named in the facts this way.", [_CITED], True),
         ("An attacker floods the public API with crafted requests.", [_CITED], False),
@@ -95,18 +79,15 @@ def test_the_search_leaves_out_ai_controls_only_when_asked() -> None:
 def test_a_non_ai_card_never_gets_an_ai_control_even_when_it_scores_best_and_an_ai_card_can() -> None:
     rerank = _ScoresByText({"Sensitive OT Data Protection in AI": 90.0, "Account Management": 70.0})
     snapshot = _snapshot(_AI_CONTROL, _ACCESS)
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-ACC"]
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
+    assert [item["code"] for item in mapping["items"]] == ["C-ACC"]
     assert all("Sensitive OT Data Protection in AI" not in doc for _, docs in rerank.asked for doc in docs)
-    assert build_controls_record(mapping, snapshot)["made_with"]["ai_controls"] is False
+    assert mapping["made_with"]["ai_controls"] is False
     ai_card = copy.deepcopy(_SCENARIO)
-    ai_card["content"]["threat"] = {
-        "type": "AI Abuse",
-        "name": "AI-assisted OT decision or data manipulation",
-    }
-    mapping = ControlMapper(rerank).map_controls(ai_card, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-AI", "C-ACC"]
-    assert build_controls_record(mapping, snapshot)["made_with"]["ai_controls"] is True
+    ai_card["content"]["threat"] = {"type": "AI Abuse", "name": "AI-assisted OT decision or data manipulation"}
+    mapping = map_controls(rerank, ai_card, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
+    assert [item["code"] for item in mapping["items"]] == ["C-AI", "C-ACC"]
+    assert mapping["made_with"]["ai_controls"] is True
 
 
 def test_no_control_of_the_cards_type_keeps_another_types_nearest_but_never_an_ai_one() -> None:
@@ -114,5 +95,6 @@ def test_no_control_of_the_cards_type_keeps_another_types_nearest_but_never_an_a
     it_control = LibraryControl(6, "C-IT", "IT", "Endpoint Security", "Application Allowlisting", "Programs")
     rerank = _ScoresByText({"Sensitive OT Data Protection in AI": 90.0, "Application Allowlisting": 60.0})
     snapshot = _snapshot(_AI_CONTROL, it_control)
-    mapping = ControlMapper(rerank).map_controls(_SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
-    assert [item.code for item in mapping.items] == ["C-IT"] and mapping.warning is not None
+    mapping = map_controls(rerank, _SCENARIO, _OT_CONTEXT, snapshot)  # type: ignore[arg-type]
+    assert [(item["code"], item["match"]) for item in mapping["items"]] == [("C-IT", ControlMatch.NEAREST)]
+    assert "another type than the scenario's" in mapping["items"][0]["rationale"]

@@ -39,7 +39,7 @@ def evidence(card: dict[str, Any]) -> str:
     """With intelligence on (an evidence story), one or more markers, each naming a stored entry; written
     without evidence (none found) or with it off, no marker and no entry."""
     from app.core.constants import PromptVersion
-    from app.models.external_intelligence.evidence_view import markers_of
+    from app.schemas.intel import markers_of
 
     content = card["content"]
     cited = set(markers_of(f"{content.get('statement', '')}\n{content.get('risk_statement', '')}"))
@@ -61,10 +61,16 @@ def evidence_note(card: dict[str, Any]) -> str:
     return WRITTEN_WITHOUT if card["content"].get("evidence_mode") == EvidenceMode.INFERRED else ""
 
 
+def read_statement_without_citation(content: dict[str, Any]) -> str:
+    """Returns a card's statement without the cited passage at its end."""
+    statement = str(content.get("statement") or "")
+    cited = next((entry["supports"] for entry in content.get("evidence") or () if entry.get("supports")), None)
+    return statement.removesuffix(f" {cited} [1].") if cited else statement
+
+
 def words(card: dict[str, Any]) -> str:
     """The narrative, the evidence passage and the risk each within its configured word maximum."""
     from app.core.config import get_settings
-    from app.domain.scenario.write import read_statement_without_citation
 
     settings, content = get_settings(), card["content"]
     passage = next((e["supports"] for e in content.get("evidence") or [] if e.get("supports")), "")
@@ -88,8 +94,7 @@ def served_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         c
         for c in cards
-        if c.get("status") == "done"
-        and (c.get("superseded_by") is None or c.get("decision") != Decision.PENDING)
+        if c.get("status") == "done" and (c.get("superseded_by") is None or c.get("decision") != Decision.PENDING)
     ]
 
 
@@ -101,20 +106,16 @@ def duplicates(served: list[dict[str, Any]]) -> dict[str, str]:
     found: dict[str, str] = {}
     for index, card in enumerate(served):
         # the duplicate check's register (MAPPED_VERSIONS): a replaced rejected version is served, not held
-        held = [
-            c
-            for c in served[:index]
-            if c.get("superseded_by") is None or c.get("decision") == Decision.ACCEPTED
-        ]
+        held = [c for c in served[:index] if c.get("superseded_by") is None or c.get("decision") == Decision.ACCEPTED]
         if copy_id := find_duplicate_scenario_id(card["content"], card["path_id"], held):
             found[card["_id"]] = FindingMessage.NEAR_DUPLICATE.format(scenario_id=copy_id)
     return found
 
 
 def main() -> int:
-    from app.container import get_threat_scenario_repository
     from app.core.constants import Collection
     from app.core.database import get_mongodb
+    from app.crud.scenarios import get_threat_scenario_repository
 
     run_id = (sys.argv[1] if len(sys.argv) > 1 else "") or debug_value("TSG_RUN_ID")
     db = get_mongodb()

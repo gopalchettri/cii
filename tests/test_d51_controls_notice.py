@@ -7,30 +7,20 @@ from typing import Any
 import pytest
 from structlog.contextvars import bound_contextvars
 
-from app import container
-from app.core.constants import (
-    AI_OUTAGE_MESSAGES,
-    AiOutage,
-    Controls,
-    Lease,
-    Status,
-)
+from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage, Controls, Lease, Status
 from app.core.exceptions import Unavailable
 from app.core.logging import current_request_id
+from app.crud import scenarios as scenario_crud
+from app.crud import work_control
+from app.domain.jobs import _run_job
 from app.domain.scenario.session import build_status_board
 from app.domain.scenario.write import build_scenario_card
-from app.models.scenario.views import session_status_from_record
-from app.models.scenario.write import WrittenScenario
-from app.services.jobs.job_service import _run_job
+from app.schemas.scenario_internal import WrittenScenario
+from app.schemas.scenarios import session_status_from_record
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
 from tests.planner_samples import CONTEXT
-from tests.test_controls_fixes import (  # noqa: F401 - fixture
-    _deliver,
-    _Raising,
-    _set_controls,
-    run,
-)
+from tests.test_controls_fixes import _deliver, _Raising, _set_controls, run  # noqa: F401 - fixture
 from tests.test_scenario_writing import _READ, _brief_of, _plan_threat
 
 
@@ -58,8 +48,8 @@ def test_each_scenario_is_mapped_under_the_request_that_wrote_it(
 
 def _shown_retrying(record_id: str) -> tuple[Any, Any]:
     """The run's notice as its status board and the jobs list show it, each read as the app reads it."""
-    stored = container.get_threat_scenario_session_repository().get(fields="status", _id=record_id)
-    listed, _ = container.get_work_control_repository().list_working_scenario_sessions(86)
+    stored = scenario_crud.get_threat_scenario_session_repository().get(fields="status", _id=record_id)
+    listed, *_ = work_control.list_working_jobs("T", 86)
     in_list = next((record for record in listed if record["_id"] == record_id), None)
     shown_in_list = _run_job(in_list).retrying if in_list else None  # listed while controls wait
     return build_status_board(session_status_from_record(stored)).progress.retrying, shown_in_list
@@ -79,9 +69,7 @@ def test_a_controls_outage_shows_a_retry_notice_until_the_next_claim(
     monkeypatch.setattr(scenario_tasks.map_controls, "retry", lambda *_, **__: RuntimeError("retry"))
     seen_by_watchers: list[Any] = []  # the notice a stream re-reading the status would see at each publish
     monkeypatch.setattr(
-        controls_job,
-        "publish_session_status",
-        lambda run_id: seen_by_watchers.append(_shown_retrying(run_id)[0]),
+        controls_job, "publish_session_status", lambda run_id: seen_by_watchers.append(_shown_retrying(run_id)[0])
     )
     scenario_tasks.map_controls.apply(args=(record_id, 0), task_id="task-1", retries=retries)
     last = retries >= Controls.MAX_MESSAGE_RETRIES
@@ -98,7 +86,7 @@ def test_a_controls_outage_shows_a_retry_notice_until_the_next_claim(
     assert abs((retrying.retry_at - expected_at).total_seconds()) < 5
     assert seen_by_watchers[-1] == retrying  # the recount's publish came before the notice was stored
     # The retry's claim; its card still waits, so only the claim's reset can hide the notice.
-    assert container.get_threat_scenario_session_repository().claim_controls_delivery(record_id, "task-1")
+    assert scenario_crud.get_threat_scenario_session_repository().claim_controls_delivery(record_id, "task-1")
     assert _shown_retrying(record_id) == (None, None)
 
 

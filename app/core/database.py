@@ -21,14 +21,8 @@ from app.core.singletons import singleton
 
 Row = dict[str, Any]
 
-#: Errors meaning "SQL Server cannot serve us right now": an outage or timeout (OperationalError), a login
-#: refused while a database recovers or fails over (InterfaceError, SQLSTATE 28000), or every pooled
-#: connection busy past the pool's wait. All are answered 503 / retried, never a 500.
-SQL_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
-    pyodbc.OperationalError,
-    pyodbc.InterfaceError,
-    PoolTimeoutError,
-)
+#: SQL Server cannot serve us now (outage, timeout, login refused in a failover, pool busy): 503 / retried.
+SQL_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (pyodbc.OperationalError, pyodbc.InterfaceError, PoolTimeoutError)
 _INDEX_OPTIONS_CONFLICT: Final = 85  # MongoDB: an index on these keys exists with other options
 _DEADLOCK_SQLSTATE: Final = "40001"  # SQL Server chose the call as a deadlock victim and rolled it back
 
@@ -42,8 +36,7 @@ def get_mongodb() -> Database:
         connectTimeoutMS=Timeouts.MONGO_MS,
         socketTimeoutMS=Timeouts.MONGO_SOCKET_MS,  # pymongo's default is no limit
         waitQueueTimeoutMS=Timeouts.MONGO_MS,  # every pooled connection busy: fail fast, never wait for ever
-        # A write a failover cannot roll back, whatever the server's default; a standalone (dev) takes it as
-        # w:1. Bounded below the socket timeout, so a lagging replica set answers WTimeoutError (an outage).
+        # A write a failover cannot roll back; bounded below the socket timeout (a lag is an outage).
         w="majority",
         wTimeoutMS=Timeouts.MONGO_MAJORITY_WRITE_MS,
         tz_aware=True,
@@ -52,8 +45,7 @@ def get_mongodb() -> Database:
 
 
 def expire_documents_after(collection: MongoCollection, field: str, seconds: int) -> None:
-    """TTL index on `field`. A changed retention updates the existing index in place (collMod): create_index
-    alone refuses different options, which would stop every start-up."""
+    """TTL index on `field`."""
     try:
         collection.create_index(field, expireAfterSeconds=seconds)
     except OperationFailure as exc:
@@ -65,8 +57,7 @@ def expire_documents_after(collection: MongoCollection, field: str, seconds: int
 
 
 def redis_tls_options(url: str) -> dict[str, Any]:
-    """The TLS options of every Redis client and the broker: a rediss:// server's certificate and host name
-    always verified (against CII_REDIS_CA_FILE when set); none for a plain redis:// URL."""
+    """TLS options of every Redis client and the broker: a rediss:// server's certificate always verified."""
     if not url.startswith("rediss://"):
         return {}
     return {
@@ -98,9 +89,7 @@ class StoredProcedureClient:
         self._engine = engine
 
     def execute_procedure(self, procedure: StoredProcedure, **params: Any) -> list[list[Row]]:
-        """Run one TSG procedure with bound parameters and return its result sets. Never sent (connect or pool
-        wait failed) or a deadlock (rolled back): Unavailable; sent with its answer lost (a timeout, a broken
-        link): OutcomeUnknown; a value refused: Invalid; the procedure itself broken: SetupError."""
+        """Run one TSG procedure with bound parameters and return its result sets."""
         if not isinstance(procedure, StoredProcedure):  # the name goes into the SQL text: members only
             raise SetupError(ErrorMessage.PROCEDURE_NOT_ALLOWED.format(procedure=procedure))
         args = ", ".join(f"@{name}=?" for name in params)
@@ -112,7 +101,13 @@ class StoredProcedureClient:
         try:
             cursor = connection.cursor()
             cursor.execute(sql, *params.values())
-            return _read_all_result_sets(cursor)
+            result_sets: list[list[Row]] = []
+            while True:
+                if cursor.description:
+                    columns = [column[0] for column in cursor.description]
+                    result_sets.append([dict(zip(columns, row, strict=True)) for row in cursor.fetchall()])
+                if not cursor.nextset():
+                    return result_sets
         except (pyodbc.DataError, pyodbc.IntegrityError) as exc:
             raise Invalid(ErrorMessage.SQL_VALUE_REFUSED) from exc
         except pyodbc.ProgrammingError as exc:
@@ -131,19 +126,8 @@ class StoredProcedureClient:
         self._engine.dispose()
 
     def check_connection(self) -> None:
-        """SQL Server answers: a connection is opened, or a pooled one pinged (pool_pre_ping), then returned.
-        Never runs a procedure, so a readiness probe every few seconds costs SQL Server nothing."""
+        """SQL Server answers: a connection is opened or a pooled one pinged; never runs a procedure."""
         self._engine.raw_connection().close()
-
-
-def _read_all_result_sets(cursor: pyodbc.Cursor) -> list[list[Row]]:
-    result_sets: list[list[Row]] = []
-    while True:
-        if cursor.description:
-            columns = [column[0] for column in cursor.description]
-            result_sets.append([dict(zip(columns, row, strict=True)) for row in cursor.fetchall()])
-        if not cursor.nextset():
-            return result_sets
 
 
 @singleton
@@ -159,12 +143,9 @@ def get_stored_procedure_client() -> StoredProcedureClient:
 
     @event.listens_for(engine, "connect")
     def set_up_connection(dbapi_connection: pyodbc.Connection, _record: object) -> None:
-        # pyodbc's default query timeout is 0 = wait for ever. A timed-out call raises OperationalError
-        # (HYT00), which execute_procedure turns into Unavailable like any other outage.
+        # pyodbc's default query timeout is 0 = wait for ever.
         dbapi_connection.timeout = Timeouts.SQL_QUERY_SECONDS
-        # Each procedure owns its transaction (BEGIN/COMMIT inside it). Without autocommit, pyodbc opens an
-        # outer transaction that nothing commits, and the pool rolls it back when the connection is returned:
-        # a write procedure would report success and save nothing.
+        # Each procedure owns its transaction: without autocommit the pool would roll back every write.
         dbapi_connection.autocommit = True
 
     return StoredProcedureClient(engine)

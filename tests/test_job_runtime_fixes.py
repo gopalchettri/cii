@@ -18,7 +18,7 @@ from structlog.testing import capture_logs
 from app.core.constants import Lease, LogEvent, Queue, TaskName, Worker
 from app.core.exceptions import Unavailable
 from app.core.logging import _json_formatter
-from app.worker import heartbeat, jobs, lifecycle
+from app.worker import jobs, lifecycle
 from app.worker.lease_renewal import keep_lease_alive
 
 
@@ -30,9 +30,7 @@ class RetryRequested(Exception):
         self.countdown = countdown
 
 
-def test_the_liveness_file_is_touched_even_when_redis_fails(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_the_liveness_file_is_touched_even_when_redis_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The pod's liveness probe reads the file's age: a Redis outage must not make a live worker look dead."""
     alive_file = tmp_path / "alive"
     monkeypatch.setattr(Worker, "LIVENESS_FILE", str(alive_file))
@@ -40,8 +38,8 @@ def test_the_liveness_file_is_touched_even_when_redis_fails(
     def failing_beat(_self: object) -> None:
         raise ReadOnlyError("You can't write against a read only replica.")
 
-    monkeypatch.setattr(heartbeat.WorkerHeartbeat, "beat", failing_beat)
-    beating = heartbeat.WorkerHeartbeat([Queue.THREATS], "celery@liveness-test")
+    monkeypatch.setattr(lifecycle.WorkerHeartbeat, "beat", failing_beat)
+    beating = lifecycle.WorkerHeartbeat([Queue.THREATS], "celery@liveness-test")
     with capture_logs() as logs:
         beating.start()
         try:
@@ -59,9 +57,7 @@ def test_a_secret_in_an_exception_message_is_redacted_but_other_fields_are_not()
     try:
         raise ValueError("connect failed: password=hunter2-fake")
     except ValueError:
-        record = logging.LogRecord(
-            "celery.app.trace", logging.ERROR, __file__, 1, "boom", None, sys.exc_info()
-        )
+        record = logging.LogRecord("celery.app.trace", logging.ERROR, __file__, 1, "boom", None, sys.exc_info())
     line = json.loads(formatter.format(record))
     assert "hunter2-fake" not in line["exception"] and "[REDACTED]" in line["exception"]
     fields = {"event": "x", "error": "token=abc123secret", "worker": "celery@node.local"}
@@ -83,7 +79,7 @@ def test_the_lease_renewer_logs_with_the_jobs_context(monkeypatch: pytest.Monkey
     lease = SimpleNamespace(record_id="r", renew=renew)
     with (
         structlog.contextvars.bound_contextvars(task="t", module="m", request_id="req-1"),
-        keep_lease_alive(lease),  # type: ignore[arg-type]
+        keep_lease_alive(lease.record_id, lease.renew),
     ):
         assert renewed.wait(5)
     assert {key: seen.get(key) for key in ("task", "module", "request_id")} == {
@@ -105,14 +101,12 @@ def test_the_lease_renewer_keeps_renewing_after_a_mongo_error(monkeypatch: pytes
         renewed_again.set()
         return True
 
-    with keep_lease_alive(SimpleNamespace(record_id="r", renew=renew)):  # type: ignore[arg-type]
+    with keep_lease_alive("r", renew):
         assert renewed_again.wait(5)
 
 
 @pytest.mark.parametrize("attempt", [1, 2, 3, 4])
-def test_the_retry_delay_follows_the_back_off_by_attempt(
-    monkeypatch: pytest.MonkeyPatch, attempt: int
-) -> None:
+def test_the_retry_delay_follows_the_back_off_by_attempt(monkeypatch: pytest.MonkeyPatch, attempt: int) -> None:
     monkeypatch.setattr(jobs, "_give_back", lambda *_args: True)
     task = SimpleNamespace(retry=lambda countdown, exc, **_options: RetryRequested(countdown))
     lease = SimpleNamespace(attempts=attempt, record_id="r")
@@ -131,7 +125,7 @@ def test_a_worker_that_cannot_start_logs_why_before_it_exits(monkeypatch: pytest
     with capture_logs() as logs, pytest.raises(SystemExit):
         lifecycle.prepare_worker(SimpleNamespace(pool_cls=dict))  # an unsupported pool, no exception
     assert [(line["event"], line["log_level"], line["exc_info"]) for line in logs] == [
-        (LogEvent.WORKER_START_FAILED, "error", False)
+        (LogEvent.WORKER_START_FAILED, "error", True)
     ]
     assert "--pool=threads" in logs[0]["message"] and "reason" not in logs[0]  # free text, not a reason code
 

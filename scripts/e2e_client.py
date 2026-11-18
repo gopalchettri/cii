@@ -99,5 +99,10 @@ def run_settled(body: dict[str, Any]) -> bool:
     return body.get("progress", {}).get("overall") not in ("pending", "in_progress")
 
 
+def are_controls_settled(body: dict[str, Any]) -> bool:
+    """A settled run with no scenario still waiting for its controls."""
+    return run_settled(body) and body.get("progress", {}).get("controls") != "RUNNING"
+
+
 def job_settled(body: dict[str, Any]) -> bool:
     return body.get("status") in ("done", "failed", "cancelled")

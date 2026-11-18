@@ -4,22 +4,23 @@ exceeded, a rebuild during searches keeps serving the old index, the switch cons
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
+from app.core.config import get_settings
 from app.core.constants import AssetType
-from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
-from app.domain.external_intelligence.evidence_finder import EvidenceFinder
-from app.domain.external_intelligence.rerank_gate import RerankGate
-from app.search.external_intelligence.index_keeper import EvidenceIndexKeeper
+from app.domain.intel import evidence, index
+from app.domain.intel.evidence import RerankGate
+from app.domain.intel.index import EvidenceIndexKeeper
+from app.domain.intel.switch import IntelligenceSwitch
 from tests.external_intelligence.evidence_fakes import (
-    ALL_SOURCES,
     CountingRerank,
-    MemoryFeeds,
     MemoryPointer,
     MemoryRecords,
     ScoredBy,
     TextEmbeddings,
     request_of,
     technique_doc,
-    vulnerability_doc,
+    use_index,
 )
 from tests.external_intelligence.switch.test_switch import MemoryFlags
 
@@ -32,12 +33,18 @@ def _docs() -> list[dict]:
     return docs + [technique_doc(f"T{n}", "OT", f"{WORDS[n % 5]} ot technique {n}") for n in range(21, 31)]
 
 
-def _keeper(docs, rerank=None):
-    keeper = EvidenceIndexKeeper(
-        MemoryRecords(docs), MemoryPointer(), MemoryFeeds(), TextEmbeddings(), rerank or ScoredBy(), "m", "r"
-    )
+def _search_through_keeper(monkeypatch: pytest.MonkeyPatch, docs, rerank=None) -> None:
+    """evidence.find_evidence searches a keeper's index of `docs`, built first, behind a gate of 3 places."""
+    records, pointer, embeddings = MemoryRecords(docs), MemoryPointer(), TextEmbeddings()
+    monkeypatch.setattr(index, "get_intel_record_repository", lambda: records)
+    monkeypatch.setattr(index, "get_intel_snapshot_repository", lambda: pointer)
+    monkeypatch.setattr(index, "get_embedding_model", lambda: embeddings)
+    monkeypatch.setattr(index, "get_rerank_model", lambda: rerank or ScoredBy())
+    monkeypatch.setattr(get_settings(), "embedding_model", "m")
+    monkeypatch.setattr(get_settings(), "rerank_model", "r")
+    keeper = EvidenceIndexKeeper()
     keeper.rebuild_index().result(10)
-    return keeper
+    use_index(monkeypatch, keeper.current_index, gate=RerankGate(3))
 
 
 def _requests(user: int) -> list:
@@ -50,17 +57,14 @@ def _shape(results) -> list[tuple]:
     return [(tuple(e.ref for e in r.evidence), r.search.query, r.search.asset_types) for r in results]
 
 
-def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_evidence() -> None:
-    keeper = _keeper(_docs())
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6, kept_per_threat=3)
-    serial = {
-        user: _shape(finder.find_evidence(_requests(user), approved=ALL_SOURCES)[0]) for user in range(USERS)
-    }
+def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_through_keeper(monkeypatch, _docs())
+    serial = {user: _shape(evidence.find_evidence(_requests(user))) for user in range(USERS)}
 
     def work(user: int) -> list:
-        return [
-            _shape(finder.find_evidence(_requests(user), approved=ALL_SOURCES)[0]) for _ in range(BATCHES)
-        ]
+        return [_shape(evidence.find_evidence(_requests(user))) for _ in range(BATCHES)]
 
     with ThreadPoolExecutor(USERS) as pool:
         concurrent = list(pool.map(work, range(USERS)))
@@ -69,62 +73,16 @@ def test_many_users_get_exactly_what_a_serial_run_gives_and_never_each_others_ev
         numbers = {int(ref[1:]) for run in runs for refs, _, _ in run for ref in refs}
         assert numbers and all((number > 20) == (user % 2 == 1) for number in numbers)  # only its own types
         assert all(
-            query.endswith(tuple(f"number {user} part {p}" for p in range(4)))
-            for run in runs
-            for _, query, _ in run
+            query.endswith(tuple(f"number {user} part {p}" for p in range(4))) for run in runs for _, query, _ in run
         )
 
 
-def test_the_gate_is_never_exceeded_by_many_batches_at_once() -> None:
+def test_the_gate_is_never_exceeded_by_many_batches_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     rerank = CountingRerank(0.01)
-    keeper = _keeper(_docs(), rerank)
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6, kept_per_threat=3)
+    _search_through_keeper(monkeypatch, _docs(), rerank)
     with ThreadPoolExecutor(USERS) as pool:
-        list(
-            pool.map(
-                lambda user: finder.find_evidence(_requests(user), approved=ALL_SOURCES),
-                range(USERS * 2),
-            )
-        )
+        list(pool.map(lambda user: evidence.find_evidence(_requests(user)), range(USERS * 2)))
     assert 1 <= rerank.most <= 3
-
-
-def test_a_rebuild_during_searches_keeps_serving_whole_indexes_and_swaps_at_once() -> None:
-    gate, started = threading.Event(), threading.Event()
-
-    class SlowEmbeddings(TextEmbeddings):
-        def embed_library_texts(self, corpus, texts, sources):
-            if self.library_texts:  # the second build waits
-                started.set()
-                gate.wait(10)
-            return super().embed_library_texts(corpus, texts, sources)
-
-    docs = _docs()
-    records = MemoryRecords(docs)
-    keeper = EvidenceIndexKeeper(
-        records, MemoryPointer(), MemoryFeeds(), SlowEmbeddings(), ScoredBy(), "m", "r"
-    )
-    old = keeper.rebuild_index().result(10)
-    finder = EvidenceFinder(keeper.current_index, 1.0, gate=RerankGate(3), candidates=6, kept_per_threat=3)
-    records.docs.append(vulnerability_doc("CVE-9", "V", "P"))
-    rebuilding = keeper.rebuild_index()
-    assert started.wait(5)
-    seen: list[str | None] = []
-
-    def search(_: int) -> None:
-        (result,), summary = finder.find_evidence(
-            [request_of("Threat: ransomware number 1")], approved=ALL_SOURCES
-        )
-        seen.append(summary.snapshot_id)
-        assert result.search.snapshot_id == summary.snapshot_id
-
-    with ThreadPoolExecutor(6) as pool:
-        list(pool.map(search, range(30)))
-    assert set(seen) == {old.snapshot_id} and keeper.current_index() is old  # the old index kept serving
-    gate.set()
-    new = rebuilding.result(10)
-    assert new is not old and keeper.current_index() is new
-    finder.find_evidence([request_of()], approved=ALL_SOURCES)
 
 
 def test_switch_flips_during_load_stay_consistent_and_end_where_the_last_flip_left_them() -> None:

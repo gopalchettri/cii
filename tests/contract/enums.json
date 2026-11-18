@@ -26,6 +26,7 @@
   "CREATE_MAPPING": "create_mapping",
   "CREATE_PLAN": "create_plan",
   "CREATE_SCENARIO": "create_scenario",
+  "CREATE_SESSION": "create_session",
   "NEXT_SET": "next_set",
   "REGENERATE": "regenerate"
  },
@@ -57,6 +58,8 @@
  "AiTask": {
   "EMBED": "embed",
   "GAP_FILL": "gap_fill",
+  "LINK_CONTROLS": "link_controls",
+  "PICK_CONTROLS": "pick_controls",
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
   "REMEDIATION_PLAN": "remediation_plan",
@@ -86,10 +89,7 @@
  "AiUsageLogEvent": {
   "COMPRESSION_NOT_APPLIED": "ai.usage_compression_not_applied",
   "EXPIRY_FOUND": "ai.usage_expiry_found",
-  "REPORT_CACHE_FAILED": "ai.usage_report_cache_failed",
-  "ROLLUP_BUSY": "ai.usage_rollup_busy",
   "ROLLUP_DONE": "ai.usage_rollup_done",
-  "ROLLUP_LOCK_LOST": "ai.usage_rollup_lock_lost",
   "ROW_SPILLED": "ai.usage_row_spilled"
  },
  "AiUsageOutcome": {
@@ -106,10 +106,7 @@
  "AnswerProblem": {
   "ACTION_SENTENCES_MISSING": "action_sentences must give the number of the statement's sentence for each of: {actions}",
   "NOT_ENGLISH": "every field must be in English only; it has {words}",
-  "RULE_VERDICTS_REQUIRED": "every numbered rule needs a verdict: \"holds\", or broken: \"<the exact words of the scenario>\" - <reason>",
-  "TEXT_REQUIRED": "must not be empty",
-  "THREAT_ACTIONS_REQUIRED": "the reply must be {\"actions\": [...]}: a non-empty list of short verb phrases",
-  "THREAT_ACTION_VERDICTS_REQUIRED": "threat_actions must judge every item of PLAN.threat.threat_actions"
+  "TEXT_REQUIRED": "must not be empty"
  },
  "ApiTag": {
   "AI_USAGE": "12. AI usage",
@@ -125,22 +122,32 @@
   "RUNS": "5. Threat scenarios: runs",
   "SERVICE_MAPPER": "11. Service mapper"
  },
- "Applicability": {
-  "CONFIRMED": "confirmed",
-  "NOT_APPLICABLE": "not_applicable",
-  "UNKNOWN": "unknown"
- },
  "AssetType": {
   "IT": "IT",
   "IT_OT": "IT\\OT",
   "OT": "OT"
  },
+ "AttackLink": {
+  "ATTRIBUTED_TO": "attributed-to",
+  "MITIGATES": "mitigates",
+  "USES": "uses"
+ },
+ "AttackObjectType": {
+  "CAMPAIGN": "campaign",
+  "GROUP": "intrusion-set",
+  "MALWARE": "malware",
+  "MITIGATION": "course-of-action",
+  "TECHNIQUE": "attack-pattern",
+  "TOOL": "tool"
+ },
+ "AttackRecord": {
+  "OBJECT": "object",
+  "RELATIONSHIP": "relationship"
+ },
  "AttackerCheck": {
   "BALANCED": "balanced",
   "CHOSEN": "chosen",
-  "NONE_FITS": "none_fits",
-  "NOT_CHECKED": "not_checked",
-  "RANKED": "ranked"
+  "NONE_FITS": "none_fits"
  },
  "AuditAction": {
   "ADMIN_JOB_CANCELLED": "admin.job_cancelled",
@@ -150,8 +157,7 @@
   "EXTERNAL_INTELLIGENCE_EVIDENCE_USED": "external_intelligence.evidence_used",
   "EXTERNAL_INTELLIGENCE_REFRESHED": "external_intelligence.refreshed",
   "EXTERNAL_INTELLIGENCE_REFRESH_FAILED": "external_intelligence.refresh_failed",
-  "EXTERNAL_INTELLIGENCE_SOURCE_APPROVED": "external_intelligence.source_approved",
-  "EXTERNAL_INTELLIGENCE_SOURCE_REVOKED": "external_intelligence.source_revoked",
+  "EXTERNAL_INTELLIGENCE_SCHEDULE_CHANGED": "external_intelligence.schedule_changed",
   "EXTERNAL_INTELLIGENCE_SWITCHED": "external_intelligence.switched",
   "KEY_MINTED": "key.minted",
   "KEY_REVOKED": "key.revoked",
@@ -198,7 +204,9 @@
   "ADMIN_JOBS": "tsg_admin_jobs",
   "AI_CALLS": "tsg_ai_call_texts",
   "API_CLIENTS": "tsg_api_clients",
+  "ATTACK": "tsg_attack",
   "AUDIT": "tsg_audit",
+  "CONTROL_LINKS": "tsg_control_links",
   "EMBEDDINGS": "tsg_embeddings",
   "EXTERNAL_FEED_STATUS": "tsg_external_feed_status",
   "EXTERNAL_INTELLIGENCE_SNAPSHOTS": "tsg_external_intelligence_snapshots",
@@ -245,6 +253,17 @@
   "COVERED": "covered",
   "GAPS": "gaps"
  },
+ "ControlEffect": {
+  "CONTAIN": "contain",
+  "DETECT": "detect",
+  "PREVENT": "prevent",
+  "RECOVER": "recover"
+ },
+ "ControlLinkOutcome": {
+  "FAILED": "failed",
+  "JUDGED": "judged",
+  "UNCHANGED": "unchanged"
+ },
  "ControlMatch": {
   "EXACT": "exact",
   "GIVEN": "given",
@@ -255,6 +274,14 @@
   "EXACT": "EXACT",
   "NEAREST_ONLY": "NEAREST_ONLY",
   "PENDING": "PENDING"
+ },
+ "ControlPickDrop": {
+  "BAD_EFFECT": "its effect is not prevent, detect, contain or recover",
+  "NOT_LISTED": "names no control of this scenario's list",
+  "NO_SENTENCE": "names no sentence of this scenario",
+  "TOO_MANY": "more than {most} controls on one sentence",
+  "TWICE": "the control is already picked for another sentence of this scenario",
+  "WRONG_TYPE": "the control's IT/OT type does not fit the scenario's systems"
  },
  "ControlType": {
   "COMPENSATING": "compensating",
@@ -329,28 +356,14 @@
  "EvidenceDecision": {
   "BELOW_THRESHOLD": "below_threshold",
   "DUPLICATE": "duplicate",
-  "NOT_APPLICABLE": "not_applicable",
-  "NO_PRODUCT_LINK": "no_product_link",
   "OVER_LIMIT": "over_limit",
   "USED": "used"
  },
  "EvidenceFact": {
-  "ADVISORY": "A CISA advisory for {product} describes {impact}.",
-  "ADVISORY_IMPACT": "security weaknesses that could be exploited",
-  "ADVISORY_UNNAMED": "A CISA advisory describes {impact}.",
   "CAMPAIGN_USED": "The {name} used this technique.",
-  "FIXED_ONLY": "It is fixed in {fixed}.",
-  "KEV_LISTED": "CISA lists weaknesses in {vendor} {product} as exploited in real attacks (added {date}).",
-  "KEV_LISTED_UNNAMED": "CISA lists a weakness as exploited in real attacks (added {date}).",
-  "LIKELIHOOD": "It scored {percent}% likelihood of exploitation in the next 30 days.",
   "MITIGATED_BY": "It can be reduced by: {mitigations}.",
-  "RANSOMWARE": "Ransomware groups are known to have used it.",
-  "SEVERITY": "Its seriousness is rated {severity} ({score} of 10).",
-  "SEVERITY_WORD": "Its seriousness is rated {severity}.",
   "TACTICS": "It is used for these attacker goals: {tactics}.",
-  "USED_BY": "{name}, {what}, has used this technique.",
-  "VERSIONS_AND_FIXED": "It affects versions {ranges}; fixed in {fixed}.",
-  "VERSIONS_ONLY": "It affects versions {ranges}."
+  "USED_BY": "{name}, {what}, has used this technique."
  },
  "EvidenceMode": {
   "INFERRED": "inferred",
@@ -359,16 +372,11 @@
  },
  "EvidenceReason": {
   "BELOW_THRESHOLD": "Scored {score:.1f} of 100, under the {threshold:g} needed.",
-  "DIFFERENT_PRODUCT": "Concerns {vendor} {product}; the asset records none of that vendor or product.",
   "DUPLICATE": "The same record is already used for this threat.",
-  "NO_PRODUCT_LINK": "Concerns a specific product; nothing the asset records ties the asset to it.",
-  "OTHER_PRODUCT_OF_VENDOR": "Concerns {vendor} {product}; the asset records only other products.",
-  "OVER_LIMIT": "More relevant records already fill the {limit} places for this threat.",
-  "VERSION_NOT_AFFECTED": "Concerns {vendor} {product}; the asset's recorded version is not an affected one."
+  "OVER_LIMIT": "More relevant records already fill the {limit} places for this threat."
  },
  "EvidenceRole": {
-  "CONTEXT": "context",
-  "DIRECT": "direct"
+  "CONTEXT": "context"
  },
  "EvidenceSearchFailure": {
   "NO_SNAPSHOT": "no_intelligence_snapshot",
@@ -419,34 +427,18 @@
   "UNVERIFIED": "unverified"
  },
  "IntelKind": {
-  "ADVISORY": "advisory",
-  "EXPLOIT_SCORE": "exploit_score",
-  "TECHNIQUE": "technique",
-  "VULNERABILITY": "vulnerability",
-  "VULNERABILITY_DETAIL": "vulnerability_detail"
+  "TECHNIQUE": "technique"
  },
  "IntelRejection": {
-  "EPSS_BAD_ROW": "The EPSS row has no CVE id or the wrong number of columns.",
-  "EPSS_BAD_SCORE": "The EPSS score or percentile is not a number between 0 and 1.",
-  "ICS_BAD_ADVISORY": "The ICS advisory is not CSAF JSON or has no id, title or release date.",
-  "ICS_DOWNLOAD_FAILED": "The ICS advisory file could not be downloaded.",
-  "KEV_MISSING_FIELD": "The KEV record has no cveID or dateAdded.",
-  "NOT_AN_OBJECT": "The record is not a JSON object.",
   "NO_NAME": "The technique has no name.",
   "NO_TECHNIQUE_ID": "The technique has no mitre-attack external id.",
-  "NVD_BAD_ITEM": "The NVD item has no valid CVE id or last-modified time.",
   "UNSAFE_TEXT": "The text reads as instructions to an AI system, not as a description."
  },
  "IntelSource": {
   "ATTACK_ENTERPRISE": "mitre_attack_enterprise",
-  "ATTACK_ICS": "mitre_attack_ics",
-  "CISA_ICS": "cisa_ics_advisories",
-  "CISA_KEV": "cisa_kev",
-  "FIRST_EPSS": "first_epss",
-  "NIST_NVD": "nist_nvd"
+  "ATTACK_ICS": "mitre_attack_ics"
  },
  "IntelState": {
-  "QUARANTINED": "quarantined",
   "VALID": "valid"
  },
  "IntelWorkEvent": {
@@ -517,16 +509,9 @@
   "THREAT_RETIRED": "its threat is no longer active in the library",
   "THREAT_UNNAMED": "its threat has no type or no name"
  },
- "PlanCheckStatus": {
-  "CONSISTENT": "consistent",
-  "INCONSISTENT": "inconsistent",
-  "UNCHECKED": "unchecked"
- },
  "PlanLoss": {
-  "ALREADY_HELD": "already_held",
   "LIBRARY_REPEAT": "library_repeat",
   "MERGED": "merged",
-  "NEEDS_UNRECORDED_ELSEWHERE": "needs_unrecorded_elsewhere",
   "NOT_JUDGED": "not_judged",
   "NO_LINKED_ACTOR": "no_linked_actor",
   "TYPE_FITS_NO_PLACE": "type_fits_no_place",
@@ -645,6 +630,9 @@
   "IN_PROGRESS": "in_progress",
   "PENDING": "pending"
  },
+ "RunPipeline": {
+  "ATTACK": "attack"
+ },
  "ScenarioOutcome": {
   "ABANDONED": "abandoned",
   "BLOCKED": "blocked",
@@ -655,6 +643,10 @@
   "BLOCKED": "blocked",
   "DONE": "done",
   "FAILED": "failed"
+ },
+ "ScheduleFrequency": {
+  "DAILY": "daily",
+  "WEEKLY": "weekly"
  },
  "ScopeType": {
   "ASSET": "ASSET",
@@ -668,9 +660,7 @@
   "FAILED": "failed"
  },
  "SnapshotState": {
-  "ACTIVE": "active",
-  "BUILDING": "building",
-  "SUPERSEDED": "superseded"
+  "ACTIVE": "active"
  },
  "SqlOperationStatus": {
   "DONE": "done",
@@ -738,6 +728,7 @@
  "TaskName": {
   "BUILD_LIBRARY_INDEXES": "tsg_build_library_indexes",
   "FIND_THREATS": "tsg_find_threats",
+  "LINK_MITIGATIONS": "tsg_link_mitigations",
   "MAP_CONTROLS": "tsg_map_controls",
   "MAP_SERVICES": "tsg_map_services",
   "REAP": "tsg_reap",
@@ -747,24 +738,27 @@
   "WRITE_PLAN": "tsg_write_plan",
   "WRITE_SCENARIOS": "tsg_write_scenarios"
  },
+ "TechniqueControlState": {
+  "MATCHED": "matched",
+  "NOT_OFFERED": "not_offered",
+  "NOT_PICKED": "not_picked",
+  "NOT_PREPARED": "not_prepared",
+  "NO_KNOWN_DEFENCE": "no_known_defence",
+  "NO_LIBRARY_CONTROL": "no_library_control",
+  "TYPE_MISMATCH": "type_mismatch"
+ },
  "ThreatSource": {
   "AI_PROPOSED": "AI_PROPOSED",
   "LIBRARY": "LIBRARY"
  },
  "UnselectedReason": {
+  "NO_FURTHER_RISK": "no_further_risk",
   "REPLACED_AFTER_FAILURE": "replaced_after_failure",
   "TARGET_REACHED": "target_reached"
  },
  "ValidationStatus": {
   "OK": "ok",
   "WARNING": "warning"
- },
- "VersionWords": {
-  "AFTER": "after {version}",
-  "AND_LATER": "{version} and later",
-  "BEFORE": "before {version}",
-  "FROM": "from {version}",
-  "UP_TO": "up to {version}"
  },
  "WriterStyle": {
   "EVIDENCE_STORY": "evidence_story",

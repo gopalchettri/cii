@@ -1,4 +1,4 @@
--- The test database's tables (BLUEPRINT R-11): the 7 library tables and the 10 platform tables TSG's procedures
+-- The test database's tables: the 7 library tables and the 10 platform tables TSG's procedures
 -- read, with only the columns they use, the same types as DevTest5, and the same unique keys (the procedures rely
 -- on them: names are unique among non-deleted rows). Built by scripts/build_sql_test_database.py into a database
 -- of its own (never DevTest5), then seeded by tests/sql/seed.sql.

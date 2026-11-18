@@ -6,10 +6,11 @@ import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 from uuid import uuid4
 
 import numpy as np
@@ -17,9 +18,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app import container
+from app import ai, worker
 from app.ai.chat import TruncatedAiAnswer
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AiOutage,
@@ -29,7 +30,6 @@ from app.core.constants import (
     Lease,
     MapperConflict,
     MapperDecisionFailure,
-    MapperMessage,
     MappingOverall,
     Status,
     StoredProcedure,
@@ -37,25 +37,128 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Conflict, JobFailed, Unavailable
-from app.data_access.admin.audit_repository import AuditRepository
-from app.data_access.jobs.job_repository import JobLease
-from app.data_access.service_mapper.catalog_repository import ServiceCatalogRepository
-from app.data_access.service_mapper.mapping_repository import MappingRepository
-from app.domain.service_mapper import generate
-from app.domain.service_mapper.answer_checks import answer_problems
-from app.domain.service_mapper.catalog import build_catalog
-from app.domain.service_mapper.generate import generate_result
-from app.domain.service_mapper.reconcile import reconcile
-from app.domain.service_mapper.views import approved_relationships, pending_relationships
-from app.models.admin.api_clients import Principal
-from app.models.service_mapper.catalog import CatalogRows, CatalogService, CatalogSnapshot, SectorAssociation
-from app.models.service_mapper.contract import CreateMappingRequest, DependencyDecisionRequest
-from app.models.service_mapper.generation import GeneratedAnswer, ProposedDependency
-from app.search.service_mapper import ServiceCandidateSearch
-from app.services.service_mapper.service_mapper_service import ServiceMapperService
+from app.core.security import Principal
+from app.crud import service_mapper as mapper_crud
+from app.crud.jobs import JobLease
+from app.domain.service_mapper import catalog as catalog_module
+from app.domain.service_mapper import generate, mappings
+from app.domain.service_mapper.catalog import CatalogService, CatalogSnapshot, SectorAssociation
+from app.domain.service_mapper.generate import GeneratedAnswer, ProposedDependency, answer_problems, reconcile
+from app.realtime import publisher
+from app.schemas.service_mapper import CreateMappingRequest, DependencyDecisionRequest
 from app.worker import jobs
-from app.worker.service_mapper.job import ServiceMapperJob
+from app.worker import service_mapper as mapper_worker
 from tests.conftest import ADMIN
+
+
+@dataclass(frozen=True)
+class CatalogRows:
+    services: list[dict[str, Any]]
+    sectors: list[dict[str, Any]]
+    sector_links: list[dict[str, Any]]
+    entity_links: list[dict[str, Any]]
+
+
+def build_catalog(rows: CatalogRows) -> CatalogSnapshot:
+    return catalog_module.build_catalog(rows.services, rows.sectors, rows.sector_links, rows.entity_links)
+
+
+def pending_relationships(result: dict) -> list[dict[str, str]]:
+    return [
+        {"dependency_id": dependency["dependency_id"], "direction": direction}
+        for dependency in result.get("dependencies", [])
+        for direction, relation in dependency["relations"].items()
+        if relation["isAccepted"] is None
+    ]
+
+
+def approved_relationships(record: dict) -> list[tuple[dict, str]]:
+    return [
+        (dependency, direction)
+        for dependency in (record.get("result") or {}).get("dependencies", [])
+        for direction, relation in dependency["relations"].items()
+        if relation["isAccepted"] is True
+    ]
+
+
+def generate_result(chat, search, request, catalog, ident, counts, held=()) -> dict:  # noqa: PLR0913
+    record = {
+        "_id": ident[0],
+        "request": request.model_dump(),
+        "limits": {"max_upstream": counts[0], "max_downstream": counts[1]},
+        "result": {"dependencies": list(held)},
+    }
+    with mock.patch.object(generate, "candidates", search.candidates):
+        return generate.generate_result(chat, catalog, record, ident[1])
+
+
+class ServiceMapperJob:
+    """The worker's run with its catalog, search and chat model swapped; `mappings` None saves for real."""
+
+    def __init__(self, mappings: Any, catalog: Any, search: Any, chat: Any) -> None:
+        self.mappings, self.catalog, self.search, self.chat = mappings, catalog, search, chat
+
+    def generate(self, lease: Any) -> None:
+        lease.record.setdefault("_id", lease.record_id)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(mapper_worker, "catalog_snapshot", self.catalog.snapshot))
+            stack.enter_context(mock.patch.object(generate, "candidates", self.search.candidates))
+            stack.enter_context(mock.patch.object(ai.chat, "get_service_mapper_chat_model", lambda: self.chat))
+            if self.mappings is not None:
+                stack.enter_context(mock.patch.object(mapper_crud, "finish_run", self.mappings.finish_generation))
+            mapper_worker.generate_run(lease)
+
+
+class ServiceCandidateSearch:
+    """The catalog search with its embedding model swapped."""
+
+    def __init__(self, embeddings: Any) -> None:
+        self.embeddings = embeddings
+
+    def candidates(self, catalog: CatalogSnapshot, queries: list[str]) -> list[CatalogService]:
+        catalog_module._index.clear()
+        if hasattr(self, "_for_catalog"):
+            catalog_module._index.update(index=self._for_catalog(catalog), version=catalog.version)
+        with mock.patch.object(ai.embeddings, "get_embedding_model", lambda: self.embeddings):
+            return catalog_module.candidates(catalog, queries)
+
+
+class ServiceMapperService:
+    """The mapper's lifecycle functions over the test database, called as the routes call them."""
+
+    def create_service_mapping(self, principal, body, key, derived=False):
+        return mappings.create_mapping(get_mongodb(), principal, body, key, derived)
+
+    def regenerate_service_mapping(self, principal, mapping_id, key, derived=False):
+        return mappings.regenerate_mapping(get_mongodb(), principal, mapping_id, key, derived)
+
+    def decide_dependencies(self, principal, mapping_id, body):
+        return mappings.decide_dependencies(get_mongodb(), principal, mapping_id, body)
+
+    def get_service_mapping(self, principal, mapping_id):
+        return mappings.mapping_view(mappings.owned_mapping(get_mongodb(), principal, mapping_id))
+
+    def get_service_mapping_status(self, principal, mapping_id):
+        return mappings.mapping_status(mappings.owned_mapping(get_mongodb(), principal, mapping_id))
+
+    def list_service_mappings(self, principal, entity_id, offset, limit):
+        return mappings.list_mappings(get_mongodb(), principal, entity_id, offset, limit)
+
+
+_seams: dict[str, Any] = {}
+
+
+@pytest.fixture(autouse=True)
+def _mapper_seams(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settings, job sender, catalog and publisher the lifecycle uses; _mapper() sets them per test."""
+    _seams.clear()
+    _seams.update(settings=None, send=lambda *_job: None, catalog=_catalog, publish=lambda _mapping_id: None)
+    monkeypatch.setattr(mappings, "get_settings", lambda: _seams["settings"] or get_settings())
+    monkeypatch.setattr(worker, "send_job", lambda *job: _seams["send"](*job))
+    monkeypatch.setattr(mappings, "catalog_snapshot", lambda: _seams["catalog"]())
+    monkeypatch.setattr(publisher, "publish_mapping_status", lambda mapping_id: _seams["publish"](mapping_id))
+    catalog_module._catalog.clear()
+    catalog_module._index.clear()
 
 
 def _request() -> CreateMappingRequest:
@@ -87,13 +190,8 @@ def _catalog_rows() -> CatalogRows:
             {"sector_id": 11, "sector_name": "Power", "parent_sector_id": 10},
             {"sector_id": 20, "sector_name": "Water", "parent_sector_id": None},
         ],
-        sector_links=[
-            {"service_id": 1, "sector_id": 11},
-            {"service_id": 2, "sector_id": 20},
-        ],
-        entity_links=[
-            {"service_id": 2, "sector_id": 20, "entity_id": 86, "entity_name": "Example Utility"},
-        ],
+        sector_links=[{"service_id": 1, "sector_id": 11}, {"service_id": 2, "sector_id": 20}],
+        entity_links=[{"service_id": 2, "sector_id": 20, "entity_id": 86, "entity_name": "Example Utility"}],
     )
 
 
@@ -113,21 +211,13 @@ def _answer() -> GeneratedAnswer:
             "upstream_services": [
                 _item("Water Treatment Service", reason),
                 _item("Water Treatment Service", reason),
-                _item(
-                    "Fuel Logistics Service",
-                    "It delivers fuel directly to the plant for generation.",
-                    "Energy",
-                ),
+                _item("Fuel Logistics Service", "It delivers fuel directly to the plant for generation.", "Energy"),
                 _item("Electricity", "A one-word resource is too vague to present as a service."),
                 _item("Power Generation System", "The selected service cannot depend directly on itself."),
             ],
             "downstream_services": [
-                _item(
-                    "Water Treatment Service", "It directly consumes plant electricity to run water pumps."
-                ),
-                _item(
-                    "Grid Balancing Service", "It directly takes the plant's generation output for balancing."
-                ),
+                _item("Water Treatment Service", "It directly consumes plant electricity to run water pumps."),
+                _item("Grid Balancing Service", "It directly takes the plant's generation output for balancing."),
             ],
         }
     )
@@ -208,13 +298,7 @@ def test_a_new_service_like_a_catalog_one_is_asked_to_use_it_and_a_merely_relate
 def test_two_catalog_services_with_one_name_are_told_apart_by_sector() -> None:
     def grid(service_id: int, sector: str) -> CatalogService:
         return CatalogService(
-            service_id,
-            "Grid Control Service",
-            "",
-            (SectorAssociation(service_id, sector, None, None),),
-            (),
-            "",
-            "",
+            service_id, "Grid Control Service", "", (SectorAssociation(service_id, sector, None, None),), (), "", ""
         )
 
     catalog = CatalogSnapshot("same-name", ("Energy", "Water"), (), (grid(5, "Energy"), grid(6, "Water")))
@@ -228,10 +312,7 @@ def test_two_catalog_services_with_one_name_are_told_apart_by_sector() -> None:
                 "downstream_services": [_item("Grid Control Service", reason, sector)],
             }
         )
-        return [
-            item["service_id"]
-            for item in reconcile("m", 1, _request(), answer, catalog, 5, 5)["dependencies"]
-        ]
+        return [item["service_id"] for item in reconcile("m", 1, _request(), answer, catalog, 5, 5)["dependencies"]]
 
     assert kept("Water") == [6]
     assert kept(None) == []  # a shared name without its sector is never guessed
@@ -257,9 +338,7 @@ class _Chat:
         self.problems: list[str] = []
         self.reuse_earlier_answer = False
 
-    def ask_for_checked_json(
-        self, _task, _system, prompt, check, first_answer_check, reuse_earlier_answer=False
-    ):
+    def ask_for_checked_json(self, _task, _system, prompt, check, first_answer_check, reuse_earlier_answer=False):
         self.prompts.append(json.loads(prompt))
         self.reuse_earlier_answer = reuse_earlier_answer
         first = self.answers.pop(0)
@@ -315,9 +394,7 @@ def test_the_prompt_sends_names_never_a_catalog_id_and_not_the_selected_service(
         {
             "sector": "Water",
             "subsector": None,
-            "services": [
-                {"service_name": "Water Treatment Service", "description": "Supplies treated cooling water."}
-            ],
+            "services": [{"service_name": "Water Treatment Service", "description": "Supplies treated cooling water."}],
         },
         {"sector": "Energy", "subsector": "Power", "services": []},  # empty groups last
     ]
@@ -352,9 +429,7 @@ def test_the_selected_services_recorded_dependencies_lead_and_a_shared_service_i
     power = SectorAssociation(10, "Energy", 11, "Power")
     water, grid = SectorAssociation(20, "Water", None, None), SectorAssociation(10, "Energy", 12, "Grid")
     selected = CatalogService(1, "Power Generation System", "", (power,), (), "Fuel supply", "Grid operator")
-    shared = CatalogService(
-        2, "Water Treatment Service", "Supplies treated water.", (water, grid), (), "", ""
-    )
+    shared = CatalogService(2, "Water Treatment Service", "Supplies treated water.", (water, grid), (), "", "")
     catalog = CatalogSnapshot("v", ("Energy", "Water"), (power, water, grid), (selected, shared))
     chat = _Chat(_answer().model_dump(), _answer().model_dump())
     generate_result(chat, _Search(), _request(), catalog, ("mapping", 1), (2, 1))  # type: ignore[arg-type]
@@ -396,9 +471,7 @@ def test_a_new_service_named_in_two_forms_is_kept_once_in_a_list_and_across_list
 def test_a_catalog_too_large_for_the_prompt_keeps_the_most_similar_services() -> None:
     water = SectorAssociation(20, "Water", None, None)
     services = tuple(
-        CatalogService(
-            number, f"Water Service {number}", "Treats and supplies water. " * 9, (water,), (), "", ""
-        )
+        CatalogService(number, f"Water Service {number}", "Treats and supplies water. " * 9, (water,), (), "", "")
         for number in range(1, 41)
     )
     catalog = CatalogSnapshot("large", ("Water",), (water,), services)
@@ -478,7 +551,7 @@ def test_a_truncated_ai_answer_fails_the_job_with_a_clear_message() -> None:
     record = {"request": _request().model_dump(), "limits": {"max_upstream": 2, "max_downstream": 2}}
     with pytest.raises(JobFailed) as failed:
         job.generate(SimpleNamespace(record=record, record_id="mapping", epoch=1))  # type: ignore[arg-type]
-    assert failed.value.message == MapperMessage.AI_ANSWER_TOO_LONG
+    assert failed.value.message == mapper_worker._TOO_LONG
 
 
 def _over_the_limits() -> dict[str, Any]:
@@ -550,13 +623,9 @@ def test_a_new_service_named_with_the_recorded_text_is_asked_again() -> None:
     """Live 2026-10-23 (DESC register): given its recorded upstream, the AI named "services" such as
     "Technology, hosting and cybersecurity providers", the record's headings. Each is asked again; a real name
     never is."""
-    record = (
-        "1. Emergency communications and telecom services - radio links. 2. Technology, hosting providers."
-    )
+    record = "1. Emergency communications and telecom services - radio links. 2. Technology, hosting providers."
     catalog = _catalog()
-    services = tuple(
-        replace(s, upstream_context=record) if s.service_id == 1 else s for s in catalog.services
-    )
+    services = tuple(replace(s, upstream_context=record) if s.service_id == 1 else s for s in catalog.services)
     reason = "Inferred: the plant cannot be dispatched without what this service provides."
     answer = GeneratedAnswer.model_validate(
         {
@@ -569,16 +638,12 @@ def test_a_new_service_named_with_the_recorded_text_is_asked_again() -> None:
             "downstream_services": [],
         }
     )
-    copied = [
-        p for p in answer_problems(_request(), answer, replace(catalog, services=services)) if "copies" in p
-    ]
+    copied = [p for p in answer_problems(_request(), answer, replace(catalog, services=services)) if "copies" in p]
     assert copied == [
         f'"{name}" copies the recorded text, not a service: name the specific service that provides it'
         for name in ("Emergency Communications and Telecom Services", "Technology, Hosting Providers")
     ]
-    assert [
-        p for p in answer_problems(_request(), answer, catalog) if "copies" in p
-    ] == []  # nothing recorded
+    assert [p for p in answer_problems(_request(), answer, catalog) if "copies" in p] == []  # nothing recorded
 
 
 def test_the_job_sends_the_mappings_limits_to_the_ai_and_keeps_to_them() -> None:
@@ -619,7 +684,7 @@ def test_a_sector_name_with_a_trailing_space_or_shared_by_two_sectors_still_buil
             StoredProcedure.GET_SERVICE_MAPPER_ASSOCIATIONS: [sectors, links, []],
         }
         procedures = SimpleNamespace(execute_procedure=results.__getitem__)
-        catalog = build_catalog(ServiceCatalogRepository(procedures).load())  # type: ignore[arg-type]
+        catalog = build_catalog(CatalogRows(*mapper_crud.load_catalog_rows(procedures)))  # type: ignore[arg-type]
         assert [service.service_name for service in catalog.services] == ["Power Generation System"]
         assert catalog.services[0].sectors[0].sector_name == "Energy"
 
@@ -649,7 +714,7 @@ def test_semantic_retrieval_can_find_a_cross_sector_service_without_matching_wor
     found = ServiceCandidateSearch(Embeddings()).candidates(_catalog(), ["unrelated vocabulary"])
     assert searched == ["service"]
     assert found[0].service_name == "Water Treatment Service"
-    assert found[0].primary_sector.sector_name == "Water"
+    assert found[0].primary_names[0] == "Water"
 
 
 def test_the_candidate_search_fuses_every_question_and_breaks_a_tie_by_service_id() -> None:
@@ -699,9 +764,7 @@ def test_parallel_idempotent_starts_create_and_send_only_one_job(empty_test_data
     mapper, sent = _mapper()
     principal = Principal("client", "reviewer", 86, "tenant-a")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(
-            pool.map(lambda _: mapper.create_service_mapping(principal, _request(), "one-key"), range(2))
-        )
+        results = list(pool.map(lambda _: mapper.create_service_mapping(principal, _request(), "one-key"), range(2)))
     assert results[0][0].mapping_id == results[1][0].mapping_id
     assert sorted(created for _, created in results) == [False, True]
     assert len(sent) == 1
@@ -725,12 +788,10 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
             )
 
     mapper, sent = _mapper(catalog=Catalog(), published=published)
-    client.app.dependency_overrides[container.get_service_mapper_service] = lambda: mapper
+    del mapper
     try:
         minted = client.post(
-            "/v1/tsg/api-clients",
-            json={"name": "service-mapper-test"},
-            headers=ADMIN | {"X-User-Id": "admin"},
+            "/v1/tsg/api-clients", json={"name": "service-mapper-test"}, headers=ADMIN | {"X-User-Id": "admin"}
         ).json()
         headers = {
             "X-API-Key": minted["api_key"],
@@ -757,16 +818,12 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
         assert listed.status_code == 200 and listed.json()["services"][0]["service_id"] == 2
         assert client.get("/v1/entities/87/services", headers=headers).status_code == 403
         assert (
-            client.get(
-                f"/v1/service-mapper/{mapping_id}", headers=headers | {"X-Entity-Id": "87"}
-            ).status_code
-            == 403
+            client.get(f"/v1/service-mapper/{mapping_id}", headers=headers | {"X-Entity-Id": "87"}).status_code == 403
         )
 
         result = reconcile(mapping_id, 1, _request(), _answer(), _catalog(), 2, 2)
         get_mongodb()[Collection.SERVICE_MAPPINGS].update_one(
-            {"_id": mapping_id},
-            {"$set": {"status": Status.DONE, "result": result, "updated_at": datetime.now(UTC)}},
+            {"_id": mapping_id}, {"$set": {"status": Status.DONE, "result": result, "updated_at": datetime.now(UTC)}}
         )
         water = next(item for item in result["dependencies"] if item["service_id"] == 2)
         path, water_id = f"/v1/service-mapper/{mapping_id}/dependencies/decision", water["dependency_id"]
@@ -788,14 +845,12 @@ def test_mapper_api_scopes_records_and_stamps_each_direction(client: TestClient)
         whole = client.post(whole_path, json={"action": "accept"}, headers=headers)
         assert whole.status_code in (404, 405)
         regenerated = client.post(
-            f"/v1/service-mapper/{mapping_id}/regenerate",
-            headers=headers | {"Idempotency-Key": "regen-a"},
+            f"/v1/service-mapper/{mapping_id}/regenerate", headers=headers | {"Idempotency-Key": "regen-a"}
         )
         assert regenerated.status_code == 202, regenerated.text
         assert regenerated.json()["generation"] == 2
         regen_replay = client.post(
-            f"/v1/service-mapper/{mapping_id}/regenerate",
-            headers=headers | {"Idempotency-Key": "regen-a"},
+            f"/v1/service-mapper/{mapping_id}/regenerate", headers=headers | {"Idempotency-Key": "regen-a"}
         )
         assert regen_replay.status_code == 200 and regen_replay.json() == regenerated.json()
         kept = client.get(f"/v1/service-mapper/{mapping_id}", headers=headers).json()  # nothing wiped
@@ -817,27 +872,26 @@ def _mapper(
     emptied once per run: the mappings an earlier test made are removed first."""
     get_mongodb()[Collection.SERVICE_MAPPINGS].delete_many({})
     sent: list[tuple[Any, ...]] = []
-    mapper = ServiceMapperService(
-        MappingRepository(),
-        settings or container.get_settings(),
-        lambda *job: sent.append(job),
-        (lambda: build_catalog(catalog.load())) if catalog is not None else _catalog,
-        AuditRepository(),
-        published.append if published is not None else lambda _mapping_id: None,
+    _seams.update(
+        settings=settings,
+        send=lambda *job: sent.append(job),
+        catalog=(lambda: build_catalog(catalog.load())) if catalog is not None else _catalog,
+        publish=published.append if published is not None else lambda _mapping_id: None,
     )
-    return mapper, sent
+    return ServiceMapperService(), sent
 
 
-def test_the_service_picker_reads_the_sql_catalog_at_most_once_a_minute(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_service_picker_reads_the_sql_catalog_at_most_once_a_minute(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /v1/entities/{id}/services ran the 4 catalog procedures on every call, past the 60 s cache the
     worker already uses: the API's service now reads the catalog through that cache."""
     loads: list[int] = []
-    monkeypatch.setattr(ServiceCatalogRepository, "load", lambda _self: loads.append(1) or _catalog_rows())
-    service = container.get_service_mapper_service()
+    rows = _catalog_rows()
+    rows_read = (rows.services, rows.sectors, rows.sector_links, rows.entity_links)
+    monkeypatch.setattr(mapper_crud, "load_catalog_rows", lambda _sql: loads.append(1) or rows_read)
+    monkeypatch.setattr(catalog_module, "get_stored_procedure_client", lambda: None)
+    monkeypatch.setattr(mappings, "catalog_snapshot", catalog_module.catalog_snapshot)
     for _ in range(3):
-        service.list_entity_services(PRINCIPAL, PRINCIPAL.entity_id)
+        mappings.list_entity_services(PRINCIPAL, PRINCIPAL.entity_id)
     assert len(loads) <= 1
 
 
@@ -856,13 +910,14 @@ def test_the_mapping_list_reads_no_runs_dependencies(monkeypatch: pytest.MonkeyP
     """The list shows a few summary fields; it read every mapping whole, each run's dependencies included."""
     mapper, mapping_id, _ = _finished_mapping()
     read: list[dict] = []
-    listed = MappingRepository.list
+    listed = mapper_crud.list_mappings
 
-    def spy(self: MappingRepository, *args: Any, **kwargs: Any) -> list[dict]:
-        read.extend(records := listed(self, *args, **kwargs))
-        return records
+    def spy(*args: Any) -> tuple[list[dict], int]:
+        records, total = listed(*args)
+        read.extend(records)
+        return records, total
 
-    monkeypatch.setattr(MappingRepository, "list", spy)
+    monkeypatch.setattr(mapper_crud, "list_mappings", spy)
     page = mapper.list_service_mappings(PRINCIPAL, PRINCIPAL.entity_id, 0, 50)
     assert [item.mapping_id for item in page.items] == [mapping_id]
     assert all("dependencies" not in (record.get("result") or {}) for record in read) and read
@@ -882,7 +937,7 @@ def test_a_mapping_and_its_next_run_pass_the_rule_uat_stored_on_20_oct(empty_tes
     """UAT 29 Oct: every POST /v1/service-mapper answered 500. The 20 Oct rule still requires generation
     and UAT's database user may not change a rule (collMod), so each new record and each run started
     again carries generation, the latest run."""
-    MappingRepository().create_indexes()
+    mapper_crud.create_indexes(get_mongodb())
     required = ["_id", "tenant_id", "entity_id", "status", "generation", "job"]
     rule = {"$jsonSchema": {"bsonType": "object", "required": required}}
     get_mongodb().command("collMod", Collection.SERVICE_MAPPINGS, validator=rule, validationLevel="moderate")
@@ -911,14 +966,9 @@ def test_a_mapping_waiting_out_an_ai_outage_says_so_and_a_failed_one_names_the_o
         mapper.get_service_mapping_status(PRINCIPAL, mapping_id),
         mapper.get_service_mapping(PRINCIPAL, mapping_id),
     ):
-        assert shown.retrying is not None and (shown.retrying.reason, shown.retrying.attempt) == (
-            AiOutage.BUSY,
-            2,
-        )
+        assert shown.retrying is not None and (shown.retrying.reason, shown.retrying.attempt) == (AiOutage.BUSY, 2)
     error = {"code": "unavailable", "message": "The AI service is down.", "reason": AiOutage.DOWN}
-    mappings.update_one(
-        {"_id": mapping_id}, {"$set": {"status": Status.FAILED, "job.error": error, "job.retry": None}}
-    )
+    mappings.update_one({"_id": mapping_id}, {"$set": {"status": Status.FAILED, "job.error": error, "job.retry": None}})
     status = mapper.get_service_mapping_status(PRINCIPAL, mapping_id)
     view = mapper.get_service_mapping(PRINCIPAL, mapping_id)
     assert status.retrying is None and view.retrying is None
@@ -996,9 +1046,7 @@ def test_a_decision_request_drops_nulls_blanks_and_repeats(
         {"accept": ["x" * 65]},
     ],
 )
-def test_a_decision_request_with_nothing_to_decide_or_a_contradiction_is_refused(
-    body: dict[str, Any],
-) -> None:
+def test_a_decision_request_with_nothing_to_decide_or_a_contradiction_is_refused(body: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         DependencyDecisionRequest.model_validate(body)
 
@@ -1047,16 +1095,14 @@ def _run(mapping_id: str, answer: dict[str, Any], during: Callable[[], object] =
     """The mapping's queued run, done by the worker's own job under a real lease, the AI answering `answer`
     (again on a re-ask); `during` runs after the claim, before the run saves what it found."""
     chat = _Chat(answer, answer)
-    job = ServiceMapperJob(MappingRepository(), _Snapshot(), _Search(), chat)  # type: ignore[arg-type]
+    job = ServiceMapperJob(None, _Snapshot(), _Search(), chat)  # type: ignore[arg-type]
 
     def work(lease: JobLease) -> None:
         during()
         job.generate(lease)
 
     run = _record(mapping_id)["job"]["epoch"]
-    jobs.run_leased_job(
-        _task(), Collection.SERVICE_MAPPINGS, mapping_id, run, work, ("request", "limits", "result")
-    )
+    jobs.run_leased_job(_task(), Collection.SERVICE_MAPPINGS, mapping_id, run, work, ("request", "limits", "result"))
     assert _record(mapping_id)["status"] == Status.DONE
     return chat
 
@@ -1096,18 +1142,14 @@ def _decide_ids(mapper: ServiceMapperService, mapping_id: str, **ids: list[str])
 
 
 def _ids_by_name(mapping_id: str) -> dict[str, str]:
-    return {
-        item["service_name"]: item["dependency_id"] for item in _record(mapping_id)["result"]["dependencies"]
-    }
+    return {item["service_name"]: item["dependency_id"] for item in _record(mapping_id)["result"]["dependencies"]}
 
 
 def _map(mapping_id: str, run: int) -> tuple[TaskName, str, int]:
     return TaskName.MAP_SERVICES, mapping_id, run
 
 
-def test_generate_again_and_regenerate_add_only_new_services_and_keep_every_decision(
-    empty_test_database: None,
-) -> None:
+def test_generate_again_and_regenerate_add_only_new_services_and_keep_every_decision(empty_test_database: None) -> None:
     mapper, sent = _mapper()
     first, created = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)
     mapping_id = first.mapping_id
@@ -1183,28 +1225,26 @@ def test_a_key_sent_while_a_run_goes_on_replays_that_run_after_it_ends(empty_tes
 
 
 def _both_read_first(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
-    """MappingRepository's `method` waits until two calls at once both reach it, so each has read the mapping
+    """mapper_crud.`method` waits until two calls at once both reach it, so each has read the mapping
     before either writes: the race two clicks at once make, every time."""
     both = threading.Barrier(2)
-    real = getattr(MappingRepository, method)
+    real = getattr(mapper_crud, method)
 
-    def after_both(self: MappingRepository, *args: Any) -> Any:
+    def after_both(*args: Any) -> Any:
         both.wait(timeout=10)
-        return real(self, *args)
+        return real(*args)
 
-    monkeypatch.setattr(MappingRepository, method, after_both)
+    monkeypatch.setattr(mapper_crud, method, after_both)
 
 
 def test_two_clicks_at_once_make_one_mapping_and_one_run(
     empty_test_database: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mapper, sent = _mapper()
-    _both_read_first(monkeypatch, "create")  # both found no mapping for the service
+    _both_read_first(monkeypatch, "insert_mapping")  # both found no mapping for the service
     _both_read_first(monkeypatch, "start_next_run")  # both found it done
     with ThreadPoolExecutor(max_workers=2) as pool:
-        made = list(
-            pool.map(lambda _: mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex), range(2))
-        )
+        made = list(pool.map(lambda _: mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex), range(2)))
     assert len({accepted.mapping_id for accepted, _ in made}) == 1
     assert sorted(created for _, created in made) == [False, True]
     mapping_id = made[0][0].mapping_id
@@ -1249,12 +1289,7 @@ def test_a_run_that_would_repeat_one_that_found_nothing_is_not_started(empty_tes
         lambda: mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex),
     ):
         skipped, created = again()
-        assert (skipped.mapping_id, skipped.status, skipped.generation, created) == (
-            mapping_id,
-            Status.DONE,
-            2,
-            False,
-        )
+        assert (skipped.mapping_id, skipped.status, skipped.generation, created) == (mapping_id, Status.DONE, 2, False)
     assert (len(sent), _record(mapping_id)["generations_done"]) == (2, 2)  # no job sent, no run used
 
     edited = _request().model_copy(update={"service_description": "Generates electricity for the grid."})
@@ -1287,7 +1322,7 @@ def test_the_status_times_the_latest_runs_activities_only(empty_test_database: N
 
 
 def test_the_run_limit_counts_finished_runs_only(empty_test_database: None) -> None:
-    settings = container.get_settings().model_copy(update={"service_mapper_max_generations": 2})
+    settings = get_settings().model_copy(update={"service_mapper_max_generations": 2})
     mapper, _ = _mapper(settings)
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     _run(mapping_id, _answer().model_dump())
@@ -1308,14 +1343,12 @@ def test_the_run_limit_counts_finished_runs_only(empty_test_database: None) -> N
 
 
 def test_no_run_limit_when_the_setting_is_zero(empty_test_database: None) -> None:
-    settings = container.get_settings().model_copy(update={"service_mapper_max_generations": 0})
+    settings = get_settings().model_copy(update={"service_mapper_max_generations": 0})
     mapper, sent = _mapper(settings)
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     records = get_mongodb()[Collection.SERVICE_MAPPINGS]
     for _run_number in range(6):
-        records.update_one(
-            {"_id": mapping_id}, {"$set": {"status": Status.DONE}, "$inc": {"generations_done": 1}}
-        )
+        records.update_one({"_id": mapping_id}, {"$set": {"status": Status.DONE}, "$inc": {"generations_done": 1}})
         mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, uuid4().hex)
     assert len(sent) == 7
 
@@ -1346,28 +1379,24 @@ def test_a_failed_run_keeps_every_service_and_decision(empty_test_database: None
     _decide_ids(mapper, mapping_id, reject=[water])  # still decidable
 
 
-def test_deciding_before_the_first_run_found_anything_says_to_wait_or_regenerate(
-    empty_test_database: None,
-) -> None:
+def test_deciding_before_the_first_run_found_anything_says_to_wait_or_regenerate(empty_test_database: None) -> None:
     mapper, _ = _mapper()
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), uuid4().hex)[0].mapping_id
     _fail_run(mapping_id)
     with pytest.raises(Conflict) as refused:
         mapper.decide_dependencies(PRINCIPAL, mapping_id, DependencyDecisionRequest(accept=["any"]))
     assert (refused.value.status, refused.value.reason) == (409, None)
-    assert refused.value.detail == MapperMessage.MAPPING_NOT_READY
+    assert refused.value.detail == (
+        "The mapping has no services to decide yet: wait for its first run, or regenerate it if it failed."
+    )
 
 
-def test_the_same_key_replays_the_run_it_started_and_another_body_is_refused(
-    empty_test_database: None,
-) -> None:
+def test_the_same_key_replays_the_run_it_started_and_another_body_is_refused(empty_test_database: None) -> None:
     mapper, sent = _mapper()
     key, regen_key = uuid4().hex, uuid4().hex
     mapping_id = mapper.create_service_mapping(PRINCIPAL, _request(), key)[0].mapping_id
     _run(mapping_id, _answer().model_dump())
-    replayed, created = mapper.create_service_mapping(
-        PRINCIPAL, _request(), key
-    )  # done since: still a replay
+    replayed, created = mapper.create_service_mapping(PRINCIPAL, _request(), key)  # done since: still a replay
     assert (replayed.mapping_id, replayed.generation, created) == (mapping_id, 1, False)
     assert mapper.regenerate_service_mapping(PRINCIPAL, mapping_id, regen_key)[0].generation == 2
     _run(mapping_id, _second_answer())
@@ -1377,7 +1406,7 @@ def test_the_same_key_replays_the_run_it_started_and_another_body_is_refused(
     edited = _request().model_copy(update={"service_description": "Generates electricity for the grid."})
     with pytest.raises(Conflict) as other_body:
         mapper.create_service_mapping(PRINCIPAL, edited, key)
-    assert other_body.value.detail == MapperMessage.IDEMPOTENCY_KEY_CONFLICT
+    assert other_body.value.detail == "This Idempotency-Key was already used for another mapping input."
     derived = "derived-" + uuid4().hex  # the server's own key for a request that sent none
     mapper.create_service_mapping(PRINCIPAL, _request(), derived, derived=True)
     with pytest.raises(Conflict) as repeated:

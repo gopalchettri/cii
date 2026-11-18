@@ -44,9 +44,7 @@ def test_remaining_is_zero_exactly_when_a_next_set_asks_for_nothing() -> None:
     ]
     for combination in itertools.product(range(len(states)), repeat=3):
         paths = [_path(f"p{rank}", rank, **states[index]) for rank, index in enumerate(combination, start=1)]
-        assert (count_plan_paths(paths)["remaining"] == 0) == (pick_next_paths_to_write(paths, 6)[0] == []), (
-            combination
-        )
+        assert (count_plan_paths(paths)["remaining"] == 0) == (pick_next_paths_to_write(paths, 6)[0] == []), combination
 
 
 def test_a_finished_sets_summary_says_why_it_fell_short_or_was_the_last() -> None:
@@ -56,9 +54,7 @@ def test_a_finished_sets_summary_says_why_it_fell_short_or_was_the_last() -> Non
         "outcome": "complete", "delivered": 1, "reason": None, "remaining": 1,
     }  # fmt: skip
     given_up = [_path("p1", 1, served="s1"), _path("p2", 2, **_RULE)]
-    assert (
-        summarise_finished_set(given_up, given_up, "partial")["reason"] == ConflictReason.SCENARIOS_ABANDONED
-    )
+    assert summarise_finished_set(given_up, given_up, "partial")["reason"] == ConflictReason.SCENARIOS_ABANDONED
     last = [_path("p1", 1, served="s1"), _path("p2", 2, selected=False)]
     assert summarise_finished_set(last[:1], last, "complete")["reason"] == ConflictReason.TARGET_REACHED
     replaced = _path("p1", 1, **_RULE, selected=False, replaced_by="p2", served=None)

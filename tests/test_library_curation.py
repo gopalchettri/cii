@@ -1,4 +1,4 @@
-"""The curator's admin API (#23 list pending threats, #24 decide them; BLUEPRINT AD1, AD2, WF-10):
+"""The curator's admin API (#23 list pending threats, #24 decide them):
 T-ADM-01..03 and T-ADM-06, through the API on the SQL test database. Each test proposes its own pending
 threats, so other tests' rows never matter, and removes them after."""
 
@@ -10,12 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
-from app import container
 from app.core.constants import Collection, StoredProcedure
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.services.library.threat_library_service import ThreatLibraryService
+from app.crud.library import SqlOperationRepository, ThreatRepository, get_threat_repository
 from tests.conftest import ADMIN
 
 PENDING, DECISIONS = "/v1/tsg/library/pending", "/v1/tsg/library/decisions"
@@ -39,11 +36,10 @@ DELETE FROM dbo.Threat_Type WHERE ThreatTypeName LIKE N'Curation type %';
 def curation_on_the_sql_test_database(client: TestClient, sql_test_engine: Engine) -> Iterator[None]:
     procedures = StoredProcedureClient(sql_test_engine)
     threats = ThreatRepository(procedures, SqlOperationRepository(procedures))
-    service = ThreatLibraryService(threats, container.get_audit_repository())
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_threat_library_service] = lambda: service
+    overrides[get_threat_repository] = lambda: threats
     yield
-    overrides.pop(container.get_threat_library_service, None)
+    overrides.pop(get_threat_repository, None)
     with sql_test_engine.connect() as connection:
         connection.exec_driver_sql(_REMOVE_TEST_ROWS)
 
@@ -158,9 +154,7 @@ def test_a_wrong_decisions_body_is_refused_and_decides_nothing(
     assert pending in _pending(client)
 
 
-def test_each_decisions_call_is_audited_once_with_every_outcome(
-    client: TestClient, sql_test_engine: Engine
-) -> None:
+def test_each_decisions_call_is_audited_once_with_every_outcome(client: TestClient, sql_test_engine: Engine) -> None:
     """T-ADM-06: one library.decided record per call, findable by any of its ids, the X-User-Id as actor."""
     proposed = _propose(sql_test_engine, _new_type())["threat_catalogue_id"]
     _decide(client, {"approve": [proposed], "reject": [LIVE_THREAT]}, **{"X-User-Id": "curator-7"})

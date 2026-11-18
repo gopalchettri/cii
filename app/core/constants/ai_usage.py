@@ -4,8 +4,7 @@ a module's work each AI call is counted in, the hourly totals and the report lim
 from enum import StrEnum
 from typing import Final
 
-from app.core.constants.common import AiOutcome, AiTask
-from app.core.constants.job_modules import Module
+from app.core.constants.common import AiOutcome, AiTask, Module
 from app.core.constants.jobs import TaskName
 
 
@@ -26,6 +25,7 @@ class AiApi(StrEnum):
     """The API call that started a job's AI work (job.origin.api), stored on every usage row."""
 
     CREATE_SCENARIO = "create_scenario"  # POST /v1/sessions
+    CREATE_SESSION = "create_session"  # POST /v1/create_session
     NEXT_SET = "next_set"  # POST /v1/sessions/{id}/scenarios/next-set
     REGENERATE = "regenerate"  # a module's regenerate call (scenarios, a plan, a mapping)
     CREATE_PLAN = "create_plan"  # POST /v1/remediation
@@ -70,6 +70,8 @@ CHAT_TASK_BUCKETS: Final[dict[str, AiBucket]] = {
     AiTask.PLAN_CHECK: AiBucket.SCENARIO,
     AiTask.REMEDIATION_PLAN: AiBucket.REMEDIATION,
     AiTask.SERVICE_MAPPER: AiBucket.SERVICE_MAPPER,
+    AiTask.LINK_CONTROLS: AiBucket.CONTROLS,
+    AiTask.PICK_CONTROLS: AiBucket.CONTROLS,
 }
 #: An embedding or rerank call's part, by the job stage that made it.
 SEARCH_STAGE_BUCKETS: Final[dict[str, AiBucket]] = {
@@ -78,6 +80,7 @@ SEARCH_STAGE_BUCKETS: Final[dict[str, AiBucket]] = {
     TaskName.MAP_CONTROLS: AiBucket.CONTROLS,
     TaskName.WRITE_PLAN: AiBucket.CONTROLS,  # the plan's controls matched
     TaskName.MAP_SERVICES: AiBucket.SERVICE_MAPPER,  # catalog search
+    TaskName.LINK_MITIGATIONS: AiBucket.CONTROLS,  # each mitigation's candidate controls
 }
 
 #: Each module's parts, in report order: a report lists every one, 0 when it made no call.
@@ -119,25 +122,11 @@ GROUP_TIME_FORMATS: Final[dict[str, str]] = {
 
 class AiUsageLimits:
     ROLLUP_EVERY_SECONDS: Final = 300  # beat sends the hourly add-up this often (maintenance queue)
-    #: An add-up redoes this many hours before the newest it holds: an ask's rows are written when it ends,
-    #: so a long ask (retries, a re-ask) lands its rows in an hour already added up.
-    ROLLUP_LOOKBACK_HOURS: Final = 2
-    ROLLUP_LOCK_KEY: Final = "tsg:ai_usage:rollup"  # one add-up at a time, across workers
-    ROLLUP_LOCK_SECONDS: Final = 240  # under the interval: a crashed run never blocks the next one
-    ROLLUP_CHUNK_HOURS: Final = 24  # a catch-up after downtime adds up this many hours per read
-    #: A chunk's MongoDB time, well under ROLLUP_LOCK_SECONDS: the lock, renewed after each chunk, never runs
-    #: out while one is still writing.
-    ROLLUP_CHUNK_SECONDS: Final = 120
+    ROLLUP_CHUNK_SECONDS: Final = 120  # a day of the add-up's MongoDB time
     REPORT_SECONDS: Final = 30  # one report's MongoDB time; over it, 503
-    #: Reports one API process works on at once, off the threads the UI's routes use; one more answers 503
-    #: after REPORT_SLOT_WAIT_SECONDS (the routes need no key: report load never holds the UI's routes back).
-    REPORTS_AT_ONCE: Final = 2
-    KEPT_REPORTS_AT_ONCE: Final = (
-        4  # reports read from Redis at once per API process (each takes milliseconds)
-    )
-    REPORT_CACHE_SECONDS: Final = 60  # a report is served from Redis this long
-    REPORT_CACHE_KEY: Final = "tsg:ai_usage:report:{digest}"
-    REPORT_CACHE_MAX_BYTES: Final = 1_000_000  # a larger report is not kept in Redis (it shares the queues')
+    REPORTS_AT_ONCE: Final = 2  # reports one API process computes at once, off the UI routes' threads
+    REPORT_CACHE_SECONDS: Final = 60  # named in the frozen Swagger text
+    REPORT_CACHE_KEY: Final = "tsg:ai_usage:report:{digest}"  # pinned name (tests/contract/tsg_names.json)
     DEFAULT_SPAN_DAYS: Final = 30  # a totals report with no `since`
     MAX_SPAN_DAYS: Final = 366  # the longest totals report or request list
     MAX_GROUPS: Final = 10_000  # the most rows a totals report returns
@@ -145,10 +134,7 @@ class AiUsageLimits:
     PAGE_SIZE_MAX: Final = 500
     COPY_DAY_SECONDS: Final = 600  # copy-texts copies a day of call texts at a time, each within this
     REPORT_YEARS: Final = (2000, 9000)  # a report's since and until fall within these years
-    #: A report waits this long for a free place before answering 503: a cached one takes milliseconds, so a
-    #: dashboard's panels loading together all get theirs.
-    REPORT_SLOT_WAIT_SECONDS: Final = 2
-    ROLLUP_LOCK_WAIT_SECONDS: Final = 300  # a replay or rebuild by hand waits this long for the lock
+    REPORT_SLOT_WAIT_SECONDS: Final = 2  # a report waits this long for a free place, then 503
 
 
 class AiUsageLogEvent(StrEnum):
@@ -156,11 +142,6 @@ class AiUsageLogEvent(StrEnum):
     EXPIRY_FOUND = "ai.usage_expiry_found"  # a never-delete collection had an expiring index: dropped
     COMPRESSION_NOT_APPLIED = "ai.usage_compression_not_applied"  # created by another process, or no zstd
     ROLLUP_DONE = "ai.usage_rollup_done"
-    ROLLUP_BUSY = "ai.usage_rollup_busy"  # another add-up holds the lock: this one skips
-    ROLLUP_LOCK_LOST = (
-        "ai.usage_rollup_lock_lost"  # its lock ran out mid-run: it stopped; the next run redoes it
-    )
-    REPORT_CACHE_FAILED = "ai.usage_report_cache_failed"  # Redis down: the report is computed instead
 
 
 class AiUsageMessage(StrEnum):
@@ -173,8 +154,6 @@ class AiUsageMessage(StrEnum):
     BAD_CURSOR = "`after` is not a cursor this list returned."
     REQUEST_NOT_FOUND = "No AI usage is recorded for request '{request_id}'."
     REPORTS_BUSY = "AI usage reports are busy right now; try again in a few seconds."
-    ROLLUP_BUSY = "Another add-up of AI usage is running; try again in a few minutes."
-    ROLLUP_LOCK_LOST = "This add-up of AI usage ran past its lock and stopped; run it again."
     MONGO_TOO_SLOW = (
         "MongoDB did not answer in time ({error}). Rows already stored stay stored and the next 5-minute "
         "add-up counts them; run this again to count them now."

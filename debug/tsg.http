@@ -1,4 +1,4 @@
-# TSG v2: every API call, ready to send (docs/DEBUGGING.md). Needs the REST Client extension.
+# TSG v2: every API call, ready to send. Needs the REST Client extension.
 # Send a call: click "Send Request" above it, or put the cursor in it and press Ctrl+Alt+R. The answer opens beside
 # it, with the status, the headers (X-Request-Id) and the body.
 # Which TSG: the laptop by default. For UAT press Ctrl+Alt+E and choose "uat" (its address: .vscode/settings.json).

@@ -1,14 +1,16 @@
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 
-from app import container
-from app.api.dependencies import get_authenticated_principal
+from app.api.deps import get_authenticated_principal
 from app.core.constants import ApiKey, Collection, ErrorCode, Limits
 from app.core.database import get_mongodb
 from app.core.exceptions import Unauthorized
-from app.domain.admin.api_keys import hash_api_key
-from app.models.admin.api_clients import Principal
+from app.core.security import Principal, hash_api_key
+from app.crud import admin as admin_crud
 from tests.conftest import ADMIN
 
 URL = "/v1/tsg/api-clients"
@@ -52,13 +54,12 @@ def test_two_active_clients_cannot_share_a_name(client: TestClient) -> None:
 
 def test_revoke_stops_the_key_and_is_idempotent(client: TestClient) -> None:
     minted = _mint_api_client_via_api(client, "frontend-d")
-    service = container.get_admin_service()
-    assert service.get_api_client_id(minted["api_key"]) == minted["client_id"]
+    assert admin_crud.get_active_client_id(get_mongodb(), minted["api_key"]) == minted["client_id"]
     first = client.post(f"{URL}/{minted['client_id']}/revoke", headers=ADMIN)
     second = client.post(f"{URL}/{minted['client_id']}/revoke", headers=ADMIN)
     assert first.status_code == second.status_code == 200
     assert first.json()["active"] is False
-    assert service.get_api_client_id(minted["api_key"]) is None
+    assert admin_crud.get_active_client_id(get_mongodb(), minted["api_key"]) is None
 
 
 def test_revoking_an_unknown_client_is_404(client: TestClient) -> None:
@@ -67,17 +68,15 @@ def test_revoking_an_unknown_client_is_404(client: TestClient) -> None:
 
 def test_principal_needs_a_valid_key_and_all_identity_headers(client: TestClient) -> None:
     minted = _mint_api_client_via_api(client, "frontend-e")
-    service, request = container.get_admin_service(), Request({"type": "http", "headers": []})
+    db, request = get_mongodb(), Request({"type": "http", "headers": []})
+    with pytest.raises(Unauthorized):
+        get_authenticated_principal(request, db, api_key=minted["api_key"], user_id="u1", entity_id=86, tenant_id="   ")
     with pytest.raises(Unauthorized):
         get_authenticated_principal(
-            request, service, api_key=minted["api_key"], user_id="u1", entity_id=86, tenant_id="   "
-        )
-    with pytest.raises(Unauthorized):
-        get_authenticated_principal(
-            request, service, api_key=f"{ApiKey.PREFIX}wrong", user_id="u1", entity_id=86, tenant_id="DESC"
+            request, db, api_key=f"{ApiKey.PREFIX}wrong", user_id="u1", entity_id=86, tenant_id="DESC"
         )
     principal = get_authenticated_principal(
-        request, service, api_key=minted["api_key"], user_id=" u1 ", entity_id=86, tenant_id="DESC"
+        request, db, api_key=minted["api_key"], user_id=" u1 ", entity_id=86, tenant_id="DESC"
     )
     assert principal == Principal(minted["client_id"], "u1", 86, "DESC")
     assert request.state.client_id == minted["client_id"]  # for the request's access line
@@ -89,24 +88,22 @@ def test_a_name_of_only_spaces_is_refused(client: TestClient) -> None:
 
 def test_wrong_keys_are_never_cached() -> None:
     """The cause of unbounded growth: every distinct wrong key used to be remembered for a minute."""
-    service, repository = container.get_admin_service(), container.get_api_client_repository()
-    cached_before = len(repository._verified)
+    cached_before = len(admin_crud._verified)
     for attempt in range(50):
-        assert service.get_api_client_id(f"{ApiKey.PREFIX}guess_{attempt}") is None
-    assert len(repository._verified) == cached_before
+        assert admin_crud.get_active_client_id(get_mongodb(), f"{ApiKey.PREFIX}guess_{attempt}") is None
+    assert len(admin_crud._verified) == cached_before
 
 
 def test_a_key_that_cannot_be_one_tsg_minted_costs_no_database_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: every request with any junk X-API-Key made a MongoDB read (and held a thread while MongoDB
     was slow). Only a key with TSG's prefix and length is looked up."""
-    service = container.get_admin_service()
     reads: list[dict] = []
-    monkeypatch.setattr(container.get_api_client_repository(), "get", lambda *_, **where: reads.append(where))
+    db: Any = {Collection.API_CLIENTS: SimpleNamespace(find_one=lambda where, _: reads.append(where))}
     minted_length = len(ApiKey.PREFIX) + 43  # the prefix and secrets.token_urlsafe(32)
     for junk in ("", "secret", f"{ApiKey.PREFIX}short", "x" * minted_length, ApiKey.PREFIX + "a" * 44):
-        assert service.get_api_client_id(junk) is None
+        assert admin_crud.get_active_client_id(db, junk) is None
     assert reads == []
-    service.get_api_client_id(ApiKey.PREFIX + "a" * 43)  # a minted key's shape: looked up
+    admin_crud.get_active_client_id(db, ApiKey.PREFIX + "a" * 43)  # a minted key's shape: looked up
     assert len(reads) == 1
 
 

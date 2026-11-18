@@ -4,23 +4,11 @@ from enum import StrEnum
 from typing import Final
 
 from app.core.ai_tuning_settings import TUNING
-from app.core.constants.scenario import FindingSeverity
-
-
-class Applicability(StrEnum):
-    """Whether a vulnerability applies to the asset; a CVE alone never makes it confirmed."""
-
-    CONFIRMED = (
-        "confirmed"  # older stored evidence only: no product version is recorded, so none is confirmed
-    )
-    UNKNOWN = "unknown"  # the asset's product matches, is not recorded, or the record names none
-    NOT_APPLICABLE = "not_applicable"  # the asset's vendor or product differs
 
 
 class EvidenceRole(StrEnum):
-    """What an evidence entry proves: every entry is context now; direct is kept for older stored evidence."""
+    """What an evidence entry proves: every entry is context."""
 
-    DIRECT = "direct"
     CONTEXT = "context"
 
 
@@ -29,8 +17,6 @@ class EvidenceDecision(StrEnum):
 
     USED = "used"
     BELOW_THRESHOLD = "below_threshold"  # the reranker scored it under the threshold
-    NOT_APPLICABLE = "not_applicable"  # excluded by the applicability check
-    NO_PRODUCT_LINK = "no_product_link"  # a product-specific record the asset's recorded products cannot tie
     DUPLICATE = "duplicate"  # the same record already used for this threat
     OVER_LIMIT = "over_limit"  # more relevant records already fill the limit
 
@@ -50,8 +36,6 @@ class EvidenceLimits:
     MAX_FACTS: Final = 6  # plain sentences kept per evidence record
     REAL_WORLD_USERS: Final = 2  # named groups / malware per technique
     MITIGATIONS: Final = 3
-    RANGES_SAID: Final = 2  # affected version ranges and fixed versions put in one sentence
-    VERSION_MAX_CHARS: Final = 40  # a version longer than this, or with odd characters, is not said
     SEARCHES_AT_ONCE: Final = 8  # reranker calls in flight for one batch
     RERANKS_KEPT: Final = 2_000  # scored searches kept per process, the oldest dropped first
 
@@ -80,7 +64,6 @@ class TextCleaning:
     RAW_FACTOR: Final = 8  # characters read per kept character: cleaning shrinks text, a prefix is enough
     MIN_RAW_CHARS: Final = 4_096
     MAX_ROUNDS: Final = 4  # normalise + strip rounds until the text is stable
-    TOKEN_MAX_CHARS: Final = 47  # a longer run is no identifier: it is sanitised, and a blob is refused
     ENCODED_BLOB_MIN: Final = 48  # base64-like run of this many characters is an encoded payload
     MIXED_BLOB_MIN: Final = 32  # the same with digits, lower and upper case all present
     HEX_BLOB_MIN: Final = 40
@@ -94,14 +77,13 @@ class TextCleaning:
 
 class FactWordLimits:
     MAX_TACTICS: Final = 4  # attacker goals put in one sentence
-    MAX_NAME_CHARS: Final = 60  # a longer vendor, product, group, software or mitigation name is not a name
+    MAX_NAME_CHARS: Final = 60  # a longer group, software, tactic or mitigation name is not a name
 
 
 class NameGrammar:
     """What a name field may look like: a few capitalised words, never a sentence or an instruction."""
 
     MAX_WORDS: Final = 7  # the longest real ATT&CK name has 7
-    MAX_VERSION_WORDS: Final = 3  # "2019 R2", "1.0 SP1": a version with more words is a sentence
     MAX_FUNCTION_WORDS: Final = 2
     FUNCTION_WORDS: Final = frozenset({
         "a", "an", "the", "this", "that", "these", "those", "to", "of", "for", "in", "on", "at", "by", "with",
@@ -128,12 +110,8 @@ class EvidenceReason(StrEnum):
     """Why a candidate was left out, for the reviewer who opens a threat's search audit."""
 
     BELOW_THRESHOLD = "Scored {score:.1f} of 100, under the {threshold:g} needed."  # score rounded down
-    DIFFERENT_PRODUCT = "Concerns {vendor} {product}; the asset records none of that vendor or product."
-    OTHER_PRODUCT_OF_VENDOR = "Concerns {vendor} {product}; the asset records only other products."
-    NO_PRODUCT_LINK = "Concerns a specific product; nothing the asset records ties the asset to it."
     DUPLICATE = "The same record is already used for this threat."
     OVER_LIMIT = "More relevant records already fill the {limit} places for this threat."
-    VERSION_NOT_AFFECTED = "Concerns {vendor} {product}; the asset's recorded version is not an affected one."
 
 
 class EvidenceFact(StrEnum):
@@ -143,44 +121,17 @@ class EvidenceFact(StrEnum):
     USED_BY = "{name}, {what}, has used this technique."
     CAMPAIGN_USED = "The {name} used this technique."  # `name` ends in "campaign"
     MITIGATED_BY = "It can be reduced by: {mitigations}."
-    KEV_LISTED = "CISA lists weaknesses in {vendor} {product} as exploited in real attacks (added {date})."
-    KEV_LISTED_UNNAMED = "CISA lists a weakness as exploited in real attacks (added {date})."
-    RANSOMWARE = "Ransomware groups are known to have used it."
-    LIKELIHOOD = "It scored {percent}% likelihood of exploitation in the next 30 days."
-    ADVISORY = "A CISA advisory for {product} describes {impact}."
-    ADVISORY_UNNAMED = "A CISA advisory describes {impact}."
-    ADVISORY_IMPACT = "security weaknesses that could be exploited"
-    VERSIONS_AND_FIXED = "It affects versions {ranges}; fixed in {fixed}."
-    VERSIONS_ONLY = "It affects versions {ranges}."
-    FIXED_ONLY = "It is fixed in {fixed}."
-    SEVERITY = "Its seriousness is rated {severity} ({score} of 10)."
-    SEVERITY_WORD = "Its seriousness is rated {severity}."
 
 
-class VersionWords(StrEnum):
-    """How an affected version range is said in plain words."""
-
-    FROM = "from {version}"
-    AFTER = "after {version}"
-    UP_TO = "up to {version}"
-    BEFORE = "before {version}"
-    AND_LATER = "{version} and later"
-
-
-#: Lower bound of a 0-10 score and its word, highest first; a score under the last bound says nothing.
 #: Who used a technique, as EvidenceFact.USED_BY and CAMPAIGN_USED say it; a campaign ATT&CK names only by
 #: its id (C0027) is no name.
 REAL_WORLD_USER: Final = (
     r"(?P<name>.+?), (?P<what>[^,]+), has used this technique\."
     r"|The (?P<campaign>(?!C\d{4} ).+) used this technique\."
 )
-SEVERITY_BANDS: Final = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
 #: How a source names the kind of actor behind a technique.
-ACTOR_KIND_WORDS: Final[dict[str, str]] = {
-    "group": "a threat group",
-    "software": "a piece of malicious software",
-}
+ACTOR_KIND_WORDS: Final[dict[str, str]] = {"group": "a threat group", "software": "a piece of malicious software"}
 
 #: THREAT_CONTEXT_COUNTRY as a deployment may write it -> the country.
 PLACE_WORDS: Final[dict[str, str]] = {
@@ -265,11 +216,6 @@ class StoryFindingCode(StrEnum):
     INJECTION_ECHO = "injection_echo"  # the draft repeats an instruction aimed at an AI
 
 
-STORY_FINDING_SEVERITIES: Final[dict[StoryFindingCode, FindingSeverity]] = {
-    code: FindingSeverity.BLOCKER for code in StoryFindingCode
-}
-
-
 class StoryFindingMessage(StrEnum):
     UNKNOWN_MARKER = (
         "Uses the marker(s) {markers}, but the writer cites nothing: the platform adds any cited precedent "
@@ -279,18 +225,9 @@ class StoryFindingMessage(StrEnum):
     INJECTION_ECHO = "Repeats text that reads as an instruction to an AI system. Remove it."
 
 
-class RecordedFields:
-    """The asset and system facts naming a vendor or product, read to tie evidence to the asset."""
-
-    VENDOR_KEYS: Final = ("vendor_name",)
-    PRODUCT_KEYS: Final = ("technology_used", "operating_system")
-
-
 #: Rerank models EVIDENCE_SIMILARITY_THRESHOLD is calibrated on: the date and the threshold found there
 #: (scripts/calibrate_evidence_threshold.py).
-EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, tuple[str, float]]] = {
-    "bge-reranker-v2-m3": ("2026-10-19", 30.0)
-}
+EVIDENCE_THRESHOLD_CALIBRATED_ON: Final[dict[str, tuple[str, float]]] = {"bge-reranker-v2-m3": ("2026-10-19", 30.0)}
 
 
 class EvidenceSettingMessage(StrEnum):

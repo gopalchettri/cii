@@ -1,4 +1,4 @@
-# TSG alerts (docs/BLUEPRINT.md §22.3). Every expression uses a metric that exists today: tests/test_observability.py
+# TSG alerts. Every expression uses a metric that exists today: tests/test_observability.py
 # checks each name against the app's metrics, and rules.test.yml proves each alert fires.
 # summary = what is wrong, in plain words; description = what to do. Both show on the TSG dashboard and in
 # Grafana Alerting.
@@ -163,19 +163,6 @@ groups:
           description: >-
             Check that the worker taking them is not stuck or too busy, then the clock of beat's node against
             the workers': oc debug node/<node> -- chroot /host chronyc tracking.
-
-      # A job with no lease check (AI call or wait) for Lease.STALL_SECONDS stops renewing its lease
-      # (app/worker/lease_renewal.py): the reaper gives it to another worker; its thread may still hold a slot.
-      - alert: JobHung
-        expr: sum(increase(tsg_jobs_hung_total[1h])) > 0
-        for: 1m
-        labels: { severity: warning }
-        annotations:
-          summary: A job made no progress for 15 minutes and was stopped as hung in the last hour.
-          description: >-
-            Grafana Explore, Loki: {app="tsg"} |= "job.stalled" names it (record_id, task). The reaper runs it
-            again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts
-            its pod.
 
   - name: tsg-dependencies
     rules:

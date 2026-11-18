@@ -1,18 +1,17 @@
-"""Environment settings: connections, AI endpoints/models, secrets, and the operational limits the owner tunes
-per environment (request size, AI calls at once; 2026-10-09). Business values: core/constants/. Every field
-here has a line in .env, .env.uat and .env.example (tests/test_config.py checks the names)."""
+"""Environment settings: connections, AI models, secrets and limits; every field has a line in each .env file."""
 
 import re
-from typing import Literal
+from dataclasses import dataclass, fields
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AfterValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.ai_tuning_settings import AiTuningSettings
-from app.core.chat_settings import ChatModelSettings
 from app.core.constants import (
     COUNTRY_REGIONS,
     PLACE_WORDS,
+    ChatModule,
     ContextProperties,
     Env,
     ErrorMessage,
@@ -20,25 +19,91 @@ from app.core.constants import (
     Limits,
     PropertyMessage,
 )
-from app.core.proxy_url import ProxyUrl
 from app.core.singletons import singleton
 
 _WORD_RANGE = re.compile(r"\s*(\d+)\s*-\s*(\d+)\s*")
 
 
-class AiOutputSettings(BaseSettings):
-    """What the AI produces: a scenario's controls (owner 2026-10-13, G225) and text lengths (G226), and the
-    service mapper's counts. Settings reads these too (one class would be too long)."""
+def _refuse_a_proxy_url_without_scheme(value: SecretStr) -> SecretStr:
+    proxy = value.get_secret_value()
+    if proxy and not proxy.startswith(("http://", "https://")):
+        raise ValueError(ErrorMessage.PROXY_URL_WITHOUT_SCHEME)  # else every outside call fails later, unexplained
+    return value
 
-    # A scenario's controls, in five steps: the CONTROL_CANDIDATES closest library controls that fit the asset
-    # type are found; the reranker scores each 0-100; every one at or above CONTROL_SIMILARITY_THRESHOLD is
-    # kept as "strong" (the owner's 0.50 is 50); never more than MAX_CONTROLS; fewer than MIN_CONTROLS strong:
-    # the nearest top them up to it; none strong: the NEAREST_CONTROLS nearest are kept as "fallback". Never
-    # zero (owner 2026-10-13, G227; 3 / 5 / 3, owner 2026-10-21).
+
+#: CII_PROXY_URL: an http(s):// address every outside call goes through (AI calls too unless
+#: CII_AI_BYPASS_PROXY); blank = HTTP(S)_PROXY, else Windows' setting. Never *_PROXY: Python reads those.
+ProxyUrl = Annotated[SecretStr, AfterValidator(_refuse_a_proxy_url_without_scheme)]
+
+
+@dataclass(frozen=True)
+class ModuleChat:
+    """One module's chat settings as it uses them (Settings.chat_of)."""
+
+    base_url: str
+    api_key: SecretStr
+    model: str
+    model_thinking: bool
+    max_input_tokens: int | None  # None: the model's own (app/ai/profiles.py)
+    max_output_tokens: int | None
+    timeout_seconds: int | None
+    requests_per_minute: int
+    tokens_per_minute: int
+    max_concurrent_ai_calls: int
+
+
+class ChatModelSettings(BaseSettings):
+    """Each module's own chat model, key and gateway (CII_<MODULE>_CHAT_...); thinking false = off; token
+    limits and timeout blank = the model's profile; rates 0 = no limit; calls at once 0 = 429s only."""
+
+    scenario_chat_base_url: str
+    scenario_chat_api_key: SecretStr
+    scenario_chat_model: str
+    scenario_chat_model_thinking: bool = False
+    scenario_chat_max_input_tokens: int | None = Field(default=None, ge=1024)
+    scenario_chat_max_output_tokens: int | None = Field(default=None, ge=256)
+    scenario_chat_timeout_seconds: int | None = Field(default=None, ge=5, le=1800)
+    scenario_chat_requests_per_minute: int = Field(default=0, ge=0)
+    scenario_chat_tokens_per_minute: int = Field(default=0, ge=0)
+    scenario_max_concurrent_ai_calls: int = Field(default=16, ge=0)
+
+    remediation_chat_base_url: str
+    remediation_chat_api_key: SecretStr
+    remediation_chat_model: str
+    remediation_chat_model_thinking: bool = False
+    remediation_chat_max_input_tokens: int | None = Field(default=None, ge=1024)
+    remediation_chat_max_output_tokens: int | None = Field(default=None, ge=256)
+    remediation_chat_timeout_seconds: int | None = Field(default=None, ge=5, le=1800)
+    remediation_chat_requests_per_minute: int = Field(default=0, ge=0)
+    remediation_chat_tokens_per_minute: int = Field(default=0, ge=0)
+    remediation_max_concurrent_ai_calls: int = Field(default=16, ge=0)
+
+    service_mapper_chat_base_url: str
+    service_mapper_chat_api_key: SecretStr
+    service_mapper_chat_model: str
+    service_mapper_chat_model_thinking: bool = False
+    service_mapper_chat_max_input_tokens: int | None = Field(default=None, ge=1024)
+    service_mapper_chat_max_output_tokens: int | None = Field(default=None, ge=256)
+    service_mapper_chat_timeout_seconds: int | None = Field(default=None, ge=5, le=1800)
+    service_mapper_chat_requests_per_minute: int = Field(default=0, ge=0)
+    service_mapper_chat_tokens_per_minute: int = Field(default=0, ge=0)
+    service_mapper_max_concurrent_ai_calls: int = Field(default=16, ge=0)
+
+    def chat_of(self, module: ChatModule) -> ModuleChat:
+        """`module`'s chat model, key, thinking and limits, from its CII_<MODULE>_ lines."""
+        own = {f.name: getattr(self, f"{module}_chat_{f.name}") for f in fields(ModuleChat)[:-1]}
+        return ModuleChat(**own, max_concurrent_ai_calls=getattr(self, f"{module}_max_concurrent_ai_calls"))
+
+
+class AiOutputSettings(BaseSettings):
+    """What the AI produces: a scenario's controls, text lengths and the service mapper's counts."""
+
+    # Controls scoring at least CONTROL_SIMILARITY_THRESHOLD (0-100) are "strong", at most MAX_CONTROLS; fewer
+    # than MIN_CONTROLS: the nearest top them up; none: the NEAREST_CONTROLS nearest are kept as "fallback".
     control_similarity_threshold: float = Field(
         default=50.0, ge=0, le=100, validation_alias="CONTROL_SIMILARITY_THRESHOLD"
     )
-    # No value in code (owner 2026-10-15, G249): read only from the env file; missing, the app does not start.
+    # No default: missing from the env file, the app does not start.
     control_candidates: int = Field(ge=1, validation_alias="CONTROL_CANDIDATES")
     min_controls: int = Field(default=3, ge=1, validation_alias="MIN_CONTROLS")
     max_controls: int = Field(default=5, ge=1, validation_alias="MAX_CONTROLS")
@@ -47,14 +112,9 @@ class AiOutputSettings(BaseSettings):
     threat_scenario_word_limit: str = Field(default="150-200", validation_alias="THREAT_SCENARIO_WORD_LIMIT")
     risk_statement_word_limit: str = Field(default="100-150", validation_alias="RISK_STATEMENT_WORD_LIMIT")
     # The evidence passage ending a story, on top of the scenario statement's own limit.
-    evidence_statement_word_limit: str = Field(
-        default="30-80", validation_alias="EVIDENCE_STATEMENT_WORD_LIMIT"
-    )
-    # the country the assets are in ("UAE" or "United Arab Emirates"): with external intelligence on,
-    # planning and the writer read it as a fact; it ranks nothing.
-    threat_context_country: str = Field(
-        default="United Arab Emirates", validation_alias="THREAT_CONTEXT_COUNTRY"
-    )
+    evidence_statement_word_limit: str = Field(default="30-80", validation_alias="EVIDENCE_STATEMENT_WORD_LIMIT")
+    # The country the assets are in ("UAE" or "United Arab Emirates"): a fact for the writer; it ranks nothing.
+    threat_context_country: str = Field(default="United Arab Emirates", validation_alias="THREAT_CONTEXT_COUNTRY")
     # Services the AI is asked for per direction (fewer is fine, none in both lists); 0 turns a direction off.
     service_mapper_upstream_total_count: int = Field(
         default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_UPSTREAM_TOTAL_COUNT"
@@ -63,9 +123,7 @@ class AiOutputSettings(BaseSettings):
         default=10, ge=0, le=100, validation_alias="SERVICE_MAPPER_DOWNSTREAM_TOTAL_COUNT"
     )
     # Runs per mapping, the first included (Generate, then Generate again or Regenerate); 0 = no limit.
-    service_mapper_max_generations: int = Field(
-        default=5, ge=0, validation_alias="SERVICE_MAPPER_MAX_GENERATIONS"
-    )
+    service_mapper_max_generations: int = Field(default=5, ge=0, validation_alias="SERVICE_MAPPER_MAX_GENERATIONS")
 
     @model_validator(mode="after")
     def refuse_output_limits_that_cannot_work(self) -> "AiOutputSettings":
@@ -81,15 +139,11 @@ class AiOutputSettings(BaseSettings):
             )
         if 0 < (value := self.control_similarity_threshold) < 1:
             message = ErrorMessage.CONTROL_THRESHOLD_AS_FRACTION
-            raise ValueError(
-                message.format(setting="CONTROL_SIMILARITY_THRESHOLD", value=value, percent=value * 100)
-            )
+            raise ValueError(message.format(setting="CONTROL_SIMILARITY_THRESHOLD", value=value, percent=value * 100))
         _ = self.scenario_words, self.risk_words, self.evidence_words  # an unreadable range stops start-up
         if self.context_country not in COUNTRY_REGIONS:
             message = ErrorMessage.COUNTRY_UNKNOWN
-            raise ValueError(
-                message.format(value=self.threat_context_country, known=", ".join(COUNTRY_REGIONS))
-            )
+            raise ValueError(message.format(value=self.threat_context_country, known=", ".join(COUNTRY_REGIONS)))
         return self
 
     @property
@@ -124,12 +178,12 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )
 
-    # Safe by default: a deployment that forgets CII_ENV gets production's checks (the laptop's .env: dev).
+    # A deployment that forgets CII_ENV gets production's checks.
     env: Env = Env.PROD
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"  # a typo stops start-up, not logging
-    # Also the JSON log lines in <log_dir>/api.log and worker-<name>.log for the local Loki; pods: empty.
+    # JSON log files for the laptop's local Loki; pods: empty.
     log_dir: str = ""
-    # Comma-separated browser origins; empty = none (the API is called server to server).
+    # Comma-separated browser origins; empty = none.
     cors_origins: str = ""
 
     db_dsn: str
@@ -138,8 +192,6 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     redis_url: str
     redis_celery_broker_url: str
     redis_ca_file: str = ""  # the CA that signed a rediss:// server's certificate; empty = the system's CAs
-
-    # Each module's chat model: ChatModelSettings (app/core/chat_settings.py).
 
     embedding_base_url: str
     embedding_api_key: SecretStr
@@ -158,12 +210,9 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
 
     admin_api_key: SecretStr = SecretStr("")
 
-    # Each worker pod serves its /metrics (AI calls, jobs) on this port for Prometheus.
     worker_metrics_port: int = 9100
 
-    # Largest request body, in MB, for every request. FastAPI reads a body before it checks the caller's
-    # key, so this bounds what anyone can make a pod read. One limit for all (owner, 2026-10-09): no endpoint
-    # takes file uploads; one that does gets its own limit by its address, never by the Content-Type.
+    # Largest request body, in MB: a body is read before the key is checked, so this bounds what anyone sends.
     max_request_mb: int = Field(default=2, gt=0)
     # Most search calls (embedding, reranker) at once, all pods; a call waits for a free slot (AiSlots).
     # 0 = only a 429's limit; v1 16. Each module's chat calls have their own (ChatModelSettings).
@@ -172,39 +221,24 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     embedding_requests_per_minute: int = Field(default=0, ge=0)
     rerank_requests_per_minute: int = Field(default=0, ge=0)
 
-    # How many scenarios a run writes
-    # 0 = every valid path found; N = the N most relevant, the rest kept in the plan as target_reached.
-    # Applied only after every path is found and ranked; never padded. A negative, decimal or text value
-    # stops start-up.
+    # Scenarios a run writes: 0 = every valid path; N = the N most relevant, the rest kept as target_reached.
     total_scenario_count: int = Field(default=0, ge=0, validation_alias="TOTAL_SCENARIO_COUNT")
-    # Scenarios are written set by set, only when asked (owner 2026-10-11, as v1): the run writes its first
-    # INITIAL_SET_SIZE paths so a reviewer can start reading, then each "next set" call writes the next
-    # NEXT_SET_SIZE. A review batch size, never a limit: the total still comes from TOTAL_SCENARIO_COUNT.
+    # Scenarios are written set by set: the first INITIAL_SET_SIZE, then NEXT_SET_SIZE per "next set" call.
     initial_set_size: int = Field(default=6, ge=1, validation_alias="INITIAL_SET_SIZE")
     next_set_size: int = Field(default=6, ge=1, validation_alias="NEXT_SET_SIZE")
-    # Versions kept per remediation plan: all live in one MongoDB record (100-400 KB each), and MongoDB
-    # refuses a record over 16 MB, so 40 is the hard upper limit. 10 = the first plan + 9 regenerates.
+    # Versions kept per plan, all in one MongoDB record (100-400 KB each, 16 MB cap): 40 at most.
     regenerations_max_version_count: int = Field(
         default=10, ge=1, le=40, validation_alias="REGENERATIONS_MAX_VERSION_COUNT"
     )
 
-    # How similar a match must be, 0-100 on the reranker's relevance scale, one scale for both: a control
-    # kept for a scenario (CONTROL_SIMILARITY_THRESHOLD, AiOutputSettings); an AI-proposed threat that
-    # IS a library threat or takes a library type.
+    # Reranker score (0-100) at which an AI-proposed threat IS a library threat or takes a library type.
     threat_similarity_threshold: float = Field(
         default=75.0, ge=0, le=100, validation_alias="THREAT_SIMILARITY_THRESHOLD"
     )
 
-    # External intelligence (CISA KEV, EPSS, MITRE ATT&CK, CISA ICS, NVD). ENABLED is the MASTER switch: false
-    # means nothing is read, searched or shown, whatever an admin sets at run time (the run-time switch can
-    # only turn it off, never on). OFF unless an environment says true: a deployment that forgets the line
-    # stays the original TSG. Owner's names, without the CII_ prefix.
-    external_intelligence_enabled: bool = Field(
-        default=False, validation_alias="EXTERNAL_INTELLIGENCE_ENABLED"
-    )
-    # The lowest reranker score (0-100) at which an intelligence record counts as evidence for a threat. A
-    # ranking score, not a probability, and provisional: calibrate per environment and per reranker model
-    # (declared like THREAT_SIMILARITY_THRESHOLD, but on its own scale).
+    # External intelligence master switch, off by default: false means nothing is read, searched or shown.
+    external_intelligence_enabled: bool = Field(default=False, validation_alias="EXTERNAL_INTELLIGENCE_ENABLED")
+    # Lowest reranker score (0-100) at which an intelligence record is evidence; calibrate per reranker model.
     evidence_similarity_threshold: float = Field(
         default=1.0, ge=0, le=100, validation_alias="EVIDENCE_SIMILARITY_THRESHOLD"
     )
@@ -212,23 +246,14 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
     evidence_candidates: int = Field(default=30, ge=1, le=100, validation_alias="EVIDENCE_CANDIDATES")
     # Intelligence records kept per threat after the reranker: the writer sees them all and cites one.
     evidence_kept_per_threat: int = Field(default=3, ge=1, le=10, validation_alias="EVIDENCE_KEPT_PER_THREAT")
-    # Optional NVD key (a secret): raises NVD's rate limit from 5 to 50 requests per 30 s. Empty = unkeyed.
-    nvd_api_key: SecretStr = SecretStr("")
 
-    # Which asset and supporting-system facts a run requires (a start without one is refused 422;
-    # comma-separated column names of dbo.tsg_GetAssetContext; empty = none. Which facts a run
-    # USES is the procedure's choice: every column it returns.
-    asset_properties_required: str = Field(
-        default="", validation_alias=ContextProperties.ASSET_REQUIRED_SETTING
-    )
-    system_properties_required: str = Field(
-        default="", validation_alias=ContextProperties.SYSTEM_REQUIRED_SETTING
-    )
+    # Comma-separated dbo.tsg_GetAssetContext columns a run requires (a start without one is refused 422).
+    asset_properties_required: str = Field(default="", validation_alias=ContextProperties.ASSET_REQUIRED_SETTING)
+    system_properties_required: str = Field(default="", validation_alias=ContextProperties.SYSTEM_REQUIRED_SETTING)
 
     @model_validator(mode="after")
     def refuse_unsafe_settings_outside_dev(self) -> "Settings":
-        """UAT and production refuse settings that are only acceptable on a laptop: start-up stops with the
-        reason instead of running open. A "*" CORS origin is refused in production only."""
+        """UAT and production refuse laptop-only settings: start-up stops with the reason."""
         if self.env is Env.DEV:
             return self
         if self.env is Env.PROD and "*" in self.cors_origin_list:
@@ -236,14 +261,13 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
         admin_key = self.admin_api_key.get_secret_value()
         if admin_key and len(admin_key) < Limits.MIN_ADMIN_KEY_CHARS:
             raise ValueError(ErrorMessage.ADMIN_KEY_TOO_SHORT.format(minimum=Limits.MIN_ADMIN_KEY_CHARS))
-        refuse_unset_evidence_threshold(self)
+        if self.external_intelligence_enabled and "evidence_similarity_threshold" not in self.model_fields_set:
+            raise ValueError(EvidenceSettingMessage.THRESHOLD_NOT_SET)
         return self
 
     @model_validator(mode="after")
     def refuse_always_used_properties(self) -> "Settings":
-        """Every environment: id, name, category_code and alias are always used, never a fact a run can lack;
-        requiring one stops start-up. A name the procedure does not return is refused at the first run, which
-        is when the procedure is read (app/domain/scenario/session.py check_required_facts)."""
+        """id, name, category_code and alias are always used: requiring one stops start-up."""
         for setting, text in (
             (ContextProperties.ASSET_REQUIRED_SETTING, self.asset_properties_required),
             (ContextProperties.SYSTEM_REQUIRED_SETTING, self.system_properties_required),
@@ -265,19 +289,7 @@ class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
         return frozenset(_names(self.system_properties_required))
 
 
-def refuse_unset_evidence_threshold(settings: Settings) -> None:
-    """Outside dev, external intelligence on needs EVIDENCE_SIMILARITY_THRESHOLD set explicitly: each
-    reranker model scores on its own scale, so no default is safe (a value left to the default is not in
-    model_fields_set)."""
-    if (
-        settings.external_intelligence_enabled
-        and "evidence_similarity_threshold" not in settings.model_fields_set
-    ):
-        raise ValueError(EvidenceSettingMessage.THRESHOLD_NOT_SET)
-
-
 def _names(text: str) -> list[str]:
-    """A comma-separated list, as written (order kept for messages), blanks dropped."""
     return [name.strip() for name in text.split(",") if name.strip()]
 
 

@@ -6,14 +6,11 @@ import importlib.util
 import re
 from pathlib import Path
 
-from app.search.external_intelligence.corpus_builder import build_corpus
-from app.search.external_intelligence.evidence_index import build_index
+from app.domain.intel.index import build_corpus, build_index
 from tests.external_intelligence.evidence_fakes import ScoredBy, TextEmbeddings, technique_doc
 
 REPO = Path(__file__).resolve().parents[2]
-_SPEC = importlib.util.spec_from_file_location(
-    "calibrate", REPO / "scripts" / "calibrate_evidence_threshold.py"
-)
+_SPEC = importlib.util.spec_from_file_location("calibrate", REPO / "scripts" / "calibrate_evidence_threshold.py")
 calibrate = importlib.util.module_from_spec(_SPEC)  # type: ignore[arg-type]
 _SPEC.loader.exec_module(calibrate)  # type: ignore[union-attr]
 
@@ -73,9 +70,7 @@ def test_with_no_precise_threshold_the_best_f1_is_recommended() -> None:
 def test_the_script_reads_the_csv_and_prints_the_table(tmp_path: Path, capsys) -> None:  # noqa: ANN001
     assert calibrate.main([str(_csv(tmp_path))], _fake().score_relevance, HITS) == 0
     out = capsys.readouterr().out
-    assert (
-        "threshold   kept  precision  recall" in out and "recommended EVIDENCE_SIMILARITY_THRESHOLD=40" in out
-    )
+    assert "threshold   kept  precision  recall" in out and "recommended EVIDENCE_SIMILARITY_THRESHOLD=40" in out
     assert calibrate.main([], _fake().score_relevance, HITS) == 2
 
 

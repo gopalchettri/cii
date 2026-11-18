@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -16,16 +16,17 @@ import pytest
 from app.core.config import get_settings
 from app.core.constants import ContextProperties, Decision, LibraryRowKind, RunActionKind
 from app.core.exceptions import AppError, Conflict
+from app.core.security import Principal
+from app.crud import work_control
+from app.domain.scenario import runs as service_module
 from app.domain.scenario import session
 from app.domain.scenario.session import build_scenario_view, build_status_board
-from app.models.admin.api_clients import Principal
-from app.models.library.library import PendingLibraryRow, RejectedLibraryThreat, ThreatLibrary
-from app.models.scenario.asset_context import AssetContextRows
-from app.models.scenario.views import AcceptRequest, StartRunRequest, session_status_from_record
-from app.services.scenario import threat_scenario_service as service_module
-from app.services.scenario.threat_scenario_service import ThreatScenarioService
+from app.schemas.library import PendingLibraryRow, RejectedLibraryThreat, ThreatLibrary
+from app.schemas.scenario_internal import AssetContextRows
+from app.schemas.scenarios import AcceptRequest, StartRunRequest, session_status_from_record
 from tests.planner_samples import ACTORS, THREATS
 from tests.scenario_goldens import GOLDENS, check_golden
+from tests.service_builders import use_scenario_parts
 
 NOW = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)
 CARDS = json.loads(
@@ -59,8 +60,7 @@ def _errors(call: Callable[[], Any]) -> list[dict[str, Any]]:
 _SERVICE_PARTS = (
     "sessions",
     "scenarios",
-    "assets",
-    "work_control",
+    "get_asset_context",
     "threats",
     "threat_library",
     "switch",
@@ -71,9 +71,11 @@ _SERVICE_PARTS = (
 )
 
 
-def _service(**parts: Any) -> ThreatScenarioService:
-    """The scenario service on stand-ins: each part a MagicMock unless given."""
-    return ThreatScenarioService(**{name: parts.get(name) or MagicMock() for name in _SERVICE_PARTS})
+def _service(monkeypatch: pytest.MonkeyPatch, **parts: Any) -> ModuleType:
+    """The scenario runs on stand-ins: each part (and work_control's resume) a MagicMock unless given."""
+    resume = (parts.pop("work_control", None) or MagicMock()).resume_scenario_controls
+    monkeypatch.setattr(work_control, "resume_scenario_controls", resume)
+    return use_scenario_parts(monkeypatch, **{name: parts.get(name) or MagicMock() for name in _SERVICE_PARTS})
 
 
 @pytest.fixture(autouse=True)
@@ -133,16 +135,12 @@ OPTIONS = [
 ]
 
 
-def _rows(
-    asset: dict[str, Any] | None = None, systems: list[dict[str, Any]] | None = None, **fields: Any
-) -> Any:
+def _rows(asset: dict[str, Any] | None = None, systems: list[dict[str, Any]] | None = None, **fields: Any) -> Any:
     defaults = {
         "asset": _asset_row() if asset is None else asset,
         "services": [{"id": 1624, "name": "Electricity supply", "linked": False}],
         "sector": None,
-        "systems": systems
-        if systems is not None
-        else [_system_row(1567), _system_row(1568), _system_row(1570)],
+        "systems": systems if systems is not None else [_system_row(1567), _system_row(1568), _system_row(1570)],
         "options": copy.deepcopy(OPTIONS),
     }
     return AssetContextRows(**(defaults | fields))
@@ -150,7 +148,7 @@ def _rows(
 
 def _frozen(request: StartRunRequest, rows: Any) -> Any:
     context = session.build_run_context(request, rows)
-    return {"record": context.to_record(), "missing_facts": context.missing_facts}
+    return {"record": context.to_record()}
 
 
 def test_golden_session_start_checks_and_frozen_context() -> None:
@@ -165,12 +163,8 @@ def test_golden_session_start_checks_and_frozen_context() -> None:
             REQUEST.model_copy(update={"sector_id": 5, "subsector_id": 51}),
             _rows(sector={"id": 51, "name": "Grid", "parent_id": 6, "parent_name": "Power"}),
         ),
-        "facts_missing": lambda: _frozen(
-            REQUEST, _rows(asset=_asset_row(data_handled=None), systems=no_past)
-        ),
-        "head_missing": lambda: _frozen(REQUEST, _rows(systems=[{"id": 1567}, {"id": 1568}])),
+        "facts_missing": lambda: _frozen(REQUEST, _rows(asset=_asset_row(data_handled=None), systems=no_past)),
         "reserved_name": lambda: _frozen(REQUEST, _rows(asset=_asset_row(alias="x"))),
-        "options_shape": lambda: _frozen(REQUEST, _rows(options=[{"code": "priority", "label": "High"}])),
         "required_not_returned": lambda: _frozen(
             REQUEST, _rows(asset={k: v for k, v in _asset_row().items() if k != "data_handled"})
         ),
@@ -178,18 +172,18 @@ def test_golden_session_start_checks_and_frozen_context() -> None:
     check_golden("session_start", {name: _raised(case) for name, case in cases.items()})
 
 
-def _replayed(earlier: dict[str, Any]) -> None:
+def _replayed(monkeypatch: pytest.MonkeyPatch, earlier: dict[str, Any]) -> None:
     """The service's replay check of `earlier`, the run that took the key."""
     sessions = MagicMock()
     sessions.get.return_value = earlier
-    _service(sessions=sessions)._replay(PRINCIPAL, REQUEST, "key-1", False)
+    _service(monkeypatch, sessions=sessions)._replay(PRINCIPAL, REQUEST, "key-1", False)
 
 
-def _intel_checked(snapshot: dict[str, Any]) -> None:
+def _intel_checked(monkeypatch: pytest.MonkeyPatch, snapshot: dict[str, Any]) -> None:
     """The service's check that the active intelligence snapshot holds data, intelligence on."""
     switch, snapshots = MagicMock(), MagicMock()
     switch.is_on.return_value, snapshots.get.return_value = True, snapshot
-    _service(switch=switch, intel_snapshots=snapshots)._refuse_without_intel_data()
+    _service(monkeypatch, switch=switch, intel_snapshots=snapshots)._refuse_without_intel_data()
 
 
 def test_golden_session_replay_fingerprint_and_intel_checks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,10 +197,10 @@ def test_golden_session_replay_fingerprint_and_intel_checks(monkeypatch: pytest.
         "other_body": earlier | {"request_hash": "x"},
         "no_hash": {"asset_id": 1206, "kind": "generated"},
     }
-    replays = {name: _raised(lambda e=e: _replayed(e)) for name, e in cases.items()}
+    replays = {name: _raised(lambda e=e: _replayed(monkeypatch, e)) for name, e in cases.items()}
     intel = {
-        "none": _raised(lambda: _intel_checked({})),
-        "indexed": _raised(lambda: _intel_checked({"counts": {"indexed": 3}})),
+        "none": _raised(lambda: _intel_checked(monkeypatch, {})),
+        "indexed": _raised(lambda: _intel_checked(monkeypatch, {"counts": {"indexed": 3}})),
     }
     check_golden("session_replay", {"fingerprint": fingerprint, "replays": replays, "intel": intel})
 
@@ -266,9 +260,7 @@ SESSIONS = {
             "error": {"code": "job_abandoned", "message": "Abandoned.", "reason": "worker_stopped"},
         },
     ),
-    "cancelled_finding": _session(
-        status="cancelled", step="threats", cancelled={"user_id": "u-2", "at": NOW}
-    ),
+    "cancelled_finding": _session(status="cancelled", step="threats", cancelled={"user_id": "u-2", "at": NOW}),
     "mapping_controls": _session(
         counts={"planned": 6, "written": 6, "controls_waiting": 2},
         controls_delivery={
@@ -298,9 +290,7 @@ SESSIONS = {
 
 
 def test_golden_session_status_boards() -> None:
-    boards = {
-        name: build_status_board(session_status_from_record(record)) for name, record in SESSIONS.items()
-    }
+    boards = {name: build_status_board(session_status_from_record(record)) for name, record in SESSIONS.items()}
     check_golden("session_boards", boards)
 
 
@@ -327,15 +317,11 @@ def _views() -> dict[str, Any]:
     manual = done | {
         "source": "manual",
         "content": done["content"]
-        | {
-            "threat": done["content"]["threat"]
-            | {"library_id": None, "library_status": "pending", "type_id": None}
-        },
+        | {"threat": done["content"]["threat"] | {"library_id": None, "library_status": "pending", "type_id": None}},
     }
     cards = {
         "done_pending": done,
-        "story_accepted": _with_controls(story)
-        | {"decision": "accepted", "decided_by": "u-1", "decided_at": NOW},
+        "story_accepted": _with_controls(story) | {"decision": "accepted", "decided_by": "u-1", "decided_at": NOW},
         "rejected_controls_failed": done
         | {
             "decision": "rejected",
@@ -343,8 +329,7 @@ def _views() -> dict[str, Any]:
             "decided_at": NOW,
             "controls": {"status": "failed", "attempts": 5, "error": {"code": "x"}},
         },
-        "controls_queued": done
-        | {"controls": {"status": "queued", "attempts": 2, "error": {"code": "busy"}}},
+        "controls_queued": done | {"controls": {"status": "queued", "attempts": 2, "error": {"code": "busy"}}},
         "outage_card": failed,
         "blocked": done
         | {
@@ -364,8 +349,7 @@ def _views() -> dict[str, Any]:
                 {"code": "plan_check", "severity": "note", "message": "n"},
             ]
         },
-        "regenerated": done
-        | {"version": 2, "generation": {"epoch": 4, "started_at": NOW, "finished_at": NOW}},
+        "regenerated": done | {"version": 2, "generation": {"epoch": 4, "started_at": NOW, "finished_at": NOW}},
     }
     views = {name: build_scenario_view(card) for name, card in cards.items()}
     views["with_history"] = build_scenario_view(cards["regenerated"], "other-accepted", [done])
@@ -405,7 +389,7 @@ TARGETS = {
 PRINCIPAL = Principal(client_id="c-1", user_id="u-1", entity_id=86, tenant_id="t-1")
 
 
-def _controls_pending(scenario_ids: list[str]) -> list[str]:
+def _controls_pending(monkeypatch: pytest.MonkeyPatch, scenario_ids: list[str]) -> list[str]:
     """The ids an accept of `scenario_ids` reports as still waiting for their controls."""
     scenarios = MagicMock()
     scenarios.list.side_effect = lambda fields, **where: (
@@ -413,38 +397,38 @@ def _controls_pending(scenario_ids: list[str]) -> list[str]:
     )
     scenarios.update_scenario_decisions.side_effect = lambda ids, *rest: len(ids)
     library = ThreatLibrary((), (), threats_without_category=(1,))
-    service = _service(scenarios=scenarios, threat_library=lambda: library)
+    service = _service(monkeypatch, scenarios=scenarios, threat_library=lambda: library)
     run = session_status_from_record(_session())
     accepted = service.accept_threat_scenarios(PRINCIPAL, run, AcceptRequest(scenario_ids=scenario_ids))
     return accepted.controls_pending
 
 
-def _nothing_to_accept() -> None:
+def _nothing_to_accept(monkeypatch: pytest.MonkeyPatch) -> None:
     """The service's accept-all on a run with no written scenario."""
     scenarios = MagicMock()
     scenarios.list.return_value = []
-    _service(scenarios=scenarios)._everything_acceptable("run-golden-1")
+    _service(monkeypatch, scenarios=scenarios)._everything_acceptable("run-golden-1")
 
 
-def _resumes_cancelled_controls(record: dict[str, Any]) -> bool:
+def _resumes_cancelled_controls(monkeypatch: pytest.MonkeyPatch, record: dict[str, Any]) -> bool:
     """Whether a regenerate queued on the run resumes the controls a cancel stopped."""
-    sessions, work_control, switch = MagicMock(), MagicMock(), MagicMock()
+    sessions, work, switch = MagicMock(), MagicMock(), MagicMock()
     sessions.update_scenario_session_job.return_value = None
-    work_control.resume_scenario_controls.return_value = 0
+    work.resume_scenario_controls.return_value = 0
     switch.is_on.return_value = False
-    service = _service(sessions=sessions, work_control=work_control, switch=switch)
+    service = _service(monkeypatch, sessions=sessions, work_control=work, switch=switch)
     service._queue_write_job(PRINCIPAL, session_status_from_record(record), RunActionKind.REGENERATE, [])
-    return bool(work_control.resume_scenario_controls.called)
+    return bool(work.resume_scenario_controls.called)
 
 
-def _cancel_seen(record: dict[str, Any]) -> Any:
+def _cancel_seen(monkeypatch: pytest.MonkeyPatch, record: dict[str, Any]) -> Any:
     """The cancel stamp a next set with no path left resumes the stopped controls under."""
-    sessions, work_control = MagicMock(), MagicMock()
+    sessions, work = MagicMock(), MagicMock()
     sessions.get.return_value = {"plan": {"paths": []}}
-    work_control.resume_scenario_controls.return_value = 1
-    service = _service(sessions=sessions, work_control=work_control)
+    work.resume_scenario_controls.return_value = 1
+    service = _service(monkeypatch, sessions=sessions, work_control=work)
     service.write_next_threat_scenario_set(PRINCIPAL, session_status_from_record(record))
-    return work_control.resume_scenario_controls.call_args.args[1]
+    return work.resume_scenario_controls.call_args.args[1]
 
 
 def test_golden_session_review_rules(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -457,25 +441,17 @@ def test_golden_session_review_rules(monkeypatch: pytest.MonkeyPatch) -> None:
         name: _raised(lambda r=r: session.check_session_ready_for_review(session_status_from_record(r)))
         for name, r in SESSIONS.items()
     }
-    cancelled = [_resumes_cancelled_controls(record) for record in SESSIONS.values()]
-    controls_pending = _controls_pending(["a", "h"])
+    cancelled = [_resumes_cancelled_controls(monkeypatch, record) for record in SESSIONS.values()]
+    controls_pending = _controls_pending(monkeypatch, ["a", "h"])
     stamp = service_module._new_decided_stamp(PRINCIPAL)
-    monkeypatch.setattr(
-        service_module, "check_session_ready_for_review", lambda run: None
-    )  # every run's cancel stamp
+    monkeypatch.setattr(service_module, "check_session_ready_for_review", lambda run: None)  # every run's cancel stamp
     outcome = {
         "accept": _errors(lambda: session.get_scenarios_to_decide(ids, TARGETS, Decision.ACCEPTED, known)),
         "reject": _errors(lambda: session.get_scenarios_to_decide(ids, TARGETS, Decision.REJECTED, known)),
-        "decidable": _raised(
-            lambda: session.get_scenarios_to_decide(["a", "h"], TARGETS, Decision.ACCEPTED, known)
-        ),
-        "not_decidable": _raised(
-            lambda: session.get_scenarios_to_decide(ids, TARGETS, Decision.ACCEPTED, known)
-        ),
+        "decidable": _raised(lambda: session.get_scenarios_to_decide(["a", "h"], TARGETS, Decision.ACCEPTED, known)),
+        "not_decidable": _raised(lambda: session.get_scenarios_to_decide(ids, TARGETS, Decision.ACCEPTED, known)),
         "accept_all": session.pick_scenarios_for_accept_all(list(TARGETS.values()), {"p1": "zz"}, known),
-        "replace_off": _raised(
-            lambda: session.find_versions_to_replace([TARGETS["a"]], {"p1": "old"}, False)
-        ),
+        "replace_off": _raised(lambda: session.find_versions_to_replace([TARGETS["a"]], {"p1": "old"}, False)),
         "replace_on": session.find_versions_to_replace([TARGETS["a"]], {"p1": "old"}, True),
         "outcome": session.read_decision_results(
             ["a", "b", "h"],
@@ -489,9 +465,9 @@ def test_golden_session_review_rules(monkeypatch: pytest.MonkeyPatch) -> None:
         "not_regenerable": _raised(lambda: session.build_regenerate_batch(["e", "m"], TARGETS)),
         "controls_pending": controls_pending,
         "stamp": stamp,
-        "nothing_to_accept": _raised(_nothing_to_accept),
+        "nothing_to_accept": _raised(lambda: _nothing_to_accept(monkeypatch)),
         "cancelled": cancelled,
-        "cancel_seen": [_cancel_seen(record) for record in SESSIONS.values()],
+        "cancel_seen": [_cancel_seen(monkeypatch, record) for record in SESSIONS.values()],
         "open": review_open,
         "owner": [
             _raised(lambda: session.get_session_owned_by_caller(None, "s", 86)),
@@ -520,13 +496,13 @@ def _paths() -> list[dict[str, Any]]:
     return paths
 
 
-def _nothing_left(paths: list[dict[str, Any]]) -> None:
+def _nothing_left(monkeypatch: pytest.MonkeyPatch, paths: list[dict[str, Any]]) -> None:
     """The service's next set on run-1 when no path is asked for and no stopped control is resumed."""
-    sessions, work_control = MagicMock(), MagicMock()
+    sessions, work = MagicMock(), MagicMock()
     sessions.get.return_value = {"plan": {"paths": paths}}
-    work_control.resume_scenario_controls.return_value = 0
+    work.resume_scenario_controls.return_value = 0
     run = session_status_from_record(_session(_id="run-1"))
-    _service(sessions=sessions, work_control=work_control).write_next_threat_scenario_set(PRINCIPAL, run)
+    _service(monkeypatch, sessions=sessions, work_control=work).write_next_threat_scenario_set(PRINCIPAL, run)
 
 
 def test_golden_session_plan_progress_rules(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -546,7 +522,7 @@ def test_golden_session_plan_progress_rules(monkeypatch: pytest.MonkeyPatch) -> 
         "reserve": session.pick_replacement_path(paths, threats, in_set),
         "budget": budget,
         "still": [session.is_still_to_write(path, reopen) for path in paths for reopen in (False, True)],
-        "nothing_left": _raised(lambda: _nothing_left(paths)),
+        "nothing_left": _raised(lambda: _nothing_left(monkeypatch, paths)),
         "trace_view": session.build_plan_trace_view("run-golden-1", TRACE, paths),
     }
     check_golden("session_progress", outcome)
@@ -560,12 +536,7 @@ def test_golden_session_library_lookups() -> None:
         curator_rejected=(RejectedLibraryThreat(78, "Badge cloning", 2),),
         threats_without_category=(91,),
     )
-    names = [
-        "Phishing steals operator credentials",
-        "T-12 Operator account takeover",
-        "Badge  cloning",
-        "New one",
-    ]
+    names = ["Phishing steals operator credentials", "T-12 Operator account takeover", "Badge  cloning", "New one"]
     outcome = {
         "named": {name: session.find_library_threat_by_name(library, name) for name in names},
         "known": session.list_active_or_pending_threat_ids(library),

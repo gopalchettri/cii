@@ -406,7 +406,8 @@ spec:                                            # what to run
             capabilities: { drop: [ALL] }        # no special Linux rights
             seccompProfile: { type: RuntimeDefault }   # the default system-call filter
 
-# The maintenance worker: library rebuilds and the intelligence refresh (jobs that can run for an hour).
+# The maintenance worker: library rebuilds, the intelligence refresh and the control links that follow it (jobs
+# that can run for an hour).
 # The reaper has its own worker in ai-common (deploy_common.yaml).
 ---
 apiVersion: apps/v1                              # Deployment API version

@@ -21,9 +21,7 @@ CAPS = {"relevance_gate": 10_240, "write_scenario": 6_144, "plan_check": 3_072}
 T0 = datetime(2026, 10, 30, 9, 0, tzinfo=UTC)
 
 
-def _row(
-    task: str, start: float, seconds: float, tokens: tuple[int, int] = (0, 0), outcome: str = "ok"
-) -> dict:
+def _row(task: str, start: float, seconds: float, tokens: tuple[int, int] = (0, 0), outcome: str = "ok") -> dict:
     """A report-4 row: noted as its attempt ends."""
     end = (T0 + timedelta(seconds=start + seconds)).isoformat()
     model = "litellm_proxy/qwen3-embedding-8b" if task == "embed" else "litellm_proxy/kimi-k2.5"
@@ -38,12 +36,7 @@ ROWS = [
     _row("relevance_gate", 1, 20, (5_000, 2_000)),
     _row("write_scenario", 10, 30, (3_000, 1_500)),
     _row("write_scenario", 69.5, 0.5, outcome="unavailable"),
-    {
-        "task": "write_scenario",
-        "model": "litellm_proxy/kimi-k2.5",
-        "outcome": "reused",
-        "created_at": T0.isoformat(),
-    },
+    {"task": "write_scenario", "model": "litellm_proxy/kimi-k2.5", "outcome": "reused", "created_at": T0.isoformat()},
     _row("plan_check", 50, 10, (1_000, 200)),
 ]
 
@@ -90,11 +83,6 @@ def test_busiest_minute_counts_running_calls_at_their_hold_and_finished_ones_at_
 def test_headline_names_the_gateway_ask_and_the_modules_settings() -> None:
     """The module's chat pacing leaves the embedding out: 15,240 + 9,144 = 24,384 per user."""
     text = "\n".join(_lines())
-    assert (
-        "tokens a minute:   at least 244,840  (threat_scenarios / create_scenario - Create scenario)" in text
-    )
+    assert "tokens a minute:   at least 244,840  (threat_scenarios / create_scenario - Create scenario)" in text
     assert "requests a minute: at least 40" in text
-    assert (
-        "CII_SCENARIO_MAX_CONCURRENT_AI_CALLS >= 20; CII_SCENARIO_CHAT_TOKENS_PER_MINUTE 0 or >= 243,840"
-        in text
-    )
+    assert "CII_SCENARIO_MAX_CONCURRENT_AI_CALLS >= 20; CII_SCENARIO_CHAT_TOKENS_PER_MINUTE 0 or >= 243,840" in text

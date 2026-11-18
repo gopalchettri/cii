@@ -2,15 +2,14 @@
 systems, and fake AI answers (tests/fakes.py)."""
 
 from collections.abc import Callable
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
 from app.core.constants import AiTask, StrideCategory
 from app.domain.scenario import plan as plan_module
-from app.domain.scenario.plan import ThreatFinder
-from app.models.library.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
-from app.models.scenario.asset_context import FrozenContext
-from app.models.scenario.plan import AttackPlace, Drop, PlannedThreat, ThreatFindings
+from app.schemas.library import LibraryActor, LibraryThreat, RejectedLibraryThreat, ThreatLibrary
+from app.schemas.scenario_internal import AttackPlace, Drop, FrozenContext, PlannedThreat, ThreatFindings
 from app.search.service import LibrarySearch
 from tests.fakes import FakeChatModel, FakeEmbeddings, FakeRerankModel, items_in
 
@@ -31,16 +30,10 @@ RANSOMWARE = LibraryThreat(
     (S.TAMPERING, S.DENIAL_OF_SERVICE),
     (INSIDER, GANG, AFFILIATE),
 )
-PHISHING = LibraryThreat(
-    2, "Phishing steals operator credentials", 2, "Social engineering", (S.SPOOFING,), (CREW,)
-)
+PHISHING = LibraryThreat(2, "Phishing steals operator credentials", 2, "Social engineering", (S.SPOOFING,), (CREW,))
 LOG_WIPE = LibraryThreat(3, "Insider deletes audit logs", 3, "Insider misuse", (S.REPUDIATION,), (INSIDER,))
-EXFILTRATION = LibraryThreat(
-    4, "Ransomware exfiltrates data", 1, "Malware", (S.INFORMATION_DISCLOSURE,), (GANG,)
-)
-FLOOD = LibraryThreat(
-    5, "Flood of requests overwhelms the historian", 4, "Overload", (S.DENIAL_OF_SERVICE,), (GANG,)
-)
+EXFILTRATION = LibraryThreat(4, "Ransomware exfiltrates data", 1, "Malware", (S.INFORMATION_DISCLOSURE,), (GANG,))
+FLOOD = LibraryThreat(5, "Flood of requests overwhelms the historian", 4, "Overload", (S.DENIAL_OF_SERVICE,), (GANG,))
 ADMIN_ABUSE = LibraryThreat(
     6, "Insider abuses admin rights", 5, "Privilege misuse", (S.ELEVATION_OF_PRIVILEGE,), (INSIDER,)
 )
@@ -51,14 +44,7 @@ GAP_FILL_NONE = {"applies": False, "reason": "The library covers it."}
 
 def system_row(system_id: int, alias: str, name: str, **facts: Any) -> dict[str, Any]:
     """A frozen supporting system (domain/scenario/plan.py), with only the facts a test sets."""
-    return {
-        "id": system_id,
-        "alias": alias,
-        "name": name,
-        "category_code": "OT",
-        "category_name": "OT",
-        **facts,
-    }
+    return {"id": system_id, "alias": alias, "name": name, "category_code": "OT", "category_name": "OT", **facts}
 
 
 CONTEXT = FrozenContext(
@@ -120,9 +106,7 @@ def judged(
     return answer
 
 
-def planner_chat(
-    relevant: dict[str, list[str]], ways_in: dict[str, list[str]] | None = None
-) -> FakeChatModel:
+def planner_chat(relevant: dict[str, list[str]], ways_in: dict[str, list[str]] | None = None) -> FakeChatModel:
     """A chat model answering every planner task: the gate by `relevant` (and `ways_in`), no gap-fill
     threat."""
     chat = FakeChatModel()
@@ -147,22 +131,15 @@ def gap_fill_for_elevation(proposal: dict[str, Any]) -> Callable[[str], dict[str
 
 def gap_filled(chat: FakeChatModel) -> list[str]:
     """The categories each gap-fill ask listed, in order, every ask's together."""
-    return [
-        item["category"]
-        for user in chat.asked(AiTask.GAP_FILL)
-        for item in items_in(user, "EMPTY CATEGORIES")
-    ]
+    return [item["category"] for user in chat.asked(AiTask.GAP_FILL) for item in items_in(user, "EMPTY CATEGORIES")]
 
 
 def library_search(
     actors: tuple[LibraryActor, ...] = ACTORS,
     curator_rejected: tuple[RejectedLibraryThreat, ...] = (),
     threats: tuple[LibraryThreat, ...] = THREATS,
-    unknown_asset_type: tuple[int, ...] = (),
 ) -> tuple[LibrarySearch, FakeEmbeddings]:
-    threat_library = ThreatLibrary(
-        threats, actors, curator_rejected=curator_rejected, threats_unknown_asset_type=unknown_asset_type
-    )
+    threat_library = ThreatLibrary(threats, actors, curator_rejected=curator_rejected)
     library = SimpleNamespace(threat_library=threat_library, control_library=(), stamp=())
     embeddings = FakeEmbeddings(WORDS)
     search = LibrarySearch(SimpleNamespace(get_loaded_libraries=lambda: library), embeddings)  # type: ignore[arg-type]
@@ -170,9 +147,10 @@ def library_search(
     return search, embeddings
 
 
-def finder(chat: FakeChatModel, rerank: FakeRerankModel | None = None, **library: Any) -> ThreatFinder:
+def finder(chat: FakeChatModel, rerank: FakeRerankModel | None = None, **library: Any) -> Any:
     search, embeddings = library_search(**library)
-    return ThreatFinder(chat, search, rerank or FakeRerankModel(), embeddings)  # type: ignore[arg-type]
+    found = partial(plan_module.find_threats, chat, search, rerank or FakeRerankModel(), embeddings)
+    return SimpleNamespace(find_threats=found)
 
 
 def drops_for(findings: ThreatFindings, kind: StrideCategory) -> list[Drop]:
@@ -183,9 +161,7 @@ def drops_for(findings: ThreatFindings, kind: StrideCategory) -> list[Drop]:
 def gate_prompt(items: list[dict[str, Any]]) -> str:
     """The relevance gate's user prompt for these candidates, on the landscape "LANDSCAPE"."""
     rules = plan_module._GATE_RULES
-    return plan_module._build_threat_finding_prompt("LANDSCAPE", StrideCategory, rules, "CANDIDATES", items)[
-        1
-    ]
+    return plan_module._build_threat_finding_prompt("LANDSCAPE", StrideCategory, rules, "CANDIDATES", items)[1]
 
 
 def gap_fill_prompt(kinds: list[StrideCategory]) -> str:

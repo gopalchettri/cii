@@ -9,6 +9,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from app.ai import ChatModel
+from app.ai.profiles import ChatModelProfile
 from app.core.ai_tuning_settings import AiTuningSettings
 from app.core.constants import (
     CHAT_MAX_OUTPUT_TOKENS,
@@ -22,11 +23,9 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin.ai_call_repository import AiCallRepository
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import build_plan
-from app.models.ai.profiles import ChatModelProfile
-from app.models.library.library import LibraryActor, LibraryThreat
+from app.schemas.library import LibraryActor, LibraryThreat
 from tests.fakes import FakeRerankModel, items_in, truncated
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -73,9 +72,7 @@ def _answering(edit: dict[str, dict[str, Any]], relevant: dict[str, list[str]] |
 
     def answer(user_prompt: str) -> dict[str, Any]:
         threats = {item["slot"]: item["threat"] for item in items_in(user_prompt, "CANDIDATES")}
-        verdicts = [
-            verdict | edit.get(threats[verdict["slot"]], {}) for verdict in gate(user_prompt)["verdicts"]
-        ]
+        verdicts = [verdict | edit.get(threats[verdict["slot"]], {}) for verdict in gate(user_prompt)["verdicts"]]
         return {"verdicts": [verdict for verdict in verdicts if not verdict.get("drop")]}
 
     return answer
@@ -102,9 +99,7 @@ def test_a_threat_applying_as_one_of_its_categories_is_rejected_under_the_other_
         2,
         80.0,
     )
-    (denial,) = [
-        (d.reason, d.detail) for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.threat_key == "lib:1"
-    ]
+    (denial,) = [(d.reason, d.detail) for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.threat_key == "lib:1"]
     assert denial == (CandidateRejection.NOT_RELEVANT, "It applies as Tampering only.")
     chat.responders[AiTask.RELEVANCE_GATE] = _answering({RANSOMWARE.name: as_tampering | {"needs": ["USB"]}})
     findings = finder(chat).find_threats(CONTEXT)
@@ -127,9 +122,7 @@ def test_a_slot_missing_from_the_answer_is_asked_once_more_alone_and_the_others_
     findings = finder(chat).find_threats(CONTEXT)
     whole, again = chat.asked(AiTask.RELEVANCE_GATE)
     assert len(items_in(whole, "CANDIDATES")) == 6
-    assert [(item["slot"], item["threat"]) for item in items_in(again, "CANDIDATES")] == [
-        ("R3", LOG_WIPE.name)
-    ]
+    assert [(item["slot"], item["threat"]) for item in items_in(again, "CANDIDATES")] == [("R3", LOG_WIPE.name)]
     assert sorted(threat.name for threat in findings.threats) == sorted([LOG_WIPE.name, FLOOD.name])
 
 
@@ -188,10 +181,7 @@ def test_a_cut_off_batch_is_asked_again_as_two_halves_both_judged() -> None:
 
     chat.responders[AiTask.RELEVANCE_GATE] = cut_off_when_whole
     findings = finder(chat, threats=(PHISHING, LOG_WIPE)).find_threats(CONTEXT)
-    asked = [
-        [item["threat"] for item in items_in(user, "CANDIDATES")]
-        for user in chat.asked(AiTask.RELEVANCE_GATE)
-    ]
+    asked = [[item["threat"] for item in items_in(user, "CANDIDATES")] for user in chat.asked(AiTask.RELEVANCE_GATE)]
     assert asked == [[PHISHING.name, LOG_WIPE.name], [PHISHING.name], [LOG_WIPE.name]]
     assert sorted(threat.name for threat in findings.threats) == sorted([PHISHING.name, LOG_WIPE.name])
 
@@ -210,27 +200,21 @@ def test_each_half_of_a_cut_off_batch_is_a_first_ask_with_its_own_follow_up_and_
             if asked == [unreadable]:
                 return {"verdicts": "none"}
             whole = len(asked) > 1
-            return {
-                "verdicts": [v for v in gate(user_prompt)["verdicts"] if not whole or v["threat"] != left_out]
-            }
+            return {"verdicts": [v for v in gate(user_prompt)["verdicts"] if not whole or v["threat"] != left_out]}
 
         return answer
 
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = halves(left_out=LOG_WIPE.name)
     findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT)
-    asked = [
-        [i["threat"] for i in items_in(user, "CANDIDATES")] for user in chat.asked(AiTask.RELEVANCE_GATE)
-    ]
+    asked = [[i["threat"] for i in items_in(user, "CANDIDATES")] for user in chat.asked(AiTask.RELEVANCE_GATE)]
     assert asked == [names, names[:2], [LOG_WIPE.name], [FLOOD.name]]
     assert sorted(threat.name for threat in findings.threats) == sorted(names)
     chat.responders[AiTask.RELEVANCE_GATE] = halves(unreadable=FLOOD.name)
     with pytest.raises(Unavailable):
         finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT)
     findings = finder(chat, threats=(PHISHING, LOG_WIPE, FLOOD)).find_threats(CONTEXT, is_last_attempt=True)
-    not_judged = [
-        d.threat_key for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.reason == PlanLoss.NOT_JUDGED
-    ]
+    not_judged = [d.threat_key for d in drops_for(findings, S.DENIAL_OF_SERVICE) if d.reason == PlanLoss.NOT_JUDGED]
     assert not_judged == [f"lib:{FLOOD.catalogue_id}"]
     assert sorted(threat.name for threat in findings.threats) == sorted(names[:2])
 
@@ -278,7 +262,7 @@ def test_the_call_limit_counts_the_answer_room_the_model_is_asked_not_the_room_s
     monkeypatch.setattr(AiLimits, "CALL_TOKENS_LIMIT", 20_000)
     monkeypatch.setitem(CHAT_MAX_OUTPUT_TOKENS, AiTask.RELEVANCE_GATE, room)
     profile = ChatModelProfile(12_288, 5, True, None, 131_072)  # the model answers at most 12,288
-    records = AiCallRepository(get_mongodb()["test_ai_calls"])
+    records = get_mongodb()["test_ai_calls"]
     model = ChatModel("m", profile, "http://ai.invalid", "key", records)  # its answer room only: no call
     chat = planner_chat({"Threat number 3": ["SYS1"]})
     monkeypatch.setattr(chat, "get_answer_room", model.get_answer_room)
@@ -292,9 +276,7 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
     Service tells the one card, with Tampering as its other category, though STRIDE puts Tampering first."""
     both = {"name": "Denial-of-Service", "impact": "HIGH", "reason": "It stops SYS1."}
     both = {"categories": [both, {"name": "tampering", "impact": "HIGH", "reason": "It encrypts SYS1."}]}
-    unlisted = {
-        "categories": [{"name": "Spoofing", "impact": "LOW", "reason": "A fake login."}, *both["categories"]]
-    }
+    unlisted = {"categories": [{"name": "Spoofing", "impact": "LOW", "reason": "A fake login."}, *both["categories"]]}
     asked_again = {
         PHISHING.name: {"categories": [{"name": "Spoof", "impact": "HIGH", "reason": "Fake login."}]},
         LOG_WIPE.name: {"categories": []},
@@ -307,16 +289,12 @@ def test_category_names_are_read_strictly_and_the_gates_first_category_leads_the
         findings = finder(chat).find_threats(CONTEXT)
     _, *again = chat.asked(AiTask.RELEVANCE_GATE)  # the ask again, and its one corrective turn: still wrong
     bad = {PHISHING.name, LOG_WIPE.name, FLOOD.name}
-    assert len(again) == 2 and all(
-        {i["threat"] for i in items_in(user, "CANDIDATES")} == bad for user in again
-    )
+    assert len(again) == 2 and all({i["threat"] for i in items_in(user, "CANDIDATES")} == bad for user in again)
     told = again[0].rsplit("\nCANDIDATES:\n", 1)[0].split("REJECTED:")[1]  # each slot told what it got wrong
     assert "'Spoof' is no STRIDE category" in told and "categories must list" in told
     assert "threat must be this slot's own threat" in told
     not_judged = [d.threat_key for d in drops_for(findings, S.REPUDIATION) if d.reason == PlanLoss.NOT_JUDGED]
     assert not_judged == [f"lib:{LOG_WIPE.catalogue_id}"]  # not judged; the job never retries
-    dropped = [e for e in logs if e["event"] == LogEvent.PLANNER_CATEGORY_DROPPED]
-    assert [(e["threat_key"], e["categories"]) for e in dropped] == [("lib:1", [S.SPOOFING])]
     skipped = [e["asked"] for e in logs if e["event"] == LogEvent.PLANNER_THREATS_NOT_JUDGED]
     assert skipped == [[PHISHING.name, LOG_WIPE.name, FLOOD.name]]  # the ask again: logged, then not judged
     (ransomware,) = [threat for threat in findings.threats if threat.key == "lib:1"]
@@ -394,9 +372,7 @@ def test_two_empty_categories_cost_one_gap_fill_and_one_gate_check() -> None:
             (S.ELEVATION_OF_PRIVILEGE, "Privilege misuse", "Admin grab"),
         )
     }
-    chat = planner_chat(
-        {name: ["SYS1"] for name in (RANSOMWARE.name, PHISHING.name, LOG_WIPE.name, "Admin grab")}
-    )
+    chat = planner_chat({name: ["SYS1"] for name in (RANSOMWARE.name, PHISHING.name, LOG_WIPE.name, "Admin grab")})
     chat.responders[AiTask.GAP_FILL] = gap_fill(proposals)
     rerank = FakeRerankModel({(name, name): 90.0 for name in ("Malware", "Privilege misuse")})
     findings = finder(chat, rerank).find_threats(CONTEXT)
@@ -404,10 +380,7 @@ def test_two_empty_categories_cost_one_gap_fill_and_one_gate_check() -> None:
     assert gap_filled(chat) == [S.INFORMATION_DISCLOSURE, S.ELEVATION_OF_PRIVILEGE]
     whole, check = chat.asked(AiTask.RELEVANCE_GATE)  # the library, then both proposals at once
     shown = [(item["threat"], item["categories"]) for item in items_in(check, "CANDIDATES")]
-    assert shown == [
-        ("Data copied off SYS1", [S.INFORMATION_DISCLOSURE]),
-        ("Admin grab", [S.ELEVATION_OF_PRIVILEGE]),
-    ]
+    assert shown == [("Data copied off SYS1", [S.INFORMATION_DISCLOSURE]), ("Admin grab", [S.ELEVATION_OF_PRIVILEGE])]
     assert [t.name for t in findings.threats if t.catalogue_id is None] == ["Admin grab"]
     assert [(d.stage, d.reason) for d in drops_for(findings, S.INFORMATION_DISCLOSURE)] == [
         (PlanStage.GATE, CandidateRejection.NOT_RELEVANT),  # the library's

@@ -23,3 +23,6 @@ backups/
 
 # The real OpenShift secrets (deploy/secrets.example.yaml is the template in git)
 deploy/secrets.yaml
+
+# Personal Claude Code settings
+.claude/settings.local.json

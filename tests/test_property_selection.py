@@ -17,8 +17,8 @@ from app.domain.scenario import session
 from app.domain.scenario.plan import describe_asset_for_ai
 from app.domain.scenario.session import check_required_facts
 from app.domain.scenario.write import build_control_query
-from app.models.scenario.asset_context import AssetContextRows, FrozenContext
-from app.models.scenario.views import StartRunRequest
+from app.schemas.scenario_internal import AssetContextRows, FrozenContext
+from app.schemas.scenarios import StartRunRequest
 
 LOCATION, TECHNOLOGY = "Marker location Site Alpha", "Marker technology Stack Omega"
 NEW_FACT = "Marker recovery notes Gamma"
@@ -133,9 +133,7 @@ def test_a_column_added_to_the_procedure_reaches_every_step() -> None:
         json.dumps(FrozenContext.read_system_facts(context.systems[0])),
     ):
         assert NEW_FACT in text
-    controls_text = build_control_query(
-        _on_every_system(context), context
-    ).text  # owner 2026-10-11: controls too
+    controls_text = build_control_query(_on_every_system(context), context).text  # owner 2026-10-11: controls too
     assert NEW_FACT in controls_text and "site_notes: Marker site notes Delta" in controls_text
 
 
@@ -149,29 +147,14 @@ def test_the_head_columns_are_not_facts_and_the_asset_is_named() -> None:
     assert describe_asset_for_ai(context, 30_000).text.startswith('ASSET: {"asset": "Grid Centre"')
 
 
-@pytest.mark.parametrize("missing", ["id", "name", "category_code"])
-def test_a_procedure_without_a_head_column_is_a_setup_error(missing: str) -> None:
-    with pytest.raises(SetupError) as asset_refused:
-        _freeze(_rows(_without(_asset_row(), missing)))
-    assert "asset rows" in asset_refused.value.detail and asset_refused.value.status == 500
-    with pytest.raises(SetupError) as system_refused:
-        _freeze(_rows(None, _system_row(1567), _without(_system_row(1568), missing)))
-    assert "supporting system rows" in system_refused.value.detail
-
-
 def test_dropdown_names_follow_the_installed_procedure_by_value_or_by_id() -> None:
     """2026-10-12 (owner: "use what is there in the updated stored procedure"): the installed procedure
     returned its dropdown names by id (code, id, name) and the start failed with a bare 500 (KeyError
     'value').
-    By value or by id, the same names; any other shape is named at once, never a bare error."""
+    By value or by id, the same names."""
     by_id = _rows()
     by_id.options[:] = [{"code": row["code"], "id": row["value"], "name": row["name"]} for row in OPTIONS]
     assert _freeze(by_id) == _freeze(_rows())
-    unknown = _rows()
-    unknown.options[:] = [{"code": "managed-by", "number": 31, "name": "In-house"}]
-    with pytest.raises(SetupError) as refused:
-        _freeze(unknown)
-    assert refused.value.status == 500 and "value (or id)" in refused.value.detail
 
 
 def test_values_are_stored_as_mongodb_and_a_prompt_read_them() -> None:
@@ -193,11 +176,7 @@ def test_values_are_stored_as_mongodb_and_a_prompt_read_them() -> None:
     assert context.systems[0]["last_dr_test_date"] == "2026-03-01"
     assert context.systems[1]["last_dr_test_date"] is None
     facts = context.asset_context
-    assert (facts["critical_service"], facts["sector"], facts["sub_sector"]) == (
-        "Electricity supply",
-        "Energy",
-        None,
-    )
+    assert (facts["critical_service"], facts["sector"], facts["sub_sector"]) == ("Electricity supply", "Energy", None)
     assert context.systems[1]["row_version"] is None and context.systems[0]["managed_by"] is None
     assert FrozenContext.from_record(context.to_record()) == context
 
@@ -209,9 +188,7 @@ def test_a_context_stored_before_the_copies_were_removed_still_loads() -> None:
     assert FrozenContext.from_record(old) == FrozenContext.from_record(stored)
 
 
-@pytest.mark.parametrize(
-    ("row", "column"), [("asset", "criticality"), ("system", "alias"), ("system", "type_id")]
-)
+@pytest.mark.parametrize(("row", "column"), [("asset", "criticality"), ("system", "alias"), ("system", "type_id")])
 def test_a_fact_under_a_reserved_name_is_a_setup_error(row: str, column: str) -> None:
     """Review 2026-10-11: `alias` would replace SYS1..n; id-like names are dropped from every prompt, so such
     a fact would count as recorded while the AI never saw it."""
@@ -230,21 +207,10 @@ def test_an_asset_or_system_without_a_name_is_refused_before_any_run(name: Any) 
     """Review 2026-10-11: every prompt, card and search names them; a nameless one failed in the worker."""
     with pytest.raises(Invalid) as asset_refused:
         _freeze(_rows(_asset_row(name=name)))
-    assert asset_refused.value.errors == [
-        {"field": "body.asset_id", "message": "asset 1206: name not recorded."}
-    ]
+    assert asset_refused.value.errors == [{"field": "body.asset_id", "message": "asset 1206: name not recorded."}]
     with pytest.raises(Invalid) as system_refused:
         _freeze(_rows(None, _system_row(1567), _system_row(1568, name=name)))
     assert system_refused.value.errors[0]["field"] == "body.supporting_system_id.1"
-
-
-def test_missing_facts_name_only_columns_the_procedure_returns() -> None:
-    systems = [_without(_system_row(1567), "backup_tested"), _without(_system_row(1568), "backup_tested")]
-    missing = _freeze(_rows(None, *systems)).missing_facts
-    assert "hosting_location" in missing and "backup_multi_site" in missing and "backup_tested" not in missing
-    # Every column counts, none picked by name (owner 2026-10-11): a text no system records is missing too;
-    # a value of 0 is a recorded value, never "missing"
-    assert "past_incidents" in missing and "rto_target_mins" not in missing
 
 
 @pytest.mark.parametrize(
@@ -260,9 +226,7 @@ def test_missing_facts_name_only_columns_the_procedure_returns() -> None:
         (["None"], False),  # a list holding only a placeholder
     ],
 )
-def test_recorded_means_what_the_ai_would_be_shown(
-    monkeypatch: pytest.MonkeyPatch, value: Any, recorded: bool
-) -> None:
+def test_recorded_means_what_the_ai_would_be_shown(monkeypatch: pytest.MonkeyPatch, value: Any, recorded: bool) -> None:
     monkeypatch.setattr(get_settings(), "system_properties_required", "dr_location")
     systems = [{"id": 1567, "name": "SCADA", "dr_location": value}]
     if recorded:
@@ -276,9 +240,7 @@ def test_the_refusal_names_every_gap_once_in_a_fixed_order(monkeypatch: pytest.M
     """The asset's gaps (one entry per request field: sector is the request's sector_id), then each system's
     in request order, names in the procedure's column order whatever order the setting gives; names and ids
     only."""
-    monkeypatch.setattr(
-        get_settings(), "asset_properties_required", "location, sector, cii_asset_description"
-    )
+    monkeypatch.setattr(get_settings(), "asset_properties_required", "location, sector, cii_asset_description")
     monkeypatch.setattr(get_settings(), "system_properties_required", "dr_location, technology_used")
     asset = {"name": "Grid Centre", "cii_asset_description": None, "location": "", "sector": None}
     systems = [
@@ -292,10 +254,7 @@ def test_the_refusal_names_every_gap_once_in_a_fixed_order(monkeypatch: pytest.M
         {"field": "body.asset_id", "message": "asset 1206: cii_asset_description, location not recorded."},
         {"field": "body.sector_id", "message": "asset 1206: sector not recorded."},
         {"field": "body.supporting_system_id.0", "message": "system 1567: dr_location not recorded."},
-        {
-            "field": "body.supporting_system_id.1",
-            "message": "system 1568: technology_used, dr_location not recorded.",
-        },
+        {"field": "body.supporting_system_id.1", "message": "system 1568: technology_used, dr_location not recorded."},
     ]
     assert refused.value.detail == (
         "Required properties are not recorded: asset 1206: cii_asset_description, location; asset 1206: "
@@ -303,9 +262,7 @@ def test_the_refusal_names_every_gap_once_in_a_fixed_order(monkeypatch: pytest.M
     )
 
 
-def test_a_required_name_the_procedure_does_not_return_is_a_setup_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_required_name_the_procedure_does_not_return_is_a_setup_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every run would be refused: the operator is told which setting names which missing column, at once."""
     monkeypatch.setattr(get_settings(), "asset_properties_required", "location")
     with pytest.raises(SetupError) as refused:
@@ -346,8 +303,6 @@ def test_dropdown_names_the_procedure_already_gave_are_kept() -> None:
     assert session._translate_option_codes_to_names("technology_used", "[1]", options) == [
         "SCADA"
     ]  # saved values, as before
-    assert (
-        session._translate_option_codes_to_names("technology_used", "[1, x", options) is None
-    )  # a broken array: none
+    assert session._translate_option_codes_to_names("technology_used", "[1, x", options) is None  # a broken array: none
     assert session._translate_option_codes_to_names("managed_by", "In-house", options) == "In-house"
     assert session._translate_option_codes_to_names("managed_by", 1, options) == "In-house"

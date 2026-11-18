@@ -4,7 +4,7 @@ the switch answers the id of the import it queued; a cancel that comes too late 
 
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -13,20 +13,21 @@ import pytest
 from celery.exceptions import Ignore
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import AdminJobKind, Collection, ErrorCode, IntelSource, Lease, Status
 from app.core.database import get_mongodb
-from app.models.external_intelligence.refresh_summary import RefreshResult, RefreshSummary, SourceRefresh
-from app.worker import reaper
+from app.crud.admin_jobs import get_admin_job_repository
+from app.crud.audit import get_audit_repository
+from app.domain.intel import refresh as intel_refresh
+from app.schemas.intel_records import RefreshResult, RefreshSummary, SourceRefresh
+from app.worker import jobs
 from app.worker.admin.library_indexes import run_embeddings_job
-from app.worker.external_intelligence.refresh_task import run_refresh_job
+from app.worker.intel import run_refresh_job
 from tests.conftest import ADMIN
 from tests.external_intelligence.api.test_intel_admin_api import Api
 
 _SNAPSHOT = SimpleNamespace(
-    library=SimpleNamespace(threat_library=SimpleNamespace(threats=[], actors=[]), control_library=[]),
-    threat_types=(),
+    library=SimpleNamespace(threat_library=SimpleNamespace(threats=[], actors=[]), control_library=[]), threat_types=()
 )
 
 
@@ -37,7 +38,7 @@ def intelligence_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _jobs() -> Any:
-    return container.get_admin_job_repository()
+    return get_admin_job_repository()
 
 
 def _queued(kind: str, created_at: datetime | None = None, **fields: Any) -> str:
@@ -54,32 +55,32 @@ def _run_build(job_id: str, work: Callable[[], None]) -> None:
     search = SimpleNamespace(snapshot=lambda *, wait: (work(), _SNAPSHOT)[1])
     library = SimpleNamespace(reload_if_library_changed=lambda: None)
     vectors = SimpleNamespace(count_library_vectors_made_since=lambda since: {})
-    run_embeddings_job(job_id, _jobs(), library, search, vectors, container.get_audit_repository())  # type: ignore[arg-type]
+    run_embeddings_job(job_id, _jobs(), library, search, vectors, get_audit_repository())  # type: ignore[arg-type]
 
 
 def _run_import(job_id: str, work: Callable[[], None]) -> None:
     """The intelligence import of `job_id`, `work` running as its refresh."""
 
-    def refresh(*_: Any) -> RefreshSummary:
+    def refresh(*_: Any, **__: Any) -> RefreshSummary:
         work()
         return RefreshSummary((), True)
 
-    refresher = SimpleNamespace(refresh_due_sources=refresh, refresh_one_source=refresh)
-    run_refresh_job(job_id, _jobs(), lambda: refresher)  # type: ignore[arg-type,return-value]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(intel_refresh, "refresh_all_sources", refresh)
+        patch.setattr(intel_refresh, "refresh_one_source", refresh)
+        run_refresh_job(job_id)
 
 
 RUNNERS = {AdminJobKind.EMBEDDINGS_BUILD: _run_build, AdminJobKind.INTEL_REFRESH: _run_import}
 
 
-def test_the_reaper_fails_a_running_admin_job_whose_heartbeat_stopped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_reaper_fails_a_running_admin_job_whose_heartbeat_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
     """Its worker crashed 3 min after starting: failed now, not an hour after it started."""
-    monkeypatch.setattr(reaper, "_queue_sizes_read_once", lambda: lambda _queue: True)
+    monkeypatch.setattr(jobs, "_queue_sizes_read_once", lambda: lambda _queue: True)
     now = datetime.now(UTC)
     job_id = _queued(AdminJobKind.INTEL_REFRESH)
     assert _jobs().update_admin_job_running(job_id, now - timedelta(seconds=Lease.SECONDS + 60))
-    reaper.reap_jobs()
+    jobs.reap_jobs()
     job = _jobs().get_any_admin_job(job_id)
     assert (job["status"], job["error"]["code"]) == (Status.FAILED, ErrorCode.JOB_ABANDONED)
 
@@ -110,7 +111,6 @@ def test_a_running_admin_job_beats_its_heartbeat_past_the_job_time_limit(
 ) -> None:
     """A healthy build beats until it ends: an hour-long one is never taken for a crashed one."""
     monkeypatch.setattr(Lease, "RENEW_EVERY_SECONDS", 0.01)
-    monkeypatch.setattr(Lease, "STALL_SECONDS", 0.05)
     job_id = _queued(kind)
     beats: list[bool] = []
 
@@ -126,15 +126,16 @@ def test_a_running_admin_job_beats_its_heartbeat_past_the_job_time_limit(
     assert beats == [True] and _jobs().get_any_admin_job(job_id)["status"] == Status.DONE
 
 
-def test_an_import_with_a_failed_feed_ends_failed_and_names_the_feed() -> None:
+def test_an_import_with_a_failed_feed_ends_failed_and_names_the_feed(monkeypatch: pytest.MonkeyPatch) -> None:
     """The other feeds' data stands; the job says which feed could not be imported."""
-    job_id = _queued(AdminJobKind.INTEL_REFRESH, source=IntelSource.CISA_KEV)
-    failed_feed = SourceRefresh(IntelSource.CISA_KEV, RefreshResult.FAILED, error="HTTPError")
-    refresher = SimpleNamespace(refresh_one_source=lambda source, now: RefreshSummary((failed_feed,), True))
-    run_refresh_job(job_id, _jobs(), lambda: refresher)  # type: ignore[arg-type,return-value]
+    job_id = _queued(AdminJobKind.INTEL_REFRESH, source=IntelSource.ATTACK_ENTERPRISE)
+    failed_feed = SourceRefresh(IntelSource.ATTACK_ENTERPRISE, RefreshResult.FAILED, error="HTTPError")
+    monkeypatch.setattr(intel_refresh, "refresh_one_source", lambda source, now: RefreshSummary((failed_feed,), True))
+    run_refresh_job(job_id)
     job = _jobs().get_any_admin_job(job_id)
     assert (job["status"], job["error"]["code"]) == (Status.FAILED, ErrorCode.UNAVAILABLE)
-    assert IntelSource.CISA_KEV in job["error"]["message"] and job["result"] == {"source": "cisa_kev"}
+    assert IntelSource.ATTACK_ENTERPRISE in job["error"]["message"]
+    assert job["result"] == {"source": "mitre_attack_enterprise"}
 
 
 def _cancel(job_id: str) -> None:
@@ -170,18 +171,13 @@ def test_a_job_ended_meanwhile_that_then_fails_ends_quietly(
 
 
 @pytest.fixture
-def intel_api(client: TestClient) -> Iterator[Api]:
-    """The intelligence service over the API test's fakes, every send accepted."""
+def intel_api(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Api:
+    """The intelligence admin over the API test's fakes, every send accepted."""
     get_mongodb()[Collection.ADMIN_JOBS].delete_many({"kind": AdminJobKind.INTEL_REFRESH, "active": True})
-    api = Api()
-    client.app.dependency_overrides[container.get_external_intelligence_service] = lambda: api.service  # type: ignore[attr-defined]
-    yield api
-    client.app.dependency_overrides.pop(container.get_external_intelligence_service, None)  # type: ignore[attr-defined]
+    return Api(monkeypatch)
 
 
-def test_turning_the_switch_on_answers_the_id_of_the_import_it_queued(
-    client: TestClient, intel_api: Api
-) -> None:
+def test_turning_the_switch_on_answers_the_id_of_the_import_it_queued(client: TestClient, intel_api: Api) -> None:
     intel_api.switch.runtime = False
     on = client.put("/v1/tsg/intel/switch", json={"enabled": True}, headers=ADMIN)
     again = client.put("/v1/tsg/intel/switch", json={"enabled": True}, headers=ADMIN)  # one already queued
@@ -195,7 +191,7 @@ def test_a_cancel_that_finds_the_job_just_ended_names_how_it_ended(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     job_id = _queued("cancel_race_test")
-    jobs = container.get_job_monitor_service()._admin_jobs
+    jobs = get_admin_job_repository()
     cancel = jobs.cancel_admin_job
 
     def finished_first(*args: Any) -> bool:

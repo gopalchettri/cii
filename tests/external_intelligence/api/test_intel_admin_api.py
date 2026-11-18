@@ -2,20 +2,18 @@
 queued one at a time, and the health report with the evidence settings. The switch and the intelligence
 stores are fakes with their documented signatures; the job queue is faked too."""
 
-from collections.abc import Iterator
 from datetime import UTC, datetime
+from types import ModuleType
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.config import Settings, get_settings
 from app.core.constants import Collection, FeedStatus, IntelSource, TaskName
 from app.core.database import get_mongodb
-from app.models.external_intelligence.source_health import SourceHealth
-from app.models.external_intelligence.switch_state import SwitchState
-from app.services.external_intelligence.external_intelligence_service import ExternalIntelligenceService
+from app.crud.admin_jobs import get_admin_job_repository
+from app.schemas.intel_records import SourceHealth, SwitchState
 from tests.conftest import ADMIN
 from tests.external_intelligence.evidence_fakes import MemoryKeeper
 from tests.external_intelligence.fakes import intelligence_service
@@ -40,27 +38,16 @@ class MemorySwitch:
 
 
 class Feeds:
-    """One fresh source in the health report; NVD revoked."""
+    """One fresh source in the health report."""
 
     def __init__(self) -> None:
-        self.approved: list[IntelSource] = []
         self.reads = 0
-
-    def count(self, **where: Any) -> int:
-        source = where["_id"]
-        return int(source != IntelSource.NIST_NVD or source in self.approved)  # NVD is revoked in these tests
 
     def list(self, fields: Any = None, **where: Any) -> list[dict[str, Any]]:
         self.reads += 1
         now = datetime.now(UTC)
-        if where.get("approved"):
-            return [{"_id": IntelSource.CISA_KEV}]
-        fresh = SourceHealth(IntelSource.CISA_KEV, FeedStatus.OK, "c", "v", 5, now, now).as_doc()
-        return [fresh | {"_id": IntelSource.CISA_KEV}]
-
-    def update_intel_feed_approval(self, source: IntelSource, approved: bool, *, create: bool = True) -> None:
-        if approved:
-            self.approved.append(source)
+        fresh = SourceHealth(IntelSource.ATTACK_ENTERPRISE, FeedStatus.OK, "c", "v", 5, now, now).as_doc()
+        return [fresh | {"_id": IntelSource.ATTACK_ENTERPRISE}]
 
 
 class Snapshots:
@@ -68,35 +55,21 @@ class Snapshots:
         return {"snapshot_id": "snap-1"}
 
 
-class Records:
-    def __init__(self) -> None:
-        self.purged: list[IntelSource] = []
-
-    def delete(self, **where: Any) -> int:
-        self.purged.append(where["source"])
-        return 7
-
-
-class Vectors:
-    def delete_vectors_used_only_by(self, source: IntelSource) -> int:
-        return 0
-
-
 class Api:
-    def __init__(self) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.switch, self.sent = MemorySwitch(), []
-        self.feeds, self.records = Feeds(), Records()
+        self.feeds = Feeds()
+        self._monkeypatch = monkeypatch
         self.service = self.build(get_settings())
 
-    def build(self, settings: Settings) -> ExternalIntelligenceService:
-        """The service over these fakes, the real admin jobs and audit, with `settings`."""
+    def build(self, settings: Settings) -> ModuleType:
+        """The admin module over these fakes, the real admin jobs and audit, with `settings`."""
         return intelligence_service(
+            self._monkeypatch,
             settings=settings,
             switch=self.switch,
             feeds=self.feeds,
-            records=self.records,
             snapshots=Snapshots(),
-            vectors=Vectors(),
             index_keeper=MemoryKeeper(),
             send_admin_job=self.send,
         )
@@ -107,26 +80,30 @@ class Api:
 
 
 @pytest.fixture
-def api(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[Api]:
+def api(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Api:
     get_mongodb()[Collection.ADMIN_JOBS].delete_many({})
-    built = Api()
+    built = Api(monkeypatch)
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
-    client.app.dependency_overrides[container.get_external_intelligence_service] = lambda: built.service
-    yield built
-    client.app.dependency_overrides.clear()
+    return built
 
 
 def _audit(action: str) -> list[dict[str, Any]]:
     return list(get_mongodb()[Collection.AUDIT].find({"action": action}))
 
 
-def test_the_switch_revoke_and_approve_need_no_key(client: TestClient, api: Api) -> None:
+def test_the_switch_needs_no_key(client: TestClient, api: Api) -> None:
     # Owner, 2026-10-15: no admin key and no API key on any external intelligence endpoint.
     assert client.get(f"{URL}/switch").status_code == 200
     assert client.put(f"{URL}/switch", json={"enabled": True}).status_code == 200
-    assert client.post(f"{URL}/sources/nist_nvd/revoke").status_code == 200
-    assert client.post(f"{URL}/sources/nist_nvd/approve").status_code == 200
-    assert _audit("external_intelligence.source_revoked")[-1]["actor"]["user_id"] == "admin"
+    assert _audit("external_intelligence.switched")[-1]["actor"]["user_id"] == "admin"
+
+
+@pytest.mark.parametrize("action", ["revoke", "approve"])
+def test_a_source_is_neither_withdrawn_nor_approved_by_any_route(client: TestClient, action: str) -> None:
+    """Owner, 2026-11-17: only MITRE ATT&CK is imported, so no source needs withdrawing."""
+    path = f"{URL}/sources/{{source}}/{action}"
+    assert client.post(path.format(source="mitre_attack_ics")).status_code == 404
+    assert path not in client.app.openapi()["paths"]
 
 
 def test_health_and_a_refresh_need_no_key(client: TestClient, api: Api) -> None:
@@ -141,9 +118,7 @@ def test_health_and_a_refresh_need_no_key(client: TestClient, api: Api) -> None:
 def test_the_switch_is_read_and_changed_and_the_change_is_audited(client: TestClient, api: Api) -> None:
     assert client.get(f"{URL}/switch", headers=ADMIN).json()["effective"] is True
     off = client.put(f"{URL}/switch", json={"enabled": False}, headers=ADMIN | {"X-User-Id": "op-1"})
-    assert (
-        off.status_code == 200 and off.json()["runtime_enabled"] is False and off.json()["effective"] is False
-    )
+    assert off.status_code == 200 and off.json()["runtime_enabled"] is False and off.json()["effective"] is False
     assert api.sent == []  # turning it off queues nothing (its audit row: test_switch_admin.py)
 
 
@@ -174,7 +149,7 @@ def test_a_refresh_is_queued_once_at_a_time_and_read_back(client: TestClient, ap
     started = client.post(f"{URL}/refresh", headers=ADMIN | {"X-User-Id": "op-2"})
     assert started.status_code == 202 and started.json()["status"] == "queued"
     job_id = started.json()["job_id"]
-    again = client.post(f"{URL}/refresh", json={"source": "cisa_kev"}, headers=ADMIN)
+    again = client.post(f"{URL}/refresh", json={"source": "mitre_attack_enterprise"}, headers=ADMIN)
     assert again.status_code == 409
     assert (again.json()["reason"], again.json()["details"]) == ("job_in_progress", {"job_id": job_id})
     job = client.get(f"{URL}/refresh/{job_id}", headers=ADMIN).json()
@@ -182,13 +157,12 @@ def test_a_refresh_is_queued_once_at_a_time_and_read_back(client: TestClient, ap
     assert _audit("admin.job_started")[-1]["after"]["kind"] == "intel_refresh"
 
 
-def test_a_refresh_names_an_approved_known_source_only(client: TestClient, api: Api) -> None:
-    assert client.post(f"{URL}/refresh", json={"source": "nist_nvd"}, headers=ADMIN).status_code == 422
+def test_a_refresh_names_a_known_source_only(client: TestClient, api: Api) -> None:
     assert client.post(f"{URL}/refresh", json={"source": "not_a_source"}, headers=ADMIN).status_code == 422
-    ok = client.post(f"{URL}/refresh", json={"source": "cisa_kev"}, headers=ADMIN)
+    ok = client.post(f"{URL}/refresh", json={"source": "mitre_attack_enterprise"}, headers=ADMIN)
     assert ok.status_code == 202
     stored = get_mongodb()[Collection.ADMIN_JOBS].find_one({"_id": ok.json()["job_id"]})
-    assert stored["source"] == "cisa_kev"
+    assert stored["source"] == "mitre_attack_enterprise"
 
 
 def test_a_refresh_is_refused_while_the_master_switch_is_off(
@@ -211,15 +185,8 @@ def test_a_refresh_is_refused_while_the_runtime_switch_is_off(client: TestClient
     assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
 
 
-def test_an_approval_with_the_runtime_switch_off_queues_nothing(client: TestClient, api: Api) -> None:
-    api.switch.runtime = False
-    done = client.post(f"{URL}/sources/nist_nvd/approve")
-    assert done.status_code == 200 and done.json()["refresh_job_id"] is None
-    assert api.feeds.approved == [IntelSource.NIST_NVD] and api.sent == []
-
-
 def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -> None:
-    container.get_admin_job_repository().create(
+    get_admin_job_repository().create(
         {
             "active": True,
             "_id": "emb-1",
@@ -260,37 +227,3 @@ def test_health_with_the_master_switch_off_reads_no_store(
     health = client.get(f"{URL}/health", headers=ADMIN).json()
     assert health["sources"] == [] and health["snapshot_id"] is None and api.feeds.reads == 0
     assert health["switch"]["effective"] is False
-
-
-def test_a_source_is_revoked_purged_and_audited_whatever_the_switch_says(
-    client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
-    revoked = client.post(f"{URL}/sources/nist_nvd/revoke", headers=ADMIN | {"X-User-Id": "op-3"})
-    assert revoked.status_code == 200 and revoked.json() == {"source": "nist_nvd", "records_purged": 7}
-    assert api.records.purged == [IntelSource.NIST_NVD]
-    row = _audit("external_intelligence.source_revoked")[-1]
-    assert row["actor"]["user_id"] == "op-3" and row["target"]["id"] == "nist_nvd"
-    assert client.post(f"{URL}/sources/not_a_source/revoke", headers=ADMIN).status_code == 422
-
-
-def test_a_revoked_source_is_approved_again_audited_and_refreshed(client: TestClient, api: Api) -> None:
-    done = client.post(f"{URL}/sources/nist_nvd/approve", headers=ADMIN | {"X-User-Id": "op-4"})
-    assert done.status_code == 200 and done.json()["source"] == "nist_nvd" and done.json()["refresh_job_id"]
-    assert api.feeds.approved == [IntelSource.NIST_NVD]
-    assert [task for task, _ in api.sent] == [TaskName.REFRESH_EXTERNAL_INTELLIGENCE]
-    job = get_mongodb()[Collection.ADMIN_JOBS].find_one({"_id": done.json()["refresh_job_id"]})
-    assert job["source"] == "nist_nvd" and job["requested_by"] == "op-4"
-    row = _audit("external_intelligence.source_approved")[-1]
-    assert row["actor"]["user_id"] == "op-4" and row["target"]["id"] == "nist_nvd"
-    again = client.post(f"{URL}/sources/cisa_kev/approve", headers=ADMIN)  # a refresh is already queued
-    assert again.status_code == 200 and again.json()["refresh_job_id"] is None
-
-
-def test_the_approval_needs_a_known_source_and_the_master_switch(
-    client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    assert client.post(f"{URL}/sources/not_a_source/approve", headers=ADMIN).status_code == 422
-    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
-    assert client.post(f"{URL}/sources/cisa_kev/approve", headers=ADMIN).status_code == 409
-    assert api.feeds.approved == [] and api.sent == []

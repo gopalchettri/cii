@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app import container
 from app.core.constants import AiOutage, Collection, Header, Status, TaskName
 from app.core.database import get_mongodb
+from app.crud import admin as admin_crud
 
 NOW = datetime.now(UTC)
 TENANT = "T"
@@ -20,7 +20,7 @@ TENANT = "T"
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = container.get_admin_service().create_api_client(f"jobs-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = admin_crud.create_api_client(get_mongodb(), f"jobs-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
@@ -31,12 +31,7 @@ def entity() -> int:
 
 
 def _who(api_key: str, entity_id: int) -> dict[str, str]:
-    return {
-        Header.API_KEY: api_key,
-        Header.USER_ID: "u1",
-        Header.ENTITY_ID: str(entity_id),
-        Header.TENANT_ID: TENANT,
-    }
+    return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: str(entity_id), Header.TENANT_ID: TENANT}
 
 
 def _mapping(entity_id: int, status: Status, tenant_id: str = TENANT, **fields: Any) -> str:
@@ -51,9 +46,7 @@ def _mapping(entity_id: int, status: Status, tenant_id: str = TENANT, **fields: 
     return mapping_id
 
 
-def test_the_list_shows_my_service_mapping_being_generated(
-    client: TestClient, api_key: str, entity: int
-) -> None:
+def test_the_list_shows_my_service_mapping_being_generated(client: TestClient, api_key: str, entity: int) -> None:
     """A mapping queued or running is my work in progress, with its outage notice; a finished one and
     another organisation's are not."""
     notice = {"reason": AiOutage.BUSY, "message": "The AI service is busy.", "attempt": 1,

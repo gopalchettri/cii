@@ -8,28 +8,19 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.core.constants import (
-    AiOutage,
-    ConflictReason,
-    Decision,
-    Remediation,
-    RemediationMessage,
-    RemediationProgress,
-    Status,
-)
+from app.core.constants import AiOutage, ConflictReason, Decision, Remediation, RemediationProgress, Status
 from app.core.exceptions import Conflict, Invalid, NotFound
-from app.domain.remediation.rules import (
-    check_register_systems,
-    decidable_version,
-    decision_change,
-)
-from app.models.remediation.plan import PlanDraft, RemediationResult, RemediationStatus, shown_item
-from app.models.remediation.requests import (
+from app.domain.remediation.plans import check_register_systems, decidable_version, decision_change
+from app.domain.remediation.write import PlanDraft
+from app.schemas.remediation import (
     PLAN_REQUEST_EXAMPLES,
     SYSTEM_LISTS,
     PlanRequest,
     RegenerateRequest,
+    RemediationResult,
+    RemediationStatus,
     ReviewRequest,
+    shown_item,
 )
 
 NOW = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
@@ -47,12 +38,7 @@ MANUAL: dict[str, Any] = {
 }
 HAND_WRITTEN: dict[str, Any] = {"is_manual": True, "manual_scenario": MANUAL}
 #: The register fields a form may leave blank: all of them.
-REGISTER_FIELDS = set(PlanRequest.model_fields) - {
-    "is_manual",
-    "session_id",
-    "scenario_id",
-    "manual_scenario",
-}
+REGISTER_FIELDS = set(PlanRequest.model_fields) - {"is_manual", "session_id", "scenario_id", "manual_scenario"}
 BY = {"decided_by": "u1", "decided_by_client": "c1"}
 
 
@@ -80,21 +66,16 @@ def test_ratings_are_exact_decimals_stored_as_text() -> None:
 def test_the_window_is_a_calendar_pair_in_order() -> None:
     """A date-time keeps the date as written (an offset never moves it a day); a start alone, or a start and
     an end on or after it, never an end alone; the identification time is an instant, kept in UTC."""
-    window = _register(
-        mitigation_start_date="2026-10-01T02:00:00+05:30", mitigation_end_date="2026-12-31T15:38:19.853"
-    )
-    assert (window.mitigation_start_date, window.mitigation_end_date) == (
-        date(2026, 10, 1),
-        date(2026, 12, 31),
-    )
+    window = _register(mitigation_start_date="2026-10-01T02:00:00+05:30", mitigation_end_date="2026-12-31T15:38:19.853")
+    assert (window.mitigation_start_date, window.mitigation_end_date) == (date(2026, 10, 1), date(2026, 12, 31))
     assert window.register()["mitigation_start_date"] == "2026-10-01"
     open_ended = _register(mitigation_start_date="2026-10-01").register()
     assert (open_ended["mitigation_start_date"], open_ended["mitigation_end_date"]) == ("2026-10-01", None)
     wrongs = [
-        ({"mitigation_end_date": "2026-10-01"}, RemediationMessage.WINDOW_END_NEEDS_START),
+        ({"mitigation_end_date": "2026-10-01"}, "mitigation_end_date needs mitigation_start_date."),
         (
             {"mitigation_start_date": "2026-10-02", "mitigation_end_date": "2026-10-01"},
-            RemediationMessage.WINDOW_ORDER,
+            "mitigation_end_date must be on or after mitigation_start_date.",
         ),
     ]
     for wrong, message in wrongs:
@@ -109,13 +90,7 @@ def test_register_controls_take_plain_strings_drop_blanks_and_keep_the_first_of_
     """A code-shaped string is a code and a name; free text is a name; a repeat (case aside) is dropped; an
     entry naming nothing, an impossible id or a 51st entry is refused."""
     controls = _register(
-        existing_controls=[
-            "CII-CID-202",
-            "",
-            "Quarterly phishing simulation",
-            "cii-cid-202",
-            {"control_id": 7},
-        ]
+        existing_controls=["CII-CID-202", "", "Quarterly phishing simulation", "cii-cid-202", {"control_id": 7}]
     ).existing_controls
     assert controls is not None
     assert [(c.control_id, c.control_code, c.control_name) for c in controls] == [
@@ -132,10 +107,13 @@ def test_register_controls_take_plain_strings_drop_blanks_and_keep_the_first_of_
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ({"is_manual": True}, RemediationMessage.MANUAL_NEEDS_SCENARIO),
-        (HAND_WRITTEN | {"scenario_id": "s1"}, RemediationMessage.MANUAL_SENDS_NO_IDS),
-        ({"is_manual": False, "scenario_id": "s1"}, RemediationMessage.GENERATED_NEEDS_IDS),
-        (GENERATED | {"manual_scenario": MANUAL}, RemediationMessage.GENERATED_SENDS_NO_SCENARIO),
+        ({"is_manual": True}, "is_manual=true requires manual_scenario."),
+        (
+            HAND_WRITTEN | {"scenario_id": "s1"},
+            ("is_manual=true must not send session_id or scenario_id: TSG creates them."),
+        ),
+        ({"is_manual": False, "scenario_id": "s1"}, "is_manual=false requires session_id and scenario_id."),
+        (GENERATED | {"manual_scenario": MANUAL}, "is_manual=false must not send manual_scenario."),
     ],
 )
 def test_a_request_sends_exactly_one_kind(body: dict[str, Any], message: str) -> None:
@@ -183,9 +161,7 @@ def test_every_published_example_is_valid() -> None:
     assert [request.is_manual for request in requests] == [False, True]
     for request in requests:
         register = request.register()
-        assert (
-            register["existing_controls"] and register["supporting_systems_applicable_to_existing_controls"]
-        )
+        assert register["existing_controls"] and register["supporting_systems_applicable_to_existing_controls"]
 
 
 def test_review_and_regenerate_bodies_refuse_unknown_fields() -> None:
@@ -250,10 +226,8 @@ def test_the_ai_contract_refuses_blank_text() -> None:
         ANSWER | {"remediation_action_plan": [ACTION | {"depends_on": "A0"}]},
         ANSWER | {"controls_to_be_implemented": {"control_coverage": "gaps"}},
         {key: value for key, value in ANSWER.items() if key != "control_validation"},
-        ANSWER
-        | {"control_validation": [{"control_code": "CII-CID-202", "validation": "kept", "reason": "x"}]},
-        ANSWER
-        | {"control_validation": [{"control_code": "CII-CID-202", "validation": "retained", "reason": " "}]},
+        ANSWER | {"control_validation": [{"control_code": "CII-CID-202", "validation": "kept", "reason": "x"}]},
+        ANSWER | {"control_validation": [{"control_code": "CII-CID-202", "validation": "retained", "reason": " "}]},
     ]
     for answer in broken:
         with pytest.raises(ValidationError):
@@ -307,9 +281,7 @@ def test_overall_progress_takes_the_first_that_applies(
     assert "job.retry" in RemediationStatus.RECORD_FIELDS  # a status read loads the notice
 
 
-def _read(
-    *statuses: Status, decisions: tuple[Decision, ...] = (), accepted: int | None = None
-) -> dict[str, Any]:
+def _read(*statuses: Status, decisions: tuple[Decision, ...] = (), accepted: int | None = None) -> dict[str, Any]:
     """A plan record with one version per status; the latest version's status lives at the top of the record
     (its own item still says queued)."""
     decided = decisions or (Decision.PENDING,) * len(statuses)
@@ -318,12 +290,7 @@ def _read(
         {"version": number, "status": Status.QUEUED if number == latest else status, "decision": decision}
         for number, (status, decision) in enumerate(zip(statuses, decided, strict=True), start=1)
     ]
-    return {
-        "versions": versions,
-        "status": statuses[-1],
-        "job": {"epoch": latest},
-        "accepted_version": accepted,
-    }
+    return {"versions": versions, "status": statuses[-1], "job": {"epoch": latest}, "accepted_version": accepted}
 
 
 def test_the_accepted_version_is_shown_else_the_newest_done() -> None:
@@ -439,15 +406,13 @@ OLD_FLAGS = {
 
 @pytest.mark.parametrize("kind", BASES)
 @pytest.mark.parametrize("flag", OLD_FLAGS)
-@pytest.mark.parametrize(
-    "value", [0, 1, [321], None, "", "Yes"], ids=["0", "1", "list", "null", "blank", "yes"]
-)
-def test_an_old_supporting_system_flag_is_refused_naming_the_list_to_send(
-    kind: str, flag: str, value: Any
-) -> None:
+@pytest.mark.parametrize("value", [0, 1, [321], None, "", "Yes"], ids=["0", "1", "list", "null", "blank", "yes"])
+def test_an_old_supporting_system_flag_is_refused_naming_the_list_to_send(kind: str, flag: str, value: Any) -> None:
     """Any value of an old flag, with the two lists or without them, is refused on that field with a message
     naming the list to send instead."""
-    message = RemediationMessage.SYSTEM_FLAG_REMOVED.format(flag=flag, replacement=OLD_FLAGS[flag])
+    message = (
+        f"{flag} is no longer accepted: send {OLD_FLAGS[flag]}, the list of the asset's supporting system ids, instead."
+    )
     for lists in ({}, dict.fromkeys(SYSTEM_LISTS, [321])):
         with pytest.raises(ValidationError) as refused:
             PlanRequest.model_validate(BASES[kind] | lists | {flag: value})
@@ -460,7 +425,13 @@ def test_old_flags_sent_together_are_each_refused_on_their_own_field(kind: str) 
     with pytest.raises(ValidationError) as refused:
         PlanRequest.model_validate(BASES[kind] | dict.fromkeys(OLD_FLAGS, 1))
     assert [(error["loc"], error["msg"]) for error in refused.value.errors()] == [
-        ((flag,), RemediationMessage.SYSTEM_FLAG_REMOVED.format(flag=flag, replacement=list_to_send))
+        (
+            (flag,),
+            (
+                f"{flag} is no longer accepted: send {list_to_send}, the list of the asset's "
+                "supporting system ids, instead."
+            ),
+        )
         for flag, list_to_send in OLD_FLAGS.items()
     ]
 
@@ -491,18 +462,13 @@ def test_the_lists_drop_repeats_when_stored_and_a_wrong_id_is_named_where_it_was
     lists = {
         "supporting_systems_applicable_to_risk": [324, 321, 324, 322, 321],
         "supporting_systems_applicable_to_existing_controls": [322, 322, 321],
-        "existing_controls": [
-            {"control_code": "CII-CID-1"},
-            {"control_code": "cii-cid-1", "control_name": "x"},
-        ],
+        "existing_controls": [{"control_code": "CII-CID-1"}, {"control_code": "cii-cid-1", "control_name": "x"}],
     }
     request = PlanRequest.model_validate(BASES[kind] | lists)
     stored = request.register()
     assert stored["supporting_systems_applicable_to_risk"] == [324, 321, 322]
     assert stored["supporting_systems_applicable_to_existing_controls"] == [322, 321]
-    assert stored["existing_controls"] == [
-        {"control_id": None, "control_code": "CII-CID-1", "control_name": None}
-    ]
+    assert stored["existing_controls"] == [{"control_id": None, "control_code": "CII-CID-1", "control_name": None}]
     assert not set(OLD_FLAGS) & set(stored)
     with pytest.raises(Invalid) as refused:
         check_register_systems(request, [321, 322])

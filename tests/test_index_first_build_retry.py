@@ -8,7 +8,7 @@ import pytest
 
 from app.core.constants import AI_OUTAGE_MESSAGES, AiOutage
 from app.core.exceptions import Unavailable
-from app.search.external_intelligence.index_keeper import RETRY_FIRST_SECONDS, EvidenceIndexKeeper
+from app.domain.intel.index import RETRY_FIRST_SECONDS, EvidenceIndexKeeper
 from tests.external_intelligence.evidence_fakes import TextEmbeddings, technique_doc
 from tests.external_intelligence.search.test_index_keeper import Clock, _keeper
 
@@ -36,9 +36,11 @@ def _built_within_seconds(keeper: EvidenceIndexKeeper, seconds: float = 5.0) -> 
     return False
 
 
-def test_a_first_build_an_outage_keeps_stopping_is_tried_again_after_the_first_pause_each_time() -> None:
+def test_a_first_build_an_outage_keeps_stopping_is_tried_again_after_the_first_pause_each_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     clock, embeddings = Clock(), BusyEmbeddings()
-    keeper, *_ = _keeper([technique_doc("T1")], embeddings, clock=clock)
+    keeper, *_ = _keeper(monkeypatch, [technique_doc("T1")], embeddings, clock=clock)
     for _ in range(6):  # six busy builds in a row: a doubled pause would now be 900 s
         with pytest.raises(Unavailable):
             keeper.rebuild_index().result(10)

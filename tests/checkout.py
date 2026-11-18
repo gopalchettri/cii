@@ -4,7 +4,10 @@ test databases (2026-10-12: a run in cii-exteranl-intelligence-poc dropped this 
 before the app reads its settings."""
 
 import hashlib
+import os
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-CHECKOUT = hashlib.sha256(str(REPO).lower().encode()).hexdigest()[:8]
+#: A parallel run (pytest -n 6) names its workers gw0, gw1, ...: each gets its own databases.
+WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+CHECKOUT = hashlib.sha256(str(REPO).lower().encode()).hexdigest()[:8] + (f"_{WORKER}" if WORKER else "")

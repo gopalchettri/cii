@@ -74,6 +74,10 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #        oc -n ai-common scale deployment/worker-reaper --replicas=0
 #      (back afterwards: deploy\DEPLOYMENT_GUIDE.md Part 2, step 12)
 #    - First time only: the DBA must have installed scripts\sql\tsg_*.sql (+ grants.sql) in EYShieldDB_Copy.
+#    - This release (POST /v1/create_session): the DBA installs the updated scripts\sql\tsg_GetAssetContext.sql
+#      again, on each SQL Server TSG uses. Nobody who runs TSG can do it: only the database team has that access.
+#      It now returns the asset's "data handled". Until it is installed every run still works; that one fact is
+#      only missing from what the AI is told.
 
 # 7. Start everything - one command, from the cii folder
 .\run.ps1 -NoBrowser -ApiHost 0.0.0.0
@@ -99,6 +103,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    In a browser on this machine:
 #      http://localhost:8000/health  -> {"status": "ok"}
 #      http://localhost:8000/docs    -> API documentation
+#      http://localhost:8000/ui/     -> the admin page (step 12a)
 #    From ANOTHER PC (the one the UI runs on):
 #      Test-NetConnection <this machine's name or IP> -Port 8000      -> TcpTestSucceeded : True
 #      curl.exe http://<this machine's name or IP>:8000/health        -> {"status": "ok"}
@@ -133,7 +138,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #         reach the AI gateway. llmapi.govai.ae must be on the pods' NO_PROXY so the calls go to it directly.
 #    1. See what runs (changes nothing):
 #         oc -n ai-threatgen get deploy -o custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
-#    FULL STEPS, with every check and the undo: docs\UAT_LLM_TIMEOUT_RUNBOOK.md. In short:
+#    Other AI failures: deploy\DEPLOYMENT_GUIDE.md Part 5. For this one:
 #    2. Test from inside EACH app pod (the API and every worker, in ai-threatgen; changes nothing). Copy it exactly:
 #       no double quotes inside the single quotes (Windows PowerShell 5.1 breaks them):
 #         oc -n <project> exec deploy/<name> -- sh -c 'echo NO_PROXY=$NO_PROXY no_proxy=$no_proxy; curl -s -m 30 -o /dev/null -w default:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?; curl -s -m 30 --noproxy llmapi.govai.ae -o /dev/null -w direct:%{http_code} https://llmapi.govai.ae/health/liveliness; echo ,exit=$?'
@@ -145,7 +150,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    4. Check: step 2 again on every changed deployment (both lines list llmapi.govai.ae, "default:200,exit=0");
 #       one threat run and one plan finish.
 #    5. For good: deploy from this repository, step by step: deploy\DEPLOYMENT_GUIDE.md (plain YAML applied with
-#       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first): its Part 2, step 9.
+#       oc). From v1 this is the switch to v2 (downtime; the DBA installs scripts\sql\tsg_*.sql first).
 #       Never delete the old v1 deployments before v2 is accepted: they are the way back (the guide's "Roll back").
 #    6. Check: every worker's start-up log has  "route": "direct"  in its ai.gateway_route line:
 #         oc -n <project> logs deploy/worker-scenarios | findstr ai.gateway_route
@@ -167,10 +172,35 @@ curl.exe http://localhost:8000/v1/tsg/intel/health
 #    A source "failed": its last_error ends with the reason, e.g. "(last: ConnectTimeout: ...)" or "(last: HTTP 503)".
 #      ConnectTimeout / ConnectError / ProxyError = the app cannot get out (proxy, firewall): set
 #      CII_PROXY_URL=<the proxy of step 3> in .env, .\stop.ps1, .\run.ps1, refresh again. HTTP 5xx or 429 = the
-#      source is busy, the next hourly check tries again.
+#      source is busy: refresh again later (an import the schedule started tries again within the hour by itself).
 #    On OpenShift use https://threatgen-api.apps.dda-desc-az1-01.desccii.local instead of http://localhost:8000
 #    (add -k if this PC does not trust the cluster certificate).
 #    ...snapshot_id must be set. EVIDENCE_SIMILARITY_THRESHOLD=50 is provisional (not calibrated on the UAT reranker).
+#    The sources are MITRE ATT&CK Enterprise and ICS only. After this first import TSG imports by itself on the
+#    saved schedule: weekly on Sunday 02:00 UTC until someone changes it (and once at beat's first check, about a
+#    minute after the first start). Read it, or change it (daily or weekly, one time of day, any time zone):
+curl.exe http://localhost:8000/v1/tsg/intel/schedule
+#      curl.exe -X PUT http://localhost:8000/v1/tsg/intel/schedule -H "Content-Type: application/json"
+#        -d "{\"enabled\": true, \"frequency\": \"weekly\", \"day_of_week\": 6, \"time\": \"02:00\", \"timezone\": \"Asia/Dubai\"}"
+#      day_of_week: 0 = Monday ... 6 = Sunday (left out when daily). "enabled" false = no import by itself;
+#      the refresh line above still works.
+#    After every import TSG links each MITRE mitigation to controls of the control library, by itself
+#    (job tsg_link_mitigations in the 'TSG maintenance' window). The first time this is about 100 AI calls, once;
+#    a later run asks the AI only for a mitigation that changed. How far it is (not_prepared 0 = finished):
+curl.exe http://localhost:8000/v1/tsg/intel/control-links
+#    POST /v1/create_session needs the import (else 409 intel_no_data: ICS for an OT asset, Enterprise for an IT
+#    one, both for an IT\OT or a mixed one); it works before the links are ready (controls are then found by
+#    meaning alone), and also with the switch off, from the ATT&CK data already stored.
+#    Each import first deletes what the four removed feeds (KEV, EPSS, NVD, ICS advisories) left in MongoDB.
+
+# 12a. The admin page: http://localhost:8000/ui/ (the API serves it; nothing to install or start)
+#    Pages: Data ingestion (switch, each source's state, import now), Schedule, Control links, Jobs,
+#    Search vectors, API keys, Library curation, AI usage, System.
+#    Jobs, Search vectors, API keys and Library curation need the admin key: type CII_ADMIN_API_KEY in the bar at
+#    the top and press "Set key". The key stays in that browser tab's memory only: it is not saved, and a reload
+#    asks for it again. The other pages need no key, as their API routes need none.
+#    SECURITY: the page has no login of its own. Anyone who can reach port 8000 can open it and change the
+#    switch and the schedule, exactly as they can call those API routes today.
 
 # 13. Grafana + Flower (monitoring). .\run.ps1 starts them (step 7) and .\stop.ps1 stops them.
 #    .\run.ps1 status lists them: 7 lines, each "ready" (Grafana, Prometheus, Alertmanager, Loki, Alloy, Flower, redis_exporter).
@@ -198,7 +228,7 @@ celery -A app.worker inspect ping
 #    must answer pong from scenarios@..., mapper@..., maintenance@... and reaper@...
 celery -A app.worker inspect active_queues
 #    scenarios@... serves tsg_threats + tsg_scenarios + tsg_controls + tsg_remediation; mapper@... serves tsg_servicemapper; maintenance@... serves
-#    tsg_maintenance (intelligence refresh, embeddings builds); reaper@... serves tsg_reaper (the reaper, the controls retry sweep).
+#    tsg_maintenance (intelligence refresh, control links, embeddings builds); reaper@... serves tsg_reaper (the reaper, the controls retry sweep).
 #    Each worker is named by its module:
 #    its log file is logs/worker-<name>.log, and every job line carries module=<module> and worker=<name>@<host>.
 #    Beat is not in these checks: about 1 minute after it starts, the 'TSG reaper' window must log tsg_reap, every minute.

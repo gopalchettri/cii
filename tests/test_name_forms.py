@@ -5,7 +5,7 @@ Generation System (PGS)") and on whole words only ("ICS" is never the
 from app.core.constants import Writing
 from app.domain.scenario.write import _pick_reason_for_system, _read_scenario_draft
 from app.domain.shared.names import is_same_name
-from app.models.scenario.write import BriefSystem, WriterBrief
+from app.schemas.scenario_internal import BriefSystem, WriterBrief
 
 PGS = "Power Generation System (PGS)"
 DCS = "Distributed Control System (DCS)"
@@ -38,9 +38,7 @@ def test_every_form_of_a_name_is_the_same_name_and_nothing_else_is() -> None:
 
 def test_the_writer_reads_a_system_and_an_entry_point_by_their_short_form() -> None:
     """A miss here refused the answer: the AI was asked again, then the path failed."""
-    assert _reasons_by_system({"DCS": " It runs the turbines. "}, (_YES_DCS,), "") == (
-        (DCS, "It runs the turbines."),
-    )
+    assert _reasons_by_system({"DCS": " It runs the turbines. "}, (_YES_DCS,), "") == ((DCS, "It runs the turbines."),)
     assert _offered_entry_point("DCS", (DCS, "Historian")) == DCS
 
 
@@ -60,9 +58,7 @@ def test_a_yes_system_without_a_reason_takes_the_story_sentence_naming_it_else_c
     assert _reasons_by_system({"Historian": "Its records."}, (_YES_DCS,), story) == (
         (DCS, "Then the DCS setpoints could change."),
     )
-    assert _reasons_by_system({"DCS": "  "}, (_YES_DCS,), "The asset could stop.") == (
-        (DCS, Writing.REACHED_REASON),
-    )
+    assert _reasons_by_system({"DCS": "  "}, (_YES_DCS,), "The asset could stop.") == ((DCS, Writing.REACHED_REASON),)
 
 
 def test_an_entry_point_not_offered_is_ignored_and_the_first_option_assigned() -> None:

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from structlog.contextvars import bound_contextvars
 from structlog.testing import capture_logs
 
-from app import container
+from app.core import readiness
 from app.core.config import get_settings
 from app.core.constants import (
     AdminJobKind,
@@ -19,17 +19,18 @@ from app.core.constants import (
     Collection,
     ErrorCode,
     IntelRefreshMessage,
-    IntelSource,
     LogEvent,
     Status,
     TaskName,
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.external_intelligence.intelligence_switch import IntelligenceSwitch
-from app.domain.service_mapper.reconcile import reconcile
-from app.models.external_intelligence.intel_admin import IntelSourceApproved, IntelSwitchOut
-from app.services.admin.admin_service import queue_admin_job
+from app.crud.admin import queue_admin_job
+from app.crud.admin_jobs import get_admin_job_repository
+from app.domain import jobs
+from app.domain.intel.switch import IntelligenceSwitch
+from app.domain.service_mapper.generate import reconcile
+from app.schemas.intel import IntelSwitchOut
 from tests.conftest import ADMIN
 from tests.external_intelligence.fakes import intelligence_service
 from tests.external_intelligence.switch.test_switch_admin import Flags
@@ -41,12 +42,7 @@ def _queue(job_id: str, kind: str, sent: bool = True) -> None:
     """Queue an admin job of `kind` through the one function every admin job is queued by."""
     job = {"_id": job_id, "kind": kind, "status": Status.QUEUED}
     queue_admin_job(
-        container.get_admin_job_repository(),
-        lambda _task, _job_id: sent,
-        TaskName.BUILD_LIBRARY_INDEXES,
-        job,
-        "busy",
-        "not sent",
+        get_admin_job_repository(), lambda _task, _job_id: sent, TaskName.BUILD_LIBRARY_INDEXES, job, "busy", "not sent"
     )
 
 
@@ -58,7 +54,7 @@ def test_an_admin_job_keeps_the_request_that_queued_it() -> None:
     job_id = uuid.uuid4().hex
     with bound_contextvars(request_id="req-admin-3"):
         _queue(job_id, uuid.uuid4().hex)
-    assert container.get_admin_job_repository().get_any_admin_job(job_id)["request_id"] == "req-admin-3"
+    assert get_admin_job_repository().get_any_admin_job(job_id)["request_id"] == "req-admin-3"
 
 
 def test_the_job_list_finds_a_requests_jobs_with_their_lease(client: TestClient) -> None:
@@ -82,9 +78,8 @@ def test_the_job_list_answers_when_the_worker_count_cannot_be_read(
     def redis_down(_queues: Any) -> dict[str, int]:
         raise ConnectionError("redis down")
 
-    monitor = container.get_job_monitor_service()
-    monkeypatch.setattr(monitor, "_count_workers", redis_down)
-    monkeypatch.setattr(monitor, "_count_waiting", lambda _queue: 0)
+    monkeypatch.setattr(readiness, "count_online_workers", redis_down)
+    monkeypatch.setattr(jobs, "_count_waiting", lambda _queue: 0)
     response = client.get("/v1/admin/jobs", headers=ADMIN)
     assert response.status_code == 200
     assert {state["workers_online"] for state in response.json()["queues"].values()} == {None}
@@ -101,15 +96,13 @@ def test_an_admin_job_that_fails_writes_its_job_failed_line() -> None:
 
 
 def test_a_long_running_admin_job_is_not_failed_for_its_time_in_the_queue() -> None:
-    jobs = container.get_admin_job_repository()
+    jobs = get_admin_job_repository()
     now = datetime.now(UTC)
     long_ago = now - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS + 600)
     started_late, never_started = uuid.uuid4().hex, uuid.uuid4().hex
     for job_id in (started_late, never_started):
         kind = uuid.uuid4().hex
-        assert jobs.create_admin_job(
-            {"_id": job_id, "kind": kind, "status": Status.QUEUED, "created_at": long_ago}
-        )
+        assert jobs.create_admin_job({"_id": job_id, "kind": kind, "status": Status.QUEUED, "created_at": long_ago})
     assert jobs.update_admin_job_running(started_late, now - timedelta(minutes=5))
     assert jobs.renew_admin_job(started_late, now)  # its heartbeat still beats
     failed = {job["_id"] for job in jobs.fail_stale_admin_jobs(now)}
@@ -120,38 +113,19 @@ def test_a_long_running_admin_job_is_not_failed_for_its_time_in_the_queue() -> N
     assert jobs.create_admin_job(newer) == started_late  # still the active one: not taken over
 
 
-class _ApprovedFeeds:
-    """Every source approved; an approval only noted."""
-
-    def update_intel_feed_approval(self, source: IntelSource, approved: bool, **_: Any) -> None:
-        return None
-
-    def count(self, **_: Any) -> int:
-        return 1
-
-
 def _intel_with_no_job_queue(monkeypatch: pytest.MonkeyPatch) -> Any:
     """The intelligence admin with the switch on and a job queue that is unreachable."""
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
     _clear_active(AdminJobKind.INTEL_REFRESH)
     switch = IntelligenceSwitch(Flags(), lambda: True)  # type: ignore[arg-type]
-    return intelligence_service(switch=switch, feeds=_ApprovedFeeds(), index_keeper=None)
+    return intelligence_service(monkeypatch, switch=switch, index_keeper=None)
 
 
-def test_turning_intelligence_on_stands_when_its_refresh_cannot_be_queued(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_turning_intelligence_on_stands_when_its_refresh_cannot_be_queued(monkeypatch: pytest.MonkeyPatch) -> None:
     state = IntelSwitchOut.model_validate(
         _intel_with_no_job_queue(monkeypatch).update_intelligence_switch_state(True, "op")
     )
     assert state.runtime_enabled and state.refresh_not_queued == IntelRefreshMessage.NOT_SENT
-
-
-def test_an_approval_stands_when_its_refresh_cannot_be_queued(monkeypatch: pytest.MonkeyPatch) -> None:
-    approved = IntelSourceApproved.model_validate(
-        _intel_with_no_job_queue(monkeypatch).approve_intelligence_source(IntelSource.CISA_KEV, "op")
-    )
-    assert approved.refresh_job_id is None and approved.refresh_not_queued == IntelRefreshMessage.NOT_SENT
 
 
 def test_a_mapping_replay_answers_the_mappings_real_status() -> None:

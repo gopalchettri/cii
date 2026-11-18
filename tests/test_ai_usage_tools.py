@@ -18,8 +18,8 @@ from app.core.clock import utc_now
 from app.core.constants import AiUsageCollection, AiUsageMessage
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.admin.ai_call_repository import AiCallRepository
-from app.data_access.admin.ai_usage_repository import AiUsageRepository
+from app.crud import ai_calls, ai_usage
+from app.domain.ai_usage import roll_up_ai_usage
 from app.worker.admin import ai_usage_tools
 
 
@@ -30,7 +30,7 @@ def _spilled(rows: list[dict], monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         raise ConnectionError("mongodb down")
 
     with monkeypatch.context() as down:
-        down.setattr(AiUsageRepository, "create_rows", refused)
+        down.setattr(ai_usage, "insert_rows", refused)
         with capture_logs() as logs:
             write_usage_rows([dict(row) for row in rows])
     return logs
@@ -38,14 +38,7 @@ def _spilled(rows: list[dict], monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 def _row(request_id: str, at: datetime, **extra: object) -> dict:
     fields = {"bucket": "threats", "task": "relevance_gate", "model": "kimi", "outcome": "ok", "try_no": 1}
-    return {
-        "_id": ObjectId(),
-        "created_at": at,
-        "request_id": request_id,
-        "ask_id": ObjectId(),
-        **fields,
-        **extra,
-    }
+    return {"_id": ObjectId(), "created_at": at, "request_id": request_id, "ask_id": ObjectId(), **fields, **extra}
 
 
 def test_a_spilled_row_is_stored_again_exactly_and_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,24 +70,18 @@ def test_replay_reads_each_export_an_operator_has(monkeypatch: pytest.MonkeyPatc
         ai_usage_tools.spilled_rows(grafana_text),
         ai_usage_tools.spilled_rows(ai_usage_tools._read_export(str(tmp_path / "spilled.txt"))),
     ]
-    assert [[row["request_id"] for row in rows_found] for rows_found in found] == [
-        [row["request_id"]] for row in rows
-    ]
+    assert [[row["request_id"] for row in rows_found] for rows_found in found] == [[row["request_id"]] for row in rows]
 
 
-def test_a_replay_counts_a_request_once_in_the_hour_of_its_first_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_replay_counts_a_request_once_in_the_hour_of_its_first_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """Review 2026-10-29: a request whose first rows were spilled was counted in the hour of its first stored
     row; the replay added up only the replayed hour, so it was counted there too. It now adds up every hour
     from the oldest row to now. Mutation: add up only the replayed rows' hours."""
-    from app import container
-
     request_id, now = uuid.uuid4().hex, utc_now()
     first, later = now - timedelta(hours=2), now - timedelta(hours=1)
     marker = f"replay-{uuid.uuid4().hex}"
-    AiUsageRepository().create_rows([_row(request_id, later, model=marker)])
-    container.get_ai_usage_service().roll_up_hours(first, now)
+    ai_usage.insert_rows(get_mongodb(), [_row(request_id, later, model=marker)])
+    roll_up_ai_usage(get_mongodb(), first, now)
     spilled = _spilled([_row(request_id, first, model=marker)], monkeypatch)
     ai_usage_tools.replay_spilled_rows("\n".join(json.dumps(entry, default=str) for entry in spilled))
     hourly = get_mongodb()[AiUsageCollection.HOURLY].find({"model": marker})
@@ -106,14 +93,14 @@ def test_the_previous_releases_call_texts_are_carried_over_once() -> None:
     """A day at a time (one copy of it all outlasted the client's 30 s wait, review 2026-10-29), a record with
     no time too. Mutation: replace a text already carried over (a newer copy would be lost)."""
     old = get_mongodb()[f"test_old_calls_{uuid.uuid4().hex}"]
-    kept = AiCallRepository(get_mongodb()[f"test_texts_{uuid.uuid4().hex}"])
+    kept = get_mongodb()[f"test_texts_{uuid.uuid4().hex}"]
     days_ago = [utc_now() - timedelta(days=days) for days in (13, 2, 0)]
     old.insert_many([{"_id": n, "created_at": at, "response": f"text {n}"} for n, at in enumerate(days_ago)])
     old.insert_one({"_id": "untimed", "response": "no time"})
-    kept.collection.insert_one({"_id": 0, "response": "kept"})
-    assert kept.copy_records_from(old.name) == 4
-    assert kept.copy_records_from(old.name) == 4
-    assert kept.collection.find_one({"_id": 0})["response"] == "kept"
+    kept.insert_one({"_id": 0, "response": "kept"})
+    assert ai_calls.copy_records_from(kept, old.name) == 4
+    assert ai_calls.copy_records_from(kept, old.name) == 4
+    assert kept.find_one({"_id": 0})["response"] == "kept"
 
 
 def test_a_busy_add_up_is_one_line_for_the_operator_not_a_traceback(
@@ -123,11 +110,11 @@ def test_a_busy_add_up_is_one_line_for_the_operator_not_a_traceback(
     its foot. Mutation: let Unavailable through."""
 
     def busy(*_: str) -> str:
-        raise Unavailable(AiUsageMessage.ROLLUP_BUSY)
+        raise Unavailable(AiUsageMessage.REPORTS_BUSY)
 
     monkeypatch.setattr(ai_usage_tools, "main", busy)
     assert ai_usage_tools.run(["replay", "-"]) == 1
-    assert capsys.readouterr().err.strip() == AiUsageMessage.ROLLUP_BUSY
+    assert capsys.readouterr().err.strip() == AiUsageMessage.REPORTS_BUSY
     monkeypatch.setattr(ai_usage_tools, "main", lambda *_: "done")
     assert ai_usage_tools.run(["roll-up"]) == 0 and capsys.readouterr().out.strip() == "done"
 

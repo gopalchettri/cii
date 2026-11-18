@@ -7,7 +7,7 @@
 | Put a new version on UAT (TSG runs there already: the usual case) | **Part 4**, which starts with a checklist |
 | Deploy TSG where it has never run | Parts 1, 2 and 3, in order |
 | Fix a step that failed | Part 5 |
-| Understand the setup (not needed to deploy) | Part 6 |
+| Understand the setup (not needed to deploy) | `docs/CONCURRENT_USERS_SIZING.md` and the comments in the `deploy\*.yaml` files |
 
 Not sure whether TSG runs there already? After you log in (Part 2, step 1), run
 `oc -n ai-common get deployment -l part-of=tsg-monitoring`: `No resources found` means the first time; a list (8
@@ -39,8 +39,7 @@ Have all of these ready:
       `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';C:\tools', 'User')`
       and open a new PowerShell window. Check: `oc version --client` prints `Client Version: 4...`.
 - [ ] An OpenShift user with **admin** rights in `ai-threatgen` and `ai-common` (the monitoring creates roles in
-      them), and, once, rights to delete TSG's objects in `ai-remediation` (Part 2, step 11: TSG no longer runs
-      there). Ask the cluster admin.
+      them). Ask the cluster admin.
 - [ ] A Quay user name and password that may push to `dda-desc` **and create new repositories there**: each
       monitoring image is a new repository (step 3 lists them). If your user may not create repositories, the Quay
       admin creates them first, with Write for your user. Ask the cluster admin who the Quay admin is.
@@ -56,7 +55,6 @@ Have all of these ready:
   - the AI gateway key (ask the AI gateway admin; the same key goes in each module's own
     `CII_SCENARIO_CHAT_API_KEY`, `CII_REMEDIATION_CHAT_API_KEY`, `CII_SERVICE_MAPPER_CHAT_API_KEY`, and in
     `CII_EMBEDDING_API_KEY` and `CII_RERANK_API_KEY`, unless a module gets a key of its own);
-  - the NVD key (free at https://nvd.nist.gov/developers/request-an-api-key), or none;
   - an admin key (32 or more characters) and a Grafana password (16 or more characters): you make them up in step 7.
 - [ ] The platform UI's https address: `deploy\configmap.yaml` already holds UAT's (`CII_CORS_ORIGINS`). Ask the
       platform UI team only if it changed (step 8).
@@ -135,7 +133,7 @@ oc -n ai-threatgen describe quota
 
 **You should see:** each quota with a `Used` and a `Hard` column. `limits.cpu` and `limits.memory` must have a Hard of
 at least `5.5` and `10.6Gi` (6 CPU and 12 GB or 12Gi both fit): TSG's pods there need 5.5 CPU and 10.56 Gi, and
-an update never adds a pod (Part 6). TSG's own pods are part of `Used`: they are replaced, not added. Anything else
+an update never adds a pod (the header of `deploy\deploy_threatgen.yaml`). TSG's own pods are part of `Used`: they are replaced, not added. Anything else
 in `Used` (v1's pods) takes from the same quota.
 
 **If Hard is lower:** send the cluster admin those quota lines and wait for more room before step 12.
@@ -328,7 +326,6 @@ projects) and `tsg-monitoring` (Grafana's password and the alert email passwords
   owner has not turned TLS on, write `redis://` instead, in both lines.
 - The admin key and the Grafana password are yours to make up. This makes one (64 characters):
   `-join (1..2 | ForEach-Object { [guid]::NewGuid().ToString('N') })`
-- No NVD key: delete `CHANGE_ME` so the line reads `CII_NVD_API_KEY: ""`.
 - **Keep the Grafana password**: you need it to sign in to Grafana.
 - Alert email (step 8 picks the sender): `SMTP_RELAY_PASSWORD` is the company mail relay's password,
   `GMAIL_APP_PASSWORD` a Google app password (Google account, Security, App passwords; it needs 2-Step
@@ -365,9 +362,10 @@ and no `/` at the end. The app compares it letter for letter with the browser's 
 separate them with commas. Never `*`: any web site could then call the API from a browser (the app refuses it
 only when `CII_ENV` is `prod`; UAT's is `uat`).
 
-Alert email (optional): leave the `CHANGE_ME_` words in the `alertmanager.yml` part as they are, and no email is
-sent; alerts still show in Grafana and at `/alertmanager`, and Alertmanager logs a failed send for each. To send
-email: in the `alertmanager.yml` part, the line `receiver:` under `route:` picks the sender, `company-smtp`
+Alert email (optional): leave the `CHANGE_ME_` words in `observability\alertmanager\alertmanager.yml` as they are,
+and no email is sent; alerts still show in Grafana and at `/alertmanager`, and Alertmanager logs a failed send for
+each. To send email (`notepad observability\alertmanager\alertmanager.yml`): the line `receiver:` under `route:`
+picks the sender, `company-smtp`
 (the company mail relay) or `gmail`. In that sender's lines, replace each `CHANGE_ME_` word: the relay's
 `host:port` (company-smtp only), the sender address and login, and the recipients (comma-separated). A
 relay that does not offer STARTTLS needs the line `require_tls: false` added under its `smarthost:` line.
@@ -380,62 +378,20 @@ oc -n ai-common exec deploy/alertmanager -- amtool --alertmanager.url=http://loc
 
 **You should see:** the email within a few minutes. None: read `oc -n ai-common logs deploy/alertmanager` for the
 failed send (the relay's address, login or the network rule to it).
-Make the same change in `observability\alertmanager\alertmanager.yml` (the tests fail when the two differ). Mail does not go
-through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common` (Part 1).
+Mail does not go through the proxy: the relay, or `smtp.gmail.com` port 587, must be reachable from `ai-common` (Part 1).
 Save and close Notepad, then:
 
 ```powershell
 Select-String -Path deploy\configmap.yaml -Pattern 'CII_CORS_ORIGINS:'
 oc apply -f deploy\configmap.yaml
+oc apply -k observability
 ```
 
 **You should see:** first one line with `CII_CORS_ORIGINS: "https://threatgen-api.apps.dda-desc-az1-01.desccii.local"`
-(or the UI address you set), then `configmap/... created` (or `configured`).
+(or the UI address you set), then `configmap/... created` (or `configured`) for `tsg-config` and for each of the
+8 monitoring ConfigMaps, which `oc apply -k observability` makes from the files in `observability/`.
 
 **If that line still has `CHANGE_ME`, a path or a `/` at the end:** fix it in Notepad and run the two lines again.
-
-### Step 9. Remove the old deployment (first time only)
-
-An older TSG version may run in these projects. These commands stop it and remove it. Where it is not there, you
-see `NotFound`: that is fine. The API is down from here until step 12 is finished.
-
-**Do:**
-
-```powershell
-oc -n ai-threatgen scale deployment tsg-api celery-worker celery-worker-admin tsg-beat tsg-flower --replicas=0
-oc -n ai-threatgen delete deployment api worker-threats worker-scenarios worker-controls worker-remediation worker-service-mapper worker-maintenance beat --ignore-not-found
-oc -n ai-common delete route -l part-of=tsg-monitoring
-foreach ($p in 'ai-threatgen', 'ai-common') { "== $p"; oc -n $p get route | findstr threatgen }
-```
-
-**You should see:** `scaled`, `deleted`, `NotFound` or `No resources found` lines (`NotFound` and `No resources
-found` are fine), then, under each `== <project>`, the Routes that use a `threatgen` address. In ai-common, shared
-with the chatbot, TSG's Routes are deleted by their label, never by name: a chatbot Route may have the same name.
-
-**If the last command lists an old Route**, delete it, or the new one cannot take its address. Old means: in
-`ai-threatgen`, any Route except `api`, `grafana` and `flower`; in `ai-common`, any Route listed (the
-`threatgen-grafana` Routes there were TSG's older ones: the new Routes live in `ai-threatgen`). Delete an old Route
-with:
-
-```powershell
-oc -n <project> delete route <name>
-```
-
-**Then remove TSG's older monitoring in ai-common**, if an older TSG version left it there. First list it:
-
-```powershell
-oc -n ai-common get deployment -l app.kubernetes.io/part-of=tsg-observability
-```
-
-**You should see:** `No resources found` (then this step is done), or some of `prometheus`, `alertmanager`, `loki`,
-`alloy`, `grafana`, `redis-exporter`, `kube-state-metrics` and `flower`. That label is TSG's older one, not the
-chatbot's. Delete them and their Routes (their volumes, with the metrics, the logs and Grafana's database, stay):
-
-```powershell
-oc -n ai-common delete deployment,route -l app.kubernetes.io/part-of=tsg-observability
-```
-
-**If the list shows another name:** do not delete anything; ask the developer first.
 
 ### Step 10. Apply the network rules
 
@@ -446,35 +402,6 @@ oc apply -f deploy\networkpolicy_threatgen.yaml
 ```
 
 **You should see:** `networkpolicy.networking.k8s.io/... created` (or `configured`) for each rule.
-
-### Step 11. Remove TSG from ai-remediation (once)
-
-TSG runs only in `ai-threatgen` and `ai-common` (owner, 28-Oct-2026). Earlier releases also ran a second copy of
-every worker, and older ones the monitoring, in `ai-remediation`. These commands remove what TSG left there. TSG's
-objects carry the label `part-of=tsg` or `part-of=tsg-monitoring`, so nothing else in the project is touched; the
-older monitoring is deleted by its TSG names. `NotFound` and `No resources found` are fine.
-
-**Do:**
-
-```powershell
-oc -n ai-remediation scale deployment celery-worker celery-exporter mssql-exporter mongodb-exporter --replicas=0
-oc -n ai-remediation delete deployment,networkpolicy,configmap,secret -l part-of=tsg
-oc -n ai-remediation delete role,rolebinding -l part-of=tsg-monitoring
-oc -n ai-remediation delete deployment prometheus alertmanager loki alloy grafana redis-exporter kube-state-metrics flower --ignore-not-found
-oc -n ai-remediation delete route grafana prometheus alertmanager loki flower --ignore-not-found
-oc -n ai-remediation get deployment,networkpolicy,configmap,secret,role,rolebinding -l 'part-of in (tsg,tsg-monitoring)'
-oc -n ai-remediation get route | findstr threatgen
-```
-
-**You should see:** `scaled`, `deleted`, `NotFound` or `No resources found` lines, then `No resources found` from the
-`get` line and nothing from the last line. The older monitoring's volumes there (`prometheus-data`, `loki-data`,
-`grafana-data`) stay until the owner deletes them.
-
-**If the last line lists a Route:** it holds a `threatgen` address the new Routes need. Delete it:
-`oc -n ai-remediation delete route <name>`.
-
-**If a line says `Forbidden`:** ask the cluster admin for rights to delete these in `ai-remediation` (Part 1), or to
-run these lines for you.
 
 ### Step 12. Start the reaper worker in ai-common, then the API, the workers and beat in ai-threatgen
 
@@ -527,7 +454,7 @@ other stores and the workers are only reported. Wait a minute and try again; sti
 
 **If nothing is printed:** this PC cannot reach the API's address. Ask the network team.
 
-**If it prints an HTML page with `Application is not available`:** the address works, but no API pod is ready or another Route holds the address. Run `oc -n ai-threatgen get route api` (`HostAlreadyClaimed` in it: delete the old Route, Part 2, step 9) and `oc -n ai-threatgen get pods` (a pod not `1/1 Running`: Part 5).
+**If it prints an HTML page with `Application is not available`:** the address works, but no API pod is ready or another Route holds the address. Run `oc -n ai-threatgen get route api` (`HostAlreadyClaimed` in it: delete the old Route, Part 3, step 4) and `oc -n ai-threatgen get pods` (a pod not `1/1 Running`: Part 5).
 
 ### Step 15. Check Grafana
 
@@ -550,7 +477,7 @@ first data arrives, a check can still show as a problem.
 **If Overall still shows a problem after 10 minutes:** the panel **What is wrong right now** names it. Fix it with
 Part 5, then go on to step 16.
 
-The page **TSG — AI usage** opens from the home page's **AI usage** tiles (click one).
+The page **TSG — AI usage** opens from the link in the home page's **AI usage** row.
 
 **Alert email:** each alert that fires is emailed to the recipients of step 8 (and again when it clears). When
 one fires and no email comes, run `oc -n ai-common logs deployment/alertmanager`: it shows why the send failed
@@ -584,7 +511,9 @@ curl.exe -sk -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1
 **You should see:** an answer with a `job_id`.
 
 **If the answer has `"status":409` and says `already queued or running`:** an import already runs (TSG also
-imports every hour by itself). Use the `job_id` under `details` in that answer.
+imports by itself: once at beat's first check, about a minute after its first start, then on the saved schedule, weekly on Sunday
+02:00 UTC until changed with `PUT /v1/tsg/intel/schedule` or on the admin page's Schedule page). Use the `job_id`
+under `details` in that answer. The sources are MITRE ATT&CK Enterprise and ICS, and no other.
 
 **Then:** put the `job_id` in this line. Run it every minute or two until `status` is `done` (it goes `queued`,
 then `running`, then `done`):
@@ -606,6 +535,33 @@ curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/int
 ```
 
 **You should see:** `"snapshot_id":"..."` with a value, not `"snapshot_id":null`.
+
+**Then the control links.** Right after every import TSG links each MITRE ATT&CK mitigation to controls of the
+control library, by itself, on `worker-maintenance` (no extra pod). The first time this is about 100 AI calls (an
+estimate: one per mitigation), once; a later run asks the AI only for a mitigation that changed. Watch it:
+
+```powershell
+curl.exe -sk https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/intel/control-links
+```
+
+**You should see:** `"not_prepared"` go down to `0` over the next minutes, and `"prepared_at"` with a time.
+`POST /v1/create_session` works before that (its controls are then found by meaning alone), but it answers 409
+`intel_no_data` until the import above is done.
+
+**If `not_prepared` stays above 0:** the judging of those mitigations failed (often the AI was busy); their
+earlier links, if any, are kept. Run it again by hand; it only asks for the ones still missing:
+
+```powershell
+curl.exe -sk -X POST https://threatgen-api.apps.dda-desc-az1-01.desccii.local/v1/tsg/intel/control-links/prepare
+```
+
+**The admin page.** The API pods also serve a web page for these tasks at
+`https://threatgen-api.apps.dda-desc-az1-01.desccii.local/ui/`: import now, the schedule, the control links, jobs,
+search vectors, API keys, library curation, AI usage and system state. There is nothing more to deploy: no pod,
+Route, Service or network rule of its own (the API's Route already serves every path). The pages Jobs, Search
+vectors, API keys and Library curation ask for the admin key (`CII_ADMIN_API_KEY`): type it in the bar at the top.
+It stays in that browser tab's memory only and is gone on reload. The page has no login of its own: whoever can
+reach the API's address can open it and change the switch and the schedule, as they can call those routes today.
 
 The deployment is finished.
 
@@ -649,7 +605,7 @@ The first three panels are at the top. Scroll down for the others.
 | **Jobs waiting in each queue** | A queue that keeps growing is missing its worker, or the AI is slow |
 | **Wait for an AI request's turn (95 %), by model** | Long waits mean the AI key is the limit, not the pods |
 | **AI gateway refusals (429) per minute** | Many 429s mean the gateway is refusing calls |
-| **TSG — AI usage** (its own dashboard: click a tile of the home page's **AI usage** row) | AI calls by module, API call and part of the work; failed ones by reason; by activity and model; tokens; whether the tracking works; links to one session's or request's report. Counts only: the exact numbers come from `GET /v1/ai-usage` |
+| **TSG — AI usage** (its own dashboard: the link in the home page's **AI usage** row) | AI calls by module, API call and part of the work; failed ones by reason; by activity and model; tokens; whether the tracking works; links to one session's or request's report. Counts only: the exact numbers come from `GET /v1/ai-usage` |
 
 **Example:** a user says "my run is stuck". Copy the run's `session_id` into the box **"Find a run, request or job
 id"** at the top of the page. The section **"Follow one run or request"** then shows its log lines: which stage it
@@ -672,8 +628,7 @@ oc -n ai-common rollout restart deployment/grafana
 **You should see:** `secret/tsg-monitoring configured` (the other secrets `unchanged`), then `deployment.apps/grafana restarted`. Grafana is down for about a minute. When `oc -n ai-common get pods -l app=grafana` shows `1/1` and `Running`, sign in with the new password. Grafana takes the password from the secret each time it starts.
 
 The dashboards cannot be changed in the browser. To change one, edit its file in `observability\grafana\dashboards`
-(`tsg.json` or `ai_usage.json`) and its copy in `deploy\configmap.yaml` (ConfigMap `grafana-dashboards` or
-`grafana-dashboard-ai-usage`) in git, apply `configmap.yaml` (Part 2, step 8), then
+(`tsg.json` or `ai_usage.json`) in git, run `oc apply -k observability`, then
 `oc -n ai-common rollout restart deployment/grafana`.
 
 ### Step 4. If the address does not open
@@ -694,8 +649,9 @@ oc -n ai-common get pods -l app=grafana
 
 - **`Unauthorized`:** log in again (Part 2, step 1).
 - **`NotFound`** for a Route: it is not deployed. Do Part 2, step 13.
-- **`HostAlreadyClaimed`** in a Route: an old Route holds that address and path. Find it (Part 2, step 9, the last
-  command) and delete it. Keep `api`, `grafana` and `flower` in ai-threatgen.
+- **`HostAlreadyClaimed`** in a Route: an old Route holds that address and path. Find it with
+  `oc -n ai-threatgen get route | findstr threatgen` and delete it with `oc -n ai-threatgen delete route <name>`.
+  Keep `api`, `grafana` and `flower` in ai-threatgen.
 - **The proxy pod is not `Running`, or `No resources found` for it:** run
   `oc -n ai-threatgen get deployment monitoring-proxy`. `NotFound`: do Part 2, step 13. Otherwise the last lines
   (Events) of `oc -n ai-threatgen describe pod -l app=monitoring-proxy` say why (with no pod:
@@ -748,7 +704,8 @@ it), and open the address on the same PC.
 Logs are in the dashboard's log panels (Loki has no page of its own). Signed in as `admin`, you can also search
 them under **Explore → Loki**.
 
-To see each pod's memory (compare it with the pod's limit in Part 6, and raise the limit if it stays above 80 %):
+To see each pod's memory (compare it with the pod's `limits` in `deploy\deploy_threatgen.yaml` or
+`deploy\deploy_common.yaml`, and raise the limit if it stays above 80 %):
 
 ```powershell
 oc adm top pods -n ai-threatgen
@@ -769,108 +726,20 @@ builds and pods. Tick each line as you finish it; the details follow.
 - [ ] Step 4. Build any monitoring image that is not in Quay yet; check the cluster can pull every image
 - [ ] Step 5. Check, then apply, the secrets and settings
 - [ ] Step 6. Roll out, in this order
-- [ ] Step 7. Remove TSG's old copy from ai-remediation (once)
 - [ ] Step 8. Check
-
-**What is new in this release (31-Oct-2026):**
-- The service mapper: `POST /v1/service-mapper` answers 500 on UAT. A MongoDB rule from the 20-Oct release on
-  `tsg_service_mappings` still requires the field `generation`, which 29-Oct-2026 does not write, and the app's
-  MongoDB user may not change that rule (`collMod`), so MongoDB refuses every new mapping. This release writes
-  `generation` again, so that rule fits it: after step 6 a new mapping is accepted (202), with nothing for the
-  DBA to do. Only to fix the running 29-Oct-2026 release before then, the DBA, once: first the read-only check,
-  in `mongosh` on TSG's database:
-
-  ```text
-  db.getCollectionInfos({name:"tsg_service_mappings"})[0].options.validator
-  ```
-
-  **You should see:** a `$jsonSchema` whose `required` list holds `generation`. Then the fix:
-
-  ```text
-  db.runCommand({collMod:"tsg_service_mappings", validator:{$jsonSchema:{bsonType:"object", required:["_id","tenant_id","entity_id","status","job"]}}, validationLevel:"moderate", validationAction:"error"})
-  ```
-
-  **You should see:** `{ ok: 1 }`, and the check again shows `required` without `generation`. It takes effect at
-  once, on the running release: a new mapping is accepted (202). No restart is needed. This release's pods then
-  log `mongodb.validator_not_applied` (a warning) once at start-up, since their rule requires `generation`
-  again: nothing to do, they write it.
-- Before step 1, the DBA: the 4 SQL files of 29-Oct-2026, if they are not installed yet (no SQL file changed
-  since): `tsg_GetServiceMapperAssociations.sql`, `tsg_Onboarding_GetSectorsAndSubsectorsList.sql`,
-  `tsg_Onboarding_GetServicesWithSectorDetails.sql`, then `grants.sql`. Without them every service-mapper run
-  ends `failed` with `setup_error`.
-- Step 2: build with `deploy\build-image.bat 31-Oct-2026`. The deploy files already carry that tag, so step 3
-  only shows it. A new tag is a must: the pods pull an image only when their node lacks its tag
-  (`IfNotPresent`), so an image rebuilt under `29-Oct-2026` would never reach them.
-- Step 5: the secrets check prints nothing: this release adds no secret.
-- The settings change in two steps.
-  - **Now, on the running 29-Oct-2026 image** (safe on either image): `CII_AI_BUSY_MAX_WAIT_SECONDS` from
-    `"60"` to `"20"`; `CII_AI_BUSY_TOTAL_WAIT_SECONDS` stays `"60"`. Set it in the running release's
-    `deploy\configmap.yaml`, then apply it and restart (Part 5, "Change a setting or secret later"). After a 429
-    TSG then asks again at 20, 40 and 60 s instead of once at 60 s: the gateway gives back, within seconds, the
-    answer room its calls held and did not use.
-  - **With this release's image only** (step 5 applies them, step 6 starts the image that needs them; go on to
-    step 6 right after step 5). `deploy\configmap.yaml` holds them, for kimi-k2.5's budget of 25,000 tokens a
-    minute:
-
-    | Setting | 29-Oct-2026 | 31-Oct-2026 | When the budget is 300,000 |
-    |---|---|---|---|
-    | `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 0 | 24000: each call waits its turn instead of drawing a 429 | 290000 |
-    | `CII_THREATS_PER_QUESTION` | 10 | 40 whole threats a question (35 threats: 1 question) | 12 (optional, faster) |
-    | `CII_THREAT_QUESTIONS_AT_ONCE` | 8 | 1 | 3 (optional) |
-    | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | 4 (2 workers × 2 jobs × 1 call) | 16, with more worker threads |
-    | `CII_ANSWER_TOKENS_RELEVANCE_GATE`, `..._WRITE_SCENARIO`, `..._REPAIR_SCENARIO` | 4096, 3072, 3072 | 10240, 6144, 5632: answers for whole sets | the same |
-    | `CII_SCENARIOS_WRITTEN_AT_ONCE` | 6 (threads) | 6 scenarios in one write call; 3 if a write times out | 6 |
-    | `CII_THREAT_FINDING_REUSE_HOURS` (new) | - | `"24"`: a second Start on an unchanged asset reuses threat finding, no gate call | `"24"` |
-    | `CII_AI_CALL_TOKENS_LIMIT` (new) | - | 20000: a bigger call is sent as two halves | 250000 |
-
-- **Rollback** is the pair: tag `29-Oct-2026` with that release's `configmap.yaml` (the 29-Oct-2026 column),
-  never one without the other: on the old image, 24000 tokens a minute and 1 question at once make threat
-  finding slow. Use the 29-Oct-2026 code folder (keep `CII_AI_BUSY_MAX_WAIT_SECONDS: "20"` there) and Part 5,
-  "Roll back to the previous release", steps 2 and 3. Skip its step 1: 29-Oct-2026 has the monitoring proxy and
-  the reaper worker too. Without the DBA's `collMod`, `POST /v1/service-mapper` answers 500 again on
-  29-Oct-2026, which does not write `generation`.
-- **What users see:**
-  - One card per threat. A threat that applies as several kinds of attack is one scenario, told as the kind the
-    AI names first; the others show as "also" ("Category: Denial of Service (also Tampering)", the API's
-    `contributing_categories`). Before, each kind had its own near-copy card. Entity 69: 41 planned paths
-    become 16, with the same 15 threats selected.
-  - Far fewer AI calls. A click (plan + first set of 6) makes 3 AI calls when every answer is good (1 threat
-    check, 1 write, 1 review) and at most 4 a set; it made 68 attempts on 29 Oct. At 25,000 tokens a minute a
-    click shows most cards in about 2 minutes (about 3.5 when some scenarios need a second round), not 4-6.
-  - A set's good scenarios are saved together; any that need a rewrite follow a little later.
-  - No API path, request or answer changes; fields are only added. Every prompt label moves to `-2`
-    (`planner-2`, `scenario writer-2`, `remediation-2`): tell the UI team.
-- After step 8, one click on UAT: at most 7 AI attempts, at most 2 refused (429), at most 4 minutes; the
-  service-mapper POST answers 202. A write call over 100 s: set `CII_SCENARIOS_WRITTEN_AT_ONCE` to `"3"`.
-- A pod that logs `mongodb.validator_stale` at start-up: Part 5.
-
-**What is new in this release (29-Oct-2026):**
-- Before step 1: 4 files in `scripts\sql` changed since the 24-Oct release. The DBA installs
-  `tsg_GetServiceMapperAssociations.sql` (changed), `tsg_Onboarding_GetSectorsAndSubsectorsList.sql` and
-  `tsg_Onboarding_GetServicesWithSectorDetails.sql` (new), then `grants.sql`. Wait for their OK before step 6:
-  this release calls the two new procedures.
-- Step 2: build with `deploy\build-image.bat 29-Oct-2026`. The deploy files already carry that tag, so step 3
-  only shows it.
-- Step 5: the secrets check prints 5 names: `CII_SCENARIO_CHAT_API_KEY`, `CII_REMEDIATION_CHAT_API_KEY` and
-  `CII_SERVICE_MAPPER_CHAT_API_KEY` (each module now has its own AI key line), and `SMTP_RELAY_PASSWORD` and
-  `GMAIL_APP_PASSWORD` (`""` for both: UAT sends no alert email yet). The table in step 5 says what to do.
-- Step 5's `configmap.yaml` adds the ConfigMap `grafana-dashboard-ai-usage` (the new dashboard **TSG — AI usage**)
-  and tells Prometheus where the API's AI usage reports are (`ui_url` on the API). Step 6's `deploy_common.yaml`
-  mounts that ConfigMap in Grafana, which restarts by itself.
-- Step 6 adds three pods: the reaper worker and Alloy's volume `alloy-data` (1 Gi) in ai-common, and the
-  monitoring proxy in ai-threatgen. ai-common is shared with the chatbot, so first check its room: Part 2,
-  step 2, "Then check ai-common" (at least 2.95 CPU, 5.9Gi and 22Gi for TSG).
-- Step 6 also brings the new AI limits: at most 16 threat-scenario questions to kimi-k2.5 at once, and
-  remediation writes 4 plans at once.
-- Step 7 matters this time: the old second copy of the workers in ai-remediation is what slowed UAT down from
-  24 Oct (two sets of workers asking the AI on one key).
-- `deploy\configmap.yaml` already holds UAT's values, the UI address included: nothing to type in it.
 
 ### Before step 1: the SQL files and the new code folder
 
 **If any file in `scripts\sql` changed** since the release that runs now, the DBA installs the changed
 `tsg_*.sql` files and `grants.sql` first, as in Part 1. Wait for their OK before step 6. The running pods keep
 working meanwhile: a changed procedure keeps its name, and a new one is only called by the new release.
+
+**The release with `POST /v1/create_session` changes one SQL file: `scripts\sql\tsg_GetAssetContext.sql`.** It now
+also returns the asset's "data handled" (`data_handled`), which both start routes tell the AI as a fact. This step
+is the database team's, by hand, on each SQL Server TSG reads (UAT and production): nobody who deploys TSG has
+access to the databases, and the app installs nothing there. Send them that one file from the new code folder
+(`grants.sql` is unchanged by this feature) and wait for their OK. If it is not installed, nothing fails: every run
+works as before, and only that one fact is missing from what the AI is told.
 
 **Get the new code.** Unpack the new release's ZIP into a new folder (with git: a new clone). Keep the old folder:
 a rollback needs it. A new folder has no `deploy\secrets.yaml`, so copy yours over:
@@ -890,8 +759,7 @@ The same as Part 2, step 1.
 
 ### Step 2. Build the app image and write down its tag
 
-The same as Part 2, step 4. When "What is new in this release" names a tag, build with that tag, e.g.
-`deploy\build-image.bat 31-Oct-2026`; otherwise:
+The same as Part 2, step 4:
 
 ```powershell
 deploy\build-image.bat
@@ -965,6 +833,7 @@ would not start with the new settings; step 6 starts it on the new image, with t
 ```powershell
 oc apply -f deploy\secrets.yaml
 oc apply -f deploy\configmap.yaml
+oc apply -k observability
 oc -n ai-common rollout restart deployment -l 'part-of=tsg-monitoring,app!=flower'
 oc -n ai-common get deployment -l 'part-of=tsg-monitoring,app!=flower' -o name | ForEach-Object { oc -n ai-common rollout status $_ --timeout=10m }
 oc -n ai-threatgen rollout restart deployment -l app=monitoring-proxy
@@ -1037,27 +906,6 @@ MongoDB's indexes when they start (nothing to run).
 
 **If a line times out:** see Part 5, "If something fails".
 
-### Step 7. Remove TSG's old copy from ai-remediation (once)
-
-Releases before 28-Oct-2026 also ran a second copy of every worker in `ai-remediation`, with the old image and
-settings. Two sets of workers on one AI key ask twice the questions: that is how UAT slowed down from 24 Oct.
-Remove it now, after step 6: until then it served the queues while the new workers started.
-
-**Do:** the commands of Part 2, step 11. Then list every worker in TSG's three projects:
-
-```powershell
-foreach ($p in 'ai-threatgen', 'ai-common', 'ai-remediation') { "== $p"; oc -n $p get deployment -l part-of=tsg -o name | findstr worker- }
-```
-
-**You should see:** under `== ai-threatgen` the 6 workers (`worker-threats`, `worker-scenarios`, `worker-controls`,
-`worker-remediation`, `worker-service-mapper`, `worker-maintenance`), under `== ai-common` only `worker-reaper`, and
-nothing under `== ai-remediation`.
-
-The list shows TSG's workers only (label `part-of=tsg`), never v1's or the chatbot's.
-
-**If a worker is listed under `== ai-remediation`:** it is the old copy. Run the commands of Part 2, step 11 again:
-they delete TSG's objects there by that label. `Forbidden`: Part 2, step 11 says whom to ask.
-
 ### Step 8. Check
 
 The same as Part 2, steps 14 and 15 (the API answers `{"status":"ok"}` and `{"status":"ready"...`; Grafana shows
@@ -1077,8 +925,6 @@ stay at 0, or near it (at most 2 a click: threat scenarios wait their turn under
 `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE`, 1000000 at the gateway's 2,000,000, which was 25,000 until Nov 2026). If it does not: Part 5, the row "The
 AI gateway answers 429".
 
-After every release, run the worker list of step 7 again: each worker once, none in ai-remediation.
-
 After the first release with AI usage tracking, carry the AI call texts of the last 14 days over to the
 collection that keeps them for good (the previous release expires them after 14 days; safe to run again):
 
@@ -1089,6 +935,35 @@ oc -n ai-threatgen exec deploy/api -- python -m app.worker.admin.ai_usage_tools 
 **You should see:** `tsg_ai_call_texts now holds <n> AI call texts`. Five minutes later,
 `GET /v1/ai-usage` answers with counts (the first ones after the first run), and the dashboard **TSG — AI usage**
 shows them.
+
+After the first release with `POST /v1/create_session`, three things happen by themselves; nothing to run, only
+to check:
+
+1. **One import, right after the roll-out.** At the new `beat` pod's first check, about a minute after it and
+   `worker-maintenance` start, TSG imports MITRE ATT&CK once (Enterprise and ICS, the only sources), whatever the day. This
+   import also stores the whole ATT&CK graph (MongoDB `tsg_attack`), which `POST /v1/create_session` needs. It
+   first deletes what the four removed feeds (CISA KEV, FIRST EPSS, NIST NVD, CISA ICS advisories) left in
+   MongoDB: their records in `tsg_intel` and their status documents; every import checks again. From then
+   on the import runs on the saved schedule, no longer every hour: weekly on Sunday 02:00 UTC until someone
+   changes it (`PUT /v1/tsg/intel/schedule`, or the admin page).
+2. **About 100 AI calls, once.** After that import TSG links each MITRE mitigation to library controls (the task
+   `tsg_link_mitigations` on `worker-maintenance`; no new pod, queue or beat entry to deploy). It asks the
+   threat-scenario chat model (kimi-k2.5) once per mitigation, about 100 times in all (an estimate, not measured
+   on UAT), within that model's own limits, so runs started in those minutes share them. Later imports ask only
+   for a mitigation that changed.
+3. **The admin page is there:** `https://threatgen-api.apps.dda-desc-az1-01.desccii.local/ui/`, served by the API
+   pods (Part 2, step 17, "The admin page").
+
+Check 1 and 2 with the two `curl.exe` lines of Part 2, step 17 (`/v1/tsg/intel/health`, then
+`/v1/tsg/intel/control-links`). The graph and the links are stored in two new MongoDB collections, `tsg_attack` and
+`tsg_control_links`. The app creates them itself, and `tsg_attack`'s indexes at start-up, as it does for every
+collection (only while `EXTERNAL_INTELLIGENCE_ENABLED` is `true`); nothing is installed in MongoDB by hand.
+`deploy\configmap.yaml` has two new lines, `CII_ANSWER_TOKENS_LINK_CONTROLS` and `CII_ANSWER_TOKENS_PICK_CONTROLS`
+(the answer room of the two new AI tasks); step 5 applies them.
+
+From the same release a source can no longer be withdrawn: `POST /v1/tsg/intel/sources/{source}/revoke` and
+`.../approve` answer 404, and the admin page's Data ingestion page has no Withdraw or Approve button. Nothing to
+do: both sources are always imported.
 
 ---
 
@@ -1112,10 +987,11 @@ the events, in the left column below.
 | `manifest unknown` in a `Failed to pull image` event | That tag is not in Quay. A monitoring image: Part 2, step 3, by name. `tsg-api`: Part 2, steps 4 and 5. |
 | `exceeded quota` | Wait up to 6 minutes (old pods still stopping). Still failing: `oc -n <project> describe quota`, and Part 2, step 2. |
 | `CreateContainerConfigError` | A secret or setting is missing: Part 2, steps 7 and 8. After a new release: the check in Part 4, step 5. |
-| `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen`: Part 2, step 9. In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the end of Part 2, step 9 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
+| `field is immutable` | An older Deployment with the same name is still there. In `ai-threatgen`: run `oc -n ai-threatgen delete deployment <name>` and apply again (for `api`, the API is down until it rolls out). In `ai-common` (the chatbot runs there too): run `oc -n ai-common get deployment <name> --show-labels`. If it shows `part-of=tsg-monitoring`, `part-of=tsg` or `app.kubernetes.io/part-of=tsg-observability` (TSG's older label), it is TSG's: run `oc -n ai-common delete deployment <name>` and apply again (the start of Part 4, step 6 removes all the older ones at once). Otherwise it is not TSG's: do not delete it, ask its owner (the chatbot team). |
 | `Pending` | The last lines (Events) of `oc -n <project> describe pod <name>` say why. `unbound ... PersistentVolumeClaims`: run `oc -n <project> get pvc`. A claim that is `Pending` with an empty `STORAGECLASS` means the cluster has no default storage class: ask the cluster admin which one to use (the other claims there show one) and tell the developer, who names it in `deploy\deploy_common.yaml`. With that new file, delete the `Pending` claim (it holds no data yet: `oc -n <project> delete pvc <name>`) and apply again. Otherwise ask the cluster admin for storage. |
 | `/ready` answers `not_ready` (503) | The API cannot reach MongoDB (`"mongo":false`): `oc -n ai-threatgen logs deployment/api` shows why. Another `false` (SQL Server, Redis) or a worker count of 0 is reported but does not make it `not_ready`: that store or worker's own logs show why. |
-| The AI gateway answers 429 (Grafana: **AI gateway refusals (429) per minute**, by model, above 0) | A few that stop by themselves need nothing: TSG asks again at 20, 40 and 60 s (`CII_AI_BUSY_MAX_WAIT_SECONDS` 20, `CII_AI_BUSY_TOTAL_WAIT_SECONDS` 60); a threat-scenario call still refused then waits for its job's next try. If the panel stays above 0 for 10 minutes, find the budget the gateway names: "The budget a 429 names" below. Two sets of workers are the other cause: Part 4, step 7. |
+| `POST /v1/create_session` answers 409 `intel_no_data` | TSG's copy of MITRE ATT&CK is empty, or lacks a matrix the asset needs (ICS for an OT asset, Enterprise for an IT one, both for an IT\OT or a mixed one). `GET /v1/tsg/intel/health` shows each source's state; import with the first line of Part 2, step 17, and wait for `done`. While `EXTERNAL_INTELLIGENCE_ENABLED` is `"false"` in `deploy\configmap.yaml` nothing is imported at all. |
+| The AI gateway answers 429 (Grafana: **AI gateway refusals (429) per minute**, by model, above 0) | A few that stop by themselves need nothing: TSG asks again at 20, 40 and 60 s (`CII_AI_BUSY_MAX_WAIT_SECONDS` 20, `CII_AI_BUSY_TOTAL_WAIT_SECONDS` 60); a threat-scenario call still refused then waits for its job's next try. If the panel stays above 0 for 10 minutes, find the budget the gateway names: "The budget a 429 names" below. |
 | `mongodb.validator_stale` (an error) in a pod's start-up log | MongoDB keeps an older rule on the collection the line names that still requires a field TSG no longer writes, and the app's MongoDB user may not replace it (`collMod`), so MongoDB refuses new records there (their API answers 500). The pod starts anyway. The line names the fields and the command to run: send it to the DBA. It applies at once, with no restart; the next start-up logs nothing. `mongodb.validator_not_applied` (a warning) means TSG could not read the rule, or could not replace one that requires no field TSG has stopped writing (expected on UAT, whose MongoDB user may not run `collMod`): nothing to do unless records are refused. |
 | `CrashLoopBackOff` | `oc -n <project> logs deployment/<name> --previous` shows why (often a setting). |
 | Flower stops with `invalid literal for int() ... 'tcp://...'` | The pod still takes OpenShift's service variables (`FLOWER_PORT`): apply this release's `deploy\deploy_common.yaml` (Part 2, step 13). |
@@ -1188,16 +1064,13 @@ order:
 
    ```powershell
    oc apply -f deploy\configmap.yaml
+   oc apply -k observability
    oc apply -f deploy\deploy_threatgen.yaml
    oc -n ai-threatgen get deployment -l part-of=tsg -o name | ForEach-Object { oc -n ai-threatgen rollout status $_ --timeout=10m }
    ```
 
    **You should see:** `configured` or `unchanged` for each setting, then 8 lines ending with
    `successfully rolled out`.
-
-   A previous release from before 28-Oct-2026 also has `deploy_remediation.yaml`: do not apply it, TSG no longer
-   runs in `ai-remediation`. Its `configmap.yaml` and `deploy_common.yaml` (step 3) put a few objects back there:
-   after step 3, remove them again with Part 2, step 11.
 
 3. Last, apply the previous `deploy_common.yaml` and restart the monitoring, so it loads the previous alert rules
    and dashboard:
@@ -1234,163 +1107,3 @@ stored nothing: run it again. `This add-up of AI usage ran past its lock and sto
 answer in time` means MongoDB was too slow: the rows it stored are kept and the next 5-minute add-up counts
 them; run it again to count them now (the stored rows are skipped). `AiUsageRollupBehind` needs no
 replay: the next add-up (every 5 minutes) catches up from where it stopped by itself.
-
----
-
-## Part 6. How TSG is laid out, and why
-
-Read this once to understand the setup. You do not need it to deploy.
-
-### Two projects
-
-| Project | What runs there | Why |
-|---|---|---|
-| `ai-threatgen` | The app: the API (2 pods), one worker per queue but `tsg_reaper`, beat (the scheduler, 1 pod), and the monitoring proxy (1 pod: Grafana and Flower on the API's address) | Users and other systems call the API here. |
-| `ai-common` | Monitoring: Grafana, Prometheus, Alertmanager, Loki, Alloy, redis-exporter, kube-state-metrics, and Flower; and the reaper worker (`tsg_reaper`) | Shared with the chatbot, so the app's project keeps its quota for the app; it has no room for the reaper worker. |
-
-Nothing of TSG runs in `ai-remediation` (owner, 28-Oct-2026).
-
-Quotas, counted on the pods' limits: `ai-threatgen` 6 CPU, 12 Gi memory, 60 Gi storage; `ai-common` 6 CPU, 16 Gi,
-180 Gi, of which TSG keeps to 3 CPU, 6 Gi and 60 Gi (the chatbot has the rest).
-
-The monitoring in ai-common sees the app across the project line: Prometheus and Alloy find the app's pods, and
-kube-state-metrics watches them, through a read-only Role in ai-threatgen (`tsg-monitoring-read-pods`); ai-threatgen's
-network rules let TSG's monitoring pods scrape the API (port 8000) and the workers (9100); Flower and redis-exporter
-read the job queues in Redis with the same `tsg-secrets`; and the monitoring proxy in ai-threatgen forwards
-`/grafana` and `/flower` to ai-common.
-
-### One worker for each kind of work
-
-Example: a user starts a run for one asset.
-
-1. The API puts a job on the queue `tsg_threats`. **worker-threats** asks the AI which library threats apply to
-   the asset (one AI call for up to 40 threats: usually 1 call).
-2. The run moves on to `tsg_scenarios`. **worker-scenarios** writes the first set of 6 scenarios in one AI call
-   and checks them in one more, each with its evidence.
-3. As each scenario is saved, `tsg_controls` gets a job. **worker-controls** picks its controls (6 scenarios at
-   once).
-4. When the user asks for a remediation plan, `tsg_remediation` gets a job. **worker-remediation** writes it.
-5. A service mapping goes to `tsg_servicemapper` and **worker-service-mapper**.
-6. **worker-maintenance** (`tsg_maintenance`) rebuilds the library indexes and imports the outside intelligence
-   (jobs that can run for an hour).
-7. **worker-reaper** (`tsg_reaper`, in ai-common) repairs stuck jobs every minute and retries failed control
-   mapping, on a queue of its own: a long maintenance job never holds the thread a reaper pass needs.
-
-Because every kind of work has its own worker, a long remediation plan never waits behind scenario writing, and
-control mapping never waits behind a busy writer. A run's next step also goes ahead of new runs in its queue.
-
-| Pod (1 each unless noted) | Queue | Jobs at once | CPU request / limit | Memory request / limit |
-|---|---|---|---|---|
-| worker-threats | `tsg_threats` | 5 (5 users at once) | 500m / 1 | 1Gi / 1.5Gi |
-| worker-scenarios | `tsg_scenarios` | 5 | 500m / 1 | 1Gi / 2Gi |
-| worker-controls | `tsg_controls` | 5 (one job per run at a time; each maps 6 scenarios at once) | 250m / 500m | 640Mi / 1Gi |
-| worker-remediation | `tsg_remediation` | 7 (5 glm-5.3 plans at once, plus 2) | 250m / 500m | 640Mi / 1Gi |
-| worker-service-mapper | `tsg_servicemapper` | 5 (one mapping, one call) | 250m / 500m | 640Mi / 1Gi |
-| worker-maintenance | `tsg_maintenance` | 3 | 100m / 250m | 768Mi / 1.5Gi |
-| worker-reaper (in ai-common) | `tsg_reaper` | 2 | 50m / 150m | 512Mi / 768Mi |
-| api (2 pods) | - | - | 250m / 750m | 512Mi / 1Gi |
-| beat | - | - | 50m / 200m | 320Mi / 512Mi |
-| monitoring-proxy (Grafana and Flower on the API's address) | - | - | 50m / 50m | 64Mi / 64Mi |
-
-Totals (limits) in ai-threatgen: 5.5 CPU and 10.56 Gi, also during an update: every pod, the two API pods too,
-stops before its new one starts (maxSurge 0). That leaves no room for a second copy of any worker, so the reaper
-worker runs in ai-common. TSG's monitoring and reaper worker in ai-common: about 2.45 CPU and 4.8 Gi, 22 Gi of
-volumes.
-
-### Why these sizes: the AI sets the speed, not the pods
-
-All AI models sit behind one gateway key. Each module names its own chat model (`CII_<MODULE>_CHAT_MODEL`): threat
-scenarios use kimi-k2.5, remediation and the service mapper glm-5.3. kimi-k2.5 takes 600 requests a minute (the
-gateway, 14 and 15 Nov 2026); threat scenarios send it at most 180 (`CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE`), enough
-for up to about 20 users (about 8 a Start), and up to about 570 for more. The gateway admin confirmed that only TSG uses kimi-k2.5 (Oct 2026).
-glm-5.3, the embedding model and the reranker have no requests-a-minute limit of their own; the team's 25,000
-requests a minute covers the key. Calls at once are another limit. The reranker works best at 8 at once, takes 10,
-and drops a connection at 12. The embedding model takes 30 and drops connections at 32 (the owner's probe,
-`litellm_probe_oc.py`, 16 Nov 2026). So `CII_MAX_CONCURRENT_AI_CALLS`, shared by both, must be set to 8 or less, never 0 (0 = no cap, and the reranker sends no 429 that would make TSG back off). Modules
-put on one model and key split its limit.
-
-Tokens are the tighter limit. Since Nov 2026 the gateway gives 2,000,000 tokens a minute to every model together
-(kimi-k2.5 and glm-5.3; owner, 15 Nov), shared with the team, and it counts each call's question and its whole answer room while it runs. Threat scenarios pace
-themselves at half of it (`CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` 1000000), so a call waits its turn instead of
-drawing a 429. After a quiet spell the pacer lets calls run up to 30 s of budget ahead (a burst), so the questions
-of one Start, and of 5 Starts together, all go at once; a 429 uses the burst up.
-
-Sized for 5 users at once (owner, 16 Nov 2026; 10 until then, D78-D80), each Start (threats, the first set of 6, its controls) in about a
-minute:
-
-- Threat finding asks up to 20 threats a question (`CII_THREATS_PER_QUESTION`), every question at once
-  (`CII_THREAT_QUESTIONS_AT_ONCE` 16: 320 threats in one round). 75 threats are 4 questions of 18-19, each answer
-  about half as long as one for 40: about 22-32 s, against 45-50 s (dev, 15 Nov 2026).
-- 5 users at once: 5 x 4 questions = 20 answers at the same moment (`CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` 20),
-  about 255,000 tokens booked at once, inside the 1,000,000 plus its burst.
-- Searches: the reranker, not TSG, sets their pace. It finishes about 6.7 calls a second at 8 at once (16 Nov 2026),
-  so `CII_MAX_CONCURRENT_AI_CALLS` is 8 (the reranker sends no 429 to slow TSG down) and `CII_RERANKS_AT_ONCE` 4. A Start's first set needs about 12-24 reranks,
-  so users who start together share that reranker time (5 users: about 10-20 s). More needs more reranker
-  capacity from the gateway team (`docs/CONCURRENT_USERS_SIZING.md`).
-- Plans and mappings: 5 of each at once on glm-5.3 (`CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`,
-  `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS`). A plan books about 10,300 tokens while it runs, a mapping about
-  4,900 (dev, 15 Nov): at most about 155,000 a minute. With threat scenarios' busiest minute (1,500,000, its
-  burst) about 1,655,000: inside the 2,000,000.
-- Worker threads: a thread mostly waits for the AI. The UAT server's job worker (`run.ps1`) runs
-  `CII_WORKER_THREADS` (15, in `.env`) threads for threats, writing and controls (remediation gets its own
-  worker, plans + 2 = 7 threads, and the mapper 5, both sized by `run.ps1` from the caps); on OpenShift
-  `worker-threats`, `worker-scenarios` and `worker-controls` run 5 jobs each, `worker-remediation` 7,
-  `worker-service-mapper` 5.
-- More users later is a settings change only, then a restart: answers at once about 4 x users, threads about
-  3 x users, plans and mappings at once about users; searches at once follow the reranker's measured
-  capacity, not the users. All models share the 2,000,000: 1.5 x the scenario tokens a minute + about 21,000 x plans at once +
-  10,000 x mappings at once must stay at most 2,000,000 (at 5 + 5 the scenario tokens at most about 1,230,000; at 10 + 10 about 1,100,000).
-  Past about 11 users starting in the same second the budget, not TSG, sets the pace: the last ones start some
-  seconds later; more needs a bigger budget from the gateway team. The rules for any number of users:
-  `docs/CONCURRENT_USERS_SIZING.md`.
-
-Memory was measured (on a laptop): a worker uses about 220 MB. The scenarios worker keeps the evidence index
-loaded: about 450 MB, and up to about 815 MB while it rebuilds the index (its limit is 2 Gi). Only the scenarios
-worker keeps that index loaded (the maintenance worker builds one at each import), which keeps the other workers
-small.
-
-### The AI settings in `configmap.yaml`
-
-| Setting | UAT value | Meaning |
-|---|---|---|
-| `CII_SCENARIO_CHAT_MODEL`, `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | kimi-k2.5, glm-5.3, glm-5.3 | each module's own chat model (with its own `..._CHAT_BASE_URL`, and its key in `secrets.yaml`) |
-| `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 180 | threat scenarios' kimi-k2.5 requests a minute, all pods together (kimi's own limit is 600: up to about 570 for more users); remediation's and the service mapper's: 0 = no limit, as glm-5.3 has none of its own |
-| `CII_SCENARIO_CHAT_TOKENS_PER_MINUTE` | 1000000 | threat scenarios' kimi-k2.5 tokens a minute (question + answer room), all pods: each call waits its turn instead of drawing a 429, after up to 30 s of burst. 1.5 x this plus the plans' and mappings' (about 155,000 at 5 + 5) stay within the gateway's 2,000,000 for all models; 0 = no token pacing |
-| `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 5, 5 | calls to glm-5.3 at once (it takes 55-99 s a call): 5 users' plans and mappings. glm-5.3 has no limit of its own; they book about 51,500 + 24,500 tokens at once of the gateway's shared 2,000,000. On the UAT server `run.ps1` sizes the remediation and mapper workers from these two (plans + 2 threads, mappings 1 each) |
-| `CII_EMBEDDING_REQUESTS_PER_MINUTE`, `CII_RERANK_REQUESTS_PER_MINUTE` | 0 | the same for the embedding model and the re-ranking model; 0 = no limit, as the gateway sets no requests-a-minute limit for either. Their calls-at-once limit is `CII_MAX_CONCURRENT_AI_CALLS` below (the reranker answers no 429 when it is full) |
-| `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 20 | at most 20 threat-scenario calls to kimi-k2.5 at once, all pods together: 5 users x 4 threat questions (4 x users); TSG also backs off by itself after a gateway 429 |
-| `CII_MAX_CONCURRENT_AI_CALLS` | 8 | the search calls (embedding, re-ranking) at once, all pods together. UAT's reranker works best at 8 at once and drops connections above about 10, and it answers no 429 (the owner's probe, 16 Nov 2026), so 0 (no fixed limit: TSG backs off only after a gateway 429, see below) would not protect it. The UAT server's `.env.uat` has 8 too, and `CII_RERANKS_AT_ONCE` 4 (half of it) |
-| `CII_<MODULE>_CHAT_MAX_INPUT_TOKENS`, `..._MAX_OUTPUT_TOKENS`, `..._TIMEOUT_SECONDS` | kimi-k2.5 114688 / 12288 / 120; glm-5.3 262144 / 12288 / 180 | each module's longest question and answer, in tokens, and its wait for one answer: the gateway's own limits |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 8192, write 6144, rewrite 5632, remediation 3584, service mapper 3072 ... | the answer room each task asks for (the gate's and writer's for a whole batch or set): the gateway counts it against its token budget while a question runs |
-| `CII_THREAT_QUESTIONS_AT_ONCE`, `CII_THREATS_PER_QUESTION`, `CII_SCENARIOS_WRITTEN_AT_ONCE`, `CII_RERANKS_AT_ONCE` | 16, 20, 6, 4 | how much TSG asks at once: threat questions per run, all at once (never above the module's calls at once), and whole threats per question (75 threats: 4 questions), scenarios in one write call (3 if a write times out), evidence reranker calls per worker (control searches do not take it): half of `CII_MAX_CONCURRENT_AI_CALLS`, as UAT's reranker works best at 8 at once and drops connections above 10, with no 429 (16 Nov 2026) |
-| `CII_THREAT_FINDING_REUSE_HOURS` | 24 | hours threat finding takes an earlier run's answer to the very same question (same asset facts, systems, library, prompt): a second Start on an unchanged asset makes no gate call; 0 = always ask |
-| `CII_AI_CALL_TOKENS_LIMIT` | 20000 | the most tokens one call may hold (question + answer room); a bigger batch is sent as two halves; 250000 at a 300,000 budget |
-| `CII_AI_BUSY_MAX_WAIT_SECONDS`, `CII_AI_BUSY_TOTAL_WAIT_SECONDS`, `CII_AI_BUSY_LIMIT_FLOOR`, `CII_AI_BUSY_LIMIT_SECONDS` | 20, 60, 4, 60 | what TSG does after a "too busy" (429): it asks the same model again at 20, 40 and 60 s (each wait ±20 %) |
-
-Every line above is changed in `configmap.yaml` and applied with a rollout restart: no new image. The 31-Oct-2026
-values need that release's image, and going back to 29-Oct-2026 takes back its values too (Part 4, "What is new
-in this release (31-Oct-2026)"). `.env.example` explains each in a line.
-
-**How TSG backs off after a 429.** When the gateway answers 429 ("too many"), TSG sets one limit for all pods on that
-pool (the search calls', or the module's chat calls'): half the calls in flight at that moment. Each answered call raises it a little, and a few minutes after the
-last 429 it disappears: TSG is back to the pool's own limit (none at 0). The Grafana gauge **AI capacity in use** shows the calls in flight
-out of that limit (`tsg_ai_slots_cap` is the limit, 0 = none; `tsg_ai_slots_in_use` counts the calls in flight, also
-at no limit): **No limit set** is normal only for a pool at 0. The search pool shows its cap of 8 where `CII_MAX_CONCURRENT_AI_CALLS` is 8 (the UAT server and OpenShift), lowered for a while by a 429.
-
-If kimi keeps refusing (HTTP 429) or timing out, a threat-scenario job waits and tries again later, reusing the
-answers it already got.
-
-### Updates and node failures
-
-- A worker updates by stopping its old pod first (no extra pod in the quota). Its queue's jobs wait until the new
-  pod answers (usually a few minutes) and nothing is lost. A stopping worker gets time to finish one AI call
-  (220 s for threats and scenarios, 280 s for remediation and the service mapper, 120 s for the others): after 90 s it puts the
-  jobs it is still running back on their queue, without using up a try, so its new pod carries them on (not an
-  index build or an import: the next scheduled one does that work). The API stays ready meanwhile: its readiness
-  needs MongoDB only.
-- The API replaces one of its two pods at a time: the other serves meanwhile, so it never goes down, and an update
-  needs no room in the quota.
-- The two API pods prefer different nodes, so one node failure never stops the API. Preferred only: a pod still
-  starts when no other node fits. A worker on a failed node is started again on another; its queue waits meanwhile.
-- No pod takes OpenShift's automatic service variables (`<SERVICE>_PORT=tcp://...`): each finds a service by its
-  DNS name. That keeps a program such as Flower from reading them as its own settings.

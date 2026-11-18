@@ -12,12 +12,11 @@ class AiTuningSettings(BaseSettings):
     512, the gate's under that (2026-10-30, ~10,000 calls); the rest are the values UAT ran with before 24
     Oct."""
 
-    model_config = SettingsConfigDict(
-        env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True
-    )
+    model_config = SettingsConfigDict(env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True)
 
     # Answer room, in tokens: the AI service counts it against its budget while the question runs. An answer
-    # cut off at its room is asked once more with the model's full room (app/ai/chat.py).
+    # cut off at its room is asked once more with the model's full room; one that ran away (blank lines, one
+    # piece over and over), at the same room (app/ai/chat.py).
     answer_tokens_relevance_gate: int = Field(default=10240, ge=256, le=32768)  # 38 threats: 8,776
     answer_tokens_gap_fill: int = Field(default=1024, ge=256, le=32768)  # 97
     # A set's calls answer every slot at once; the largest a slot: 778 written, 680 rewritten.
@@ -25,6 +24,10 @@ class AiTuningSettings(BaseSettings):
     answer_tokens_repair_scenario: int = Field(default=5632, ge=256, le=32768)
     answer_tokens_remediation_plan: int = Field(default=3584, ge=256, le=32768)  # 10 controls: 2,601
     answer_tokens_service_mapper: int = Field(default=3072, ge=256, le=32768)  # 10 + 10 services: 1,997
+    # Not measured yet (estimates): 15 judged controls at about 40 tokens each; a set's 6 scenarios at up to
+    # 12 picks of about 20 tokens each.
+    answer_tokens_link_controls: int = Field(default=2048, ge=256, le=32768)
+    answer_tokens_pick_controls: int = Field(default=3072, ge=256, le=32768)
     # How much TSG asks at once.
     threat_questions_at_once: int = Field(default=1, ge=1, le=64)  # per threat-finding run
     threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges

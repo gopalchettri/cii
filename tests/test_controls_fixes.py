@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 from structlog.testing import capture_logs
 
-from app import container
 from app.core.constants import (
     AI_OUTAGE_MESSAGES,
     AiLimits,
@@ -29,19 +28,13 @@ from app.core.database import get_mongodb
 from app.core.exceptions import ControlsNotMapped, JobFailed, LeaseLost, Unavailable
 from app.core.lease_signal import lease_lost_signal
 from app.core.logging import current_request_id
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
+from app.crud import scenarios as scenario_crud
+from app.crud.scenarios import ThreatScenarioSessionRepository
 from app.domain.scenario.session import build_scenario_view, build_status_board
-from app.models.scenario.views import SessionStatus, session_status_from_record
+from app.schemas.scenarios import SessionStatus, session_status_from_record
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
-from tests.test_control_mapping import (
-    _CONTROLS,
-    _OT_CONTEXT,
-    _SCENARIO,
-    _controls_job,
-    _ScoresByText,
-    _snapshot,
-)
+from tests.test_control_mapping import _CONTROLS, _OT_CONTEXT, _SCENARIO, _ScoresByText, _snapshot
 from tests.test_v1_scenario_format import _record
 
 _LONG_AGO = timedelta(hours=1)
@@ -76,15 +69,14 @@ def run(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     state: dict[str, Any] = {"record_id": record_id, "published": [], "sent": []}
     state["rerank"] = _ScoresByText({"Backup policy": 70.0})
     search = SimpleNamespace(snapshot=lambda: _snapshot(*_CONTROLS))
-    monkeypatch.setattr(container, "get_controls_job", lambda: _controls_job(search, state["rerank"]))
+    monkeypatch.setattr(controls_job, "get_library_search", lambda: search)
+    monkeypatch.setattr(controls_job, "get_rerank_model", lambda: state["rerank"])
     monkeypatch.setattr(
-        controls_job,
-        "publish_session_status",
-        lambda run_id: state["published"].append((run_id, current_request_id())),
+        controls_job, "publish_session_status", lambda run_id: state["published"].append((run_id, current_request_id()))
     )
     monkeypatch.setattr(controls_job, "send_job", lambda *args: state["sent"].append(args))
     # The run's counts as the write job left them: its controls waiting.
-    container.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)
+    scenario_crud.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)
     yield state
 
 
@@ -105,7 +97,7 @@ def _counts(record_id: str) -> tuple[int, int, int]:
 
 
 def _deliver(record_id: str) -> int:
-    return container.get_controls_job().map_threat_scenario_controls(record_id, "task-1")
+    return controls_job.map_threat_scenario_controls(record_id, "task-1")
 
 
 def test_an_outage_on_the_last_attempt_recounts_and_publishes_the_run(run: dict[str, Any]) -> None:
@@ -146,26 +138,16 @@ def test_each_failure_of_one_scenario_fails_it_and_recounts_and_publishes_the_ru
         else:
             assert _deliver(record_id) == 0
     controls = _controls(record_id)
-    assert (controls["status"], controls["error"]["code"], _counts(record_id)) == (
-        Status.FAILED,
-        code,
-        (0, 1, 0),
-    )
+    assert (controls["status"], controls["error"]["code"], _counts(record_id)) == (Status.FAILED, code, (0, 1, 0))
     assert (record_id, "req-run") in run["published"]
-    assert (LogEvent.CONTROLS_MAP_FAILED in [entry["event"] for entry in logs]) == isinstance(
-        error, RuntimeError
-    )
+    assert (LogEvent.CONTROLS_MAP_FAILED in [entry["event"] for entry in logs]) == isinstance(error, RuntimeError)
 
 
 @pytest.mark.parametrize(
     ("controls", "run_status", "counts"),
     [
         ({"status": Status.FAILED, "attempts": 1, "last_attempt_at": "long_ago"}, Status.DONE, (1, 0, 0)),
-        (
-            {"status": Status.RUNNING, "attempts": Controls.MAX_ATTEMPTS, "lease_until": "now"},
-            Status.DONE,
-            (0, 1, 0),
-        ),
+        ({"status": Status.RUNNING, "attempts": Controls.MAX_ATTEMPTS, "lease_until": "now"}, Status.DONE, (0, 1, 0)),
         ({}, Status.CANCELLED, (0, 0, 1)),
     ],
     ids=["requeued", "abandoned", "settled"],
@@ -178,17 +160,14 @@ def test_the_sweep_recounts_publishes_and_logs_every_run_it_changed(
     record_id, now = run["record_id"], datetime.now(UTC)
     times = {"long_ago": now - _LONG_AGO, "now": now - timedelta(seconds=1)}
     _set_controls(record_id, **{key: times.get(value, value) for key, value in controls.items()})
-    container.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)  # as before
+    scenario_crud.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)  # as before
     get_mongodb()[Collection.SESSIONS].update_one({"_id": record_id}, {"$set": {"status": run_status}})
     with capture_logs() as logs:
         scenario_tasks.retry_controls()
     assert _counts(record_id) == counts
     assert record_id in [run_id for run_id, _ in run["published"]]
     swept = next(entry for entry in logs if entry["event"] == LogEvent.CONTROLS_SWEPT)
-    assert (
-        swept["runs"][record_id]["controls_waiting"],
-        swept["runs"][record_id]["controls_failed"],
-    ) == counts[:2]
+    assert (swept["runs"][record_id]["controls_waiting"], swept["runs"][record_id]["controls_failed"]) == counts[:2]
 
 
 @pytest.mark.parametrize(("attempts", "exhausted"), [(1, False), (Controls.MAX_ATTEMPTS, True)])
@@ -198,12 +177,10 @@ def test_controls_read_exhausted_only_once_their_attempts_are_used_up(attempts: 
     assert view.controls_mapping_exhausted is exhausted
 
 
-def test_the_delivery_claim_returns_the_runs_request_id_and_the_delivery_runs_under_it(
-    run: dict[str, Any],
-) -> None:
+def test_the_delivery_claim_returns_the_runs_request_id_and_the_delivery_runs_under_it(run: dict[str, Any]) -> None:
     """#3: a sweep's re-send carries no request id; the delivery takes the run's own from its job."""
     record_id = run["record_id"]
-    claimed = container.get_threat_scenario_session_repository().claim_controls_delivery(record_id, "task-1")
+    claimed = scenario_crud.get_threat_scenario_session_repository().claim_controls_delivery(record_id, "task-1")
     assert claimed is not None and claimed["job"]["request_id"] == "req-run"
     assert current_request_id() is None
     assert _deliver(record_id) == 1
@@ -257,9 +234,7 @@ def test_a_message_stops_retrying_an_outage_after_its_last_retry(
     monkeypatch.setattr(scenario_tasks.map_controls, "retry", retry)
     monkeypatch.setattr(ThreatScenarioSessionRepository, "claim_controls_delivery", store_down)
     with capture_logs() as logs:
-        result = scenario_tasks.map_controls.apply(
-            args=(run["record_id"], 0), task_id="task-1", retries=retries
-        )
+        result = scenario_tasks.map_controls.apply(args=(run["record_id"], 0), task_id="task-1", retries=retries)
     assert calls == ([Unavailable] if retried else [])
     assert result.successful() is not retried
     stopped = [entry for entry in logs if entry.get("reason") == "outage_retries_used"]
@@ -279,9 +254,7 @@ def test_a_message_stops_retrying_an_outage_after_its_last_retry(
         (Status.DONE, None, None),
     ],
 )  # fmt: skip
-def test_a_failed_runs_status_carries_its_error(
-    status: Status, error: dict[str, str] | None, shown: Any
-) -> None:
+def test_a_failed_runs_status_carries_its_error(status: Status, error: dict[str, str] | None, shown: Any) -> None:
     """#24: the code, message and AI outage reason of a failed run's job, additive on the status body."""
     stored = SessionStatus(
         session_id="s", entity_id=1, asset_id=1, status=status, step=Step.THREATS, error=error,
@@ -291,9 +264,7 @@ def test_a_failed_runs_status_carries_its_error(
     assert board["error"] == shown
 
 
-def test_a_mapping_waiting_on_the_turns_embed_stops_once_its_lease_is_lost(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_mapping_waiting_on_the_turns_embed_stops_once_its_lease_is_lost(monkeypatch: pytest.MonkeyPatch) -> None:
     """One mapping runs the turn's embed and it hangs (a slot wait); another waits for it under its own
     lease. Once that lease is lost the waiter ends with LeaseLost at its next check, not when the embed
     ends."""

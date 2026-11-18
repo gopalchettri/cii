@@ -10,11 +10,11 @@ from app.ai.profiles import (
     CHAT_MODEL_PROFILES,
     EMBEDDING_MODEL_PROFILES,
     RERANK_MODEL_PROFILES,
+    ChatModelProfile,
     UnknownModelProfile,
     find_model_profile,
 )
 from app.core.constants import ChatModule
-from app.models.ai.profiles import ChatModelProfile
 
 _PROFILES_BY_SETTING = {
     **{f"CII_{module.upper()}_CHAT_MODEL": CHAT_MODEL_PROFILES for module in ChatModule},
@@ -44,9 +44,7 @@ def test_an_unknown_model_name_is_refused_with_its_name() -> None:
 def test_each_chat_model_states_its_own_context_with_the_answer_kept_free() -> None:
     """No shared default limit: each model's comes from its own context (sources in app/ai/profiles.py)."""
     defaults = {
-        field.name
-        for field in dataclasses.fields(ChatModelProfile)
-        if field.default is not dataclasses.MISSING
+        field.name for field in dataclasses.fields(ChatModelProfile) if field.default is not dataclasses.MISSING
     }
     assert "context_tokens" not in defaults
     contexts = {name: chat.context_tokens for name, chat in CHAT_MODEL_PROFILES.items()}
@@ -62,16 +60,7 @@ def test_the_uat_models_keep_the_values_uat_runs_with() -> None:
     """Owner's UAT values (2026-10-08). Reasoning stays "none": v1 UAT sends that too (thinking off)."""
     for name in ("litellm_proxy/kimi-k2.5", "litellm_proxy/glm-5.3"):
         chat = CHAT_MODEL_PROFILES[name]
-        assert (chat.max_output_tokens, chat.supports_json_mode, chat.reasoning_effort) == (
-            12_288,
-            True,
-            "none",
-        )
+        assert (chat.max_output_tokens, chat.supports_json_mode, chat.reasoning_effort) == (12_288, True, "none")
     embed = EMBEDDING_MODEL_PROFILES["litellm_proxy/qwen3-embedding-8b"]
-    assert (embed.dimensions, embed.batch_size, embed.max_text_chars, embed.concurrency) == (
-        4096,
-        32,
-        4000,
-        4,
-    )
+    assert (embed.dimensions, embed.batch_size, embed.max_text_chars, embed.concurrency) == (4096, 32, 4000, 4)
     assert "litellm_proxy/qwen3-reranker-8b" in RERANK_MODEL_PROFILES

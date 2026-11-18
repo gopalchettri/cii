@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any
 
 import pymongo
@@ -15,60 +16,42 @@ import structlog
 from bson import ObjectId
 
 from app.ai import common
-from app.ai.common import (
-    AI_REFUSED_REPLY_ERRORS,
-    AI_UNAVAILABLE_ERRORS,
-    IncompleteAiAnswer,
-    UnusableAiAnswer,
-    ai_outage_of,
-    is_unmapped_outage,
-)
+from app.ai.common import attempt_outcome
 from app.ai.slots import AiRequestRate, AiSlots
 from app.core import metrics
 from app.core.clock import utc_now
-from app.core.constants import AiOutage, AiOutcome, AiUsageLogEvent, AiUsageOutcome, Timeouts, ai_bucket
+from app.core.constants import AiOutcome, AiUsageLogEvent, AiUsageOutcome, Timeouts, ai_bucket
+from app.core.database import get_mongodb
 from app.core.lease_signal import shared_work
-from app.data_access.admin.ai_usage_repository import AiUsageRepository
+from app.crud import ai_usage
 
 log = structlog.get_logger(__name__)
 
 #: The log fields a usage row copies: the job, the delivery and who the job works for.
-_JOB_FIELDS = (
-    "module",
-    "record_id",
-    "epoch",
-    "attempt",
-    "session_id",
-    "request_id",
-    "api",
-    "client_id",
-    "entity_id",
-)
+_JOB_FIELDS = ("module", "record_id", "epoch", "attempt", "session_id", "request_id", "api", "client_id", "entity_id")
 
 
+@dataclass
 class _Ask:
     """One logical ask: its id, the thread that asked, its attempts so far and the rows still to write."""
 
-    def __init__(self) -> None:
-        self.id = ObjectId()
-        self.thread = threading.get_ident()
-        self.tries = 0
-        self.rows: list[dict[str, Any]] = []
+    id: ObjectId = field(default_factory=ObjectId)
+    thread: int = field(default_factory=threading.get_ident)
+    tries: int = 0
+    rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 _ASK: ContextVar[_Ask | None] = ContextVar("ai_ask", default=None)
 
 
 def _open_ask() -> _Ask | None:
-    """The ask open on this thread; a copy of a job's context in a pool thread starts its own."""
-    ask = _ASK.get()
+    ask = _ASK.get()  # a copy of a job's context in a pool thread starts its own ask
     return ask if ask is not None and ask.thread == threading.get_ident() else None
 
 
 @contextmanager
 def one_ask() -> Iterator[None]:
-    """Groups every AI attempt inside it under one ask (the outermost on this thread) and writes their rows
-    when it ends, however it ends."""
+    """Groups every AI attempt inside it under one ask (this thread's outermost) and writes its rows as it ends."""
     if _open_ask() is not None:
         yield
         return
@@ -82,101 +65,11 @@ def one_ask() -> Iterator[None]:
 
 
 def note_ai_usage(task: str, model: str, outcome: AiUsageOutcome | AiOutcome, **measures: Any) -> None:
-    """One usage row: added to the open ask (written when it ends), else written now. `measures`: call_id
-    (the call text's _id), reason, error_type, tokens_in, tokens_out (chat, embedding and rerank), seconds,
-    reask."""
-    ask = _open_ask()
-    row = _usage_row(task, model, outcome, measures)
-    _count(row)
-    if ask is not None:
-        ask.rows.append(row)
-    else:
-        write_usage_rows([row])
-
-
-def search_tokens(response: Any) -> dict[str, int]:
-    """An embedding or rerank answer's tokens, as the gateway counts them against its budget: an embedding's
-    usage.prompt_tokens, a rerank's meta tokens, else its billed total (LiteLLM's own order); {} for none."""
-    prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
-    if prompt_tokens:
-        return {"tokens_in": int(prompt_tokens)}
-    meta = getattr(response, "meta", None) or {}
-    tokens = meta.get("tokens") or {}
-    if tokens.get("input_tokens") or tokens.get("output_tokens"):
-        return {
-            "tokens_in": int(tokens.get("input_tokens") or 0),
-            "tokens_out": int(tokens.get("output_tokens") or 0),
-        }
-    billed = (meta.get("billed_units") or {}).get("total_tokens")
-    return {"tokens_in": int(billed)} if billed else {}
-
-
-def call_with_retries[Answer](
-    call: Callable[[], Answer], rate: AiRequestRate, slots: AiSlots, *, model: str, task: str, tokens: int = 0
-) -> tuple[Answer, float]:
-    """common.call_with_retries as one ask, each failed attempt noted (the call's own failure, never a wait
-    for a slot or a turn: nothing was sent then). The seconds are the answering attempt's own, never its
-    failed tries' or the waits between, so its usage row, its text, its log line and its metric all agree."""
-    with one_ask():
-        answered: list[float] = []
-        noted = _noting_failures(call, task, model, answered)
-        answer = common.call_with_retries(noted, rate, slots, model=model, task=task, tokens=tokens)
-        return answer, answered[-1]
-
-
-def _noting_failures[Answer](
-    call: Callable[[], Answer], task: str, model: str, answered: list[float]
-) -> Callable[[], Answer]:
-    """`call` timed: a failure noted with its own seconds; an answer's seconds added to `answered`."""
-
-    def attempt() -> Answer:
-        started = time.perf_counter()
-        try:
-            answer = call()
-            answered.append(time.perf_counter() - started)
-            return answer
-        except Exception as exc:
-            outcome, reason = attempt_outcome(exc)
-            seconds = time.perf_counter() - started
-            note_ai_usage(task, model, outcome, reason=reason, error_type=type(exc).__name__, seconds=seconds)
-            raise
-
-    return attempt
-
-
-def attempt_outcome(error: Exception) -> tuple[AiOutcome, AiOutage | None]:
-    """A failed attempt's outcome and outage, as count_and_convert_ai_errors counts its failure."""
-    if isinstance(error, AI_UNAVAILABLE_ERRORS) or is_unmapped_outage(error):
-        return AiOutcome.UNAVAILABLE, ai_outage_of(error)
-    if isinstance(error, (IncompleteAiAnswer, UnusableAiAnswer, *AI_REFUSED_REPLY_ERRORS)):
-        return AiOutcome.UNREADABLE, None
-    return AiOutcome.ERROR, None
-
-
-def write_usage_rows(rows: list[dict[str, Any]]) -> None:
-    """Writes the rows in one write within RECORD_WRITE_SECONDS; on any failure, logs each whole row (for
-    replay) and counts it, never raising: tracking never fails the AI call."""
-    if not rows:
-        return
-    started = time.perf_counter()
-    try:
-        with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
-            AiUsageRepository().create_rows(rows)
-    except Exception:  # noqa: BLE001 - ponytail: the rows are logged instead; ai_usage_tools replay
-        for row in rows:
-            log.error(AiUsageLogEvent.ROW_SPILLED, row=_loggable(row), exc_info=True)
-        metrics.AI_USAGE_SPILLED.inc(len(rows))
-        return
-    metrics.AI_USAGE_WRITE_SECONDS.observe(time.perf_counter() - started)
-
-
-def _usage_row(task: str, model: str, outcome: str, measures: dict[str, Any]) -> dict[str, Any]:
-    """The row: who it served (none on a shared thread), what was asked, how it went, and its ask; a reused
-    answer is no attempt, so it takes no try number."""
+    """One usage row, counted: added to the open ask (written as it ends), else written now."""
     bound, shared = structlog.contextvars.get_contextvars(), shared_work()
     job_task = shared or bound.get("task")
     ask = _open_ask()
-    attempted = outcome != AiUsageOutcome.REUSED
+    attempted = outcome != AiUsageOutcome.REUSED  # a reused answer is no attempt: no try number
     if ask is not None and attempted:
         ask.tries += 1
     row = {
@@ -192,23 +85,70 @@ def _usage_row(task: str, model: str, outcome: str, measures: dict[str, Any]) ->
         "try_no": (ask.tries if ask is not None else 1) if attempted else None,
         **measures,
     }
-    return {name: value for name, value in row.items() if value is not None}
-
-
-def _count(row: dict[str, Any]) -> None:
-    """The row in the low-cardinality Prometheus counters (no ids: those stay in tsg_ai_usage); its tokens
-    by module and API call, and by task and model, so both see the same calls."""
+    row = {name: value for name, value in row.items() if value is not None}
+    # The low-cardinality Prometheus counters (no ids): tokens by module and API call, and by task and model.
     module, api, model = row.get("module", "none"), row.get("api", "none"), row.get("model", "none")
-    labels = (module, api, row["bucket"], row["task"], model, row["outcome"])
-    metrics.AI_USAGE_CALLS.labels(*labels, row.get("reason", "none")).inc()
+    labels = (module, api, row["bucket"], task, model, outcome, row.get("reason", "none"))
+    metrics.AI_USAGE_CALLS.labels(*labels).inc()
     for direction in ("in", "out"):
         if tokens := row.get(f"tokens_{direction}"):
             metrics.AI_USAGE_TOKENS.labels(module, api, direction).inc(tokens)
-            metrics.AI_TOKENS.labels(row["task"], model, direction).inc(tokens)
+            metrics.AI_TOKENS.labels(task, model, direction).inc(tokens)
+    if ask is not None:
+        ask.rows.append(row)
+    else:
+        write_usage_rows([row])
 
 
-def _loggable(row: dict[str, Any]) -> dict[str, Any]:
-    """The row as JSON can hold it: ids and times as text (the replay script turns them back)."""
-    return {name: str(value) if isinstance(value, ObjectId) else value for name, value in row.items()} | {
-        "created_at": row["created_at"].isoformat()
-    }
+def search_tokens(response: Any) -> dict[str, int]:
+    """An embedding or rerank answer's tokens as the gateway counts them (LiteLLM's order); {} for none."""
+    prompt_tokens = getattr(getattr(response, "usage", None), "prompt_tokens", None)
+    if prompt_tokens:
+        return {"tokens_in": int(prompt_tokens)}
+    meta = getattr(response, "meta", None) or {}
+    tokens = meta.get("tokens") or {}
+    if tokens.get("input_tokens") or tokens.get("output_tokens"):
+        return {"tokens_in": int(tokens.get("input_tokens") or 0), "tokens_out": int(tokens.get("output_tokens") or 0)}
+    billed = (meta.get("billed_units") or {}).get("total_tokens")
+    return {"tokens_in": int(billed)} if billed else {}
+
+
+def call_with_retries[Answer](
+    call: Callable[[], Answer], rate: AiRequestRate, slots: AiSlots, *, model: str, task: str, tokens: int = 0
+) -> tuple[Answer, float]:
+    """common.call_with_retries as one ask, each failed try noted; the seconds are the answering try's own."""
+    answered: list[float] = []
+
+    def attempt() -> Answer:
+        started = time.perf_counter()
+        try:
+            answer = call()
+        except Exception as exc:
+            outcome, reason = attempt_outcome(exc)
+            seconds = time.perf_counter() - started
+            note_ai_usage(task, model, outcome, reason=reason, error_type=type(exc).__name__, seconds=seconds)
+            raise
+        answered.append(time.perf_counter() - started)
+        return answer
+
+    with one_ask():
+        answer = common.call_with_retries(attempt, rate, slots, model=model, task=task, tokens=tokens)
+        return answer, answered[-1]
+
+
+def write_usage_rows(rows: list[dict[str, Any]]) -> None:
+    """One write of the rows; on any failure each row is logged (for replay) and counted, never raised."""
+    if not rows:
+        return
+    started = time.perf_counter()
+    try:
+        with pymongo.timeout(Timeouts.RECORD_WRITE_SECONDS):
+            ai_usage.insert_rows(get_mongodb(), rows)
+    except Exception:  # noqa: BLE001 - ponytail: the rows are logged instead; ai_usage_tools replay
+        for row in rows:  # ids and times as text: the replay script turns them back
+            text = {name: str(value) if isinstance(value, ObjectId) else value for name, value in row.items()}
+            text["created_at"] = row["created_at"].isoformat()
+            log.error(AiUsageLogEvent.ROW_SPILLED, row=text, exc_info=True)
+        metrics.AI_USAGE_SPILLED.inc(len(rows))
+        return
+    metrics.AI_USAGE_WRITE_SECONDS.observe(time.perf_counter() - started)

@@ -6,7 +6,7 @@ import dataclasses
 from app.core.constants import ContextProperties, StrideCategory, ThreatFinding
 from app.domain.scenario.plan import describe_asset_for_ai
 from app.domain.scenario.write import build_control_query, build_scenario_card, build_writer_input
-from app.models.scenario.write import WrittenScenario
+from app.schemas.scenario_internal import WrittenScenario
 from tests.planner_samples import CONTEXT, gap_fill_prompt, gate_prompt
 from tests.test_scenario_writing import _CLEAN, _LIVE, _plan_threat
 
@@ -51,10 +51,7 @@ def test_the_organisations_facts_are_a_background_line_never_the_assets() -> Non
     text = describe_asset_for_ai(context, 30_000).text
     asset_line, organisation_line = text.split("\n")[:2]
     assert _ORGANISATION_TEXT not in asset_line and "entity_technology_context" not in asset_line
-    assert (
-        organisation_line.startswith(ThreatFinding.ORGANISATION_LABEL)
-        and _ORGANISATION_TEXT in organisation_line
-    )
+    assert organisation_line.startswith(ThreatFinding.ORGANISATION_LABEL) and _ORGANISATION_TEXT in organisation_line
     assert "ORGANISATION" not in describe_asset_for_ai(CONTEXT, 30_000).text  # none recorded: no line
 
 
@@ -93,9 +90,7 @@ def test_a_system_listed_beside_others_leaves_with_its_joiner() -> None:
 
     from app.domain.scenario.write import _remove_other_system_names_from_reason
 
-    systems = [
-        {"id": n, "name": name} for n, name in ((1, "Alpha Platform"), (2, "Beta System"), (3, "Gamma Hub"))
-    ]
+    systems = [{"id": n, "name": name} for n, name in ((1, "Alpha Platform"), (2, "Beta System"), (3, "Gamma Hub"))]
     context = SimpleNamespace(systems=systems)
     cases = {
         "Spray against the Alpha Platform, Beta System, or Gamma Hub could work.": (

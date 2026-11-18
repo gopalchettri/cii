@@ -214,9 +214,7 @@ def outcome(answer: Answer) -> str:
     if not answer.status:
         return f"no answer after {answer.seconds:.1f} s: {answer.text}"
     said = f"HTTP {answer.status} in {answer.seconds:.1f} s"
-    return (
-        f"{said}, {tokens(answer):,} tokens counted" if answer.status == 200 else f"{said}: {message(answer)}"
-    )
+    return f"{said}, {tokens(answer):,} tokens counted" if answer.status == 200 else f"{said}: {message(answer)}"
 
 
 def limit_headers(answer: Answer) -> dict:
@@ -373,10 +371,7 @@ def load_section(targets: list[Target], steps: list[int], pause: float) -> list[
             answers, wall = burst(target, count, f"{kind}{count}")
             lines += step_lines(count, answers, wall, kind)
             if any(a.status == 429 for a in answers):  # the gateway is shared: no more load at all
-                return lines + [
-                    "      stopped here: a limit was reached (429), so no more calls were sent",
-                    "",
-                ]
+                return lines + ["      stopped here: a limit was reached (429), so no more calls were sent", ""]
             if not any(is_whole(a, kind) for a in answers):
                 lines.append("      stopped here: no call worked")
                 break
@@ -409,9 +404,7 @@ def find_targets(settings: dict) -> tuple[list[Target], list[str]]:
     targets: list[Target] = []
     missing: list[str] = []
     for kind, prefix in MODULES:
-        base, model, key = (
-            settings.get(f"{prefix}_{part}", "").strip() for part in ("BASE_URL", "MODEL", "API_KEY")
-        )
+        base, model, key = (settings.get(f"{prefix}_{part}", "").strip() for part in ("BASE_URL", "MODEL", "API_KEY"))
         if not (base and model and key):
             missing.append(prefix)
             continue

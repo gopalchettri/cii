@@ -21,10 +21,10 @@ import uvicorn
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 
-from app import container
 from app.api.status_stream import status_stream
 from app.core.constants import Collection, Event, Header, Realtime, SessionState, StageState, Status, Step
 from app.core.database import get_mongodb, get_redis_client
+from app.crud import admin as admin_crud
 from app.main import create_app
 from app.realtime import event_hub
 from app.realtime.event_hub import RESYNC, EventHub, _offer
@@ -57,7 +57,7 @@ def server_url() -> Iterator[str]:
 
 @pytest.fixture(scope="module")
 def identity() -> dict[str, str]:
-    _, api_key = container.get_admin_service().create_api_client(f"sse-{uuid.uuid4().hex[:8]}", None, None)
+    _, api_key = admin_crud.create_api_client(get_mongodb(), f"sse-{uuid.uuid4().hex[:8]}", None, None)
     return {Header.API_KEY: api_key, Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DESC"}
 
 
@@ -130,9 +130,7 @@ def test_a_stream_gets_the_status_at_once_and_every_change_a_worker_publishes(
         assert status["session_status"] == SessionState.COMPLETED
 
 
-def test_a_status_published_late_never_replaces_the_newer_saved_one(
-    server_url: str, identity: dict[str, str]
-) -> None:
+def test_a_status_published_late_never_replaces_the_newer_saved_one(server_url: str, identity: dict[str, str]) -> None:
     """Before: the message carried the status a worker had read. Two workers changing one run moments apart
     could publish in the opposite order, and the client kept the older status until the next change. Now a
     message only says "changed" and the stream reads MongoDB."""
@@ -260,14 +258,13 @@ def test_an_open_stream_ends_once_its_api_key_is_revoked(
 ) -> None:
     """A revoked key ends its open stream at the next recheck, with no message published."""
     monkeypatch.setattr(Realtime, "RECHECK_SECONDS", 0.2)
-    clients = container.get_admin_service()
-    client, api_key = clients.create_api_client(f"sse-revoked-{uuid.uuid4().hex[:8]}", None, "test")
+    client, api_key = admin_crud.create_api_client(get_mongodb(), f"sse-revoked-{uuid.uuid4().hex[:8]}", None, "test")
     url = f"{server_url}/v1/sessions/{_insert_session(86)}/events"
     headers = identity | {Header.API_KEY: api_key}
     with httpx.Client(timeout=15) as http, http.stream("GET", url, headers=headers) as response:
         events = _events(response, within_seconds=10)
         assert next(events)[0] == Event.SESSION_UPDATED
-        clients.revoke_api_client(client["client_id"], "test")
+        admin_crud.revoke_api_client(get_mongodb(), client["client_id"], "test")
         assert next(events, None) is None  # the stream ended with no message published
 
 
@@ -359,9 +356,7 @@ def _read_once(channel: str) -> list[object]:
 
 
 @pytest.mark.parametrize("reply", [ResponseError("NOPERM no access to the channels"), None])
-def test_a_refused_or_unconfirmed_subscription_sends_no_resync(
-    monkeypatch: pytest.MonkeyPatch, reply: object
-) -> None:
+def test_a_refused_or_unconfirmed_subscription_sends_no_resync(monkeypatch: pytest.MonkeyPatch, reply: object) -> None:
     """Before: every stream was told to re-read its status as soon as PSUBSCRIBE was sent, so a refused
     subscription made each open stream query MongoDB on every reconnect (2 s) for ever."""
     _fake_redis(monkeypatch, [reply])
@@ -488,9 +483,7 @@ def _publish_a_change_and_receive_it(session_id: str, events: Iterator[tuple[str
     time.sleep(0.5)  # a message still on its way finds nothing new and sends nothing
 
 
-def test_a_watcher_of_a_deleted_run_is_told_once_and_the_stream_ends(
-    server_url: str, identity: dict[str, str]
-) -> None:
+def test_a_watcher_of_a_deleted_run_is_told_once_and_the_stream_ends(server_url: str, identity: dict[str, str]) -> None:
     """G214 review: a deleted run read as "not there yet": no event came, and the stream stayed open."""
     session_id = _insert_session(86)
     url = f"{server_url}/v1/sessions/{session_id}/events"

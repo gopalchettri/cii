@@ -40,14 +40,13 @@
 # (kube-state-metrics also needs SRC_SHA256 in deploy/images/kube-state-metrics/Dockerfile: the new tag's sha256).
 # The version on each image line is the one pin: scripts/monitoring.py installs the same versions on a laptop.
 #
-# FIRST TIME ONLY (deploy/DEPLOYMENT_GUIDE.md, Part 2, step 9): a Deployment's selector cannot change, so the
-# older copies go first. In ai-common, shared with the chatbot, step 9 deletes by label, never by name: TSG's older
+# Older copies (deploy/DEPLOYMENT_GUIDE.md, Part 4, step 6, "First, only once"): a Deployment's selector cannot
+# change, so they go first. In ai-common, shared with the chatbot, they are deleted by label, never by name: TSG's older
 # copies of these Deployments and their Routes (labelled part-of=tsg-observability under the older label prefix:
 # TSG's, not the chatbot's), and the previous release's Routes on the threatgen-grafana host (the new Routes live
 # in ai-threatgen):
 #   oc -n ai-common delete route -l part-of=tsg-monitoring
-# TSG no longer runs in ai-remediation: Part 2, step 11 removes what earlier releases left there.
-# If "oc apply" here says "field is immutable", an older copy of that Deployment is still in ai-common: step 9.
+# If "oc apply" here says "field is immutable", an older copy of that Deployment is still in ai-common: Part 4, step 6.
 #
 # Budget: ai-common's quota is 6 CPU, 16 Gi memory, 180 Gi storage, shared with the chatbot; TSG keeps to 3 CPU,
 # 6 Gi and 60 Gi. These pods' limits: about 2.45 CPU and 4.8 Gi (the reaper worker 150m and 768Mi of it); a restart

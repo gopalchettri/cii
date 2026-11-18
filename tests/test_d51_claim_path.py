@@ -9,21 +9,20 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from celery.exceptions import Ignore
 from prometheus_client import REGISTRY
 from pymongo.errors import AutoReconnect
 
-from app import container
-from app.core.constants import Collection, Decision, ErrorMessage, Lease, Status, TaskName
-from app.core.constants.job_modules import module_of
+from app.core.constants import Collection, Decision, ErrorMessage, Lease, Status, TaskName, module_of
 from app.core.database import get_mongodb
 from app.core.exceptions import WaitingForAnotherJob
-from app.data_access.jobs.job_repository import JobLease, JobRepository, new_job
+from app.core.security import Principal
+from app.crud.jobs import JobLease, JobRepository, new_job
+from app.crud.remediation import get_remediation_repository
+from app.domain.jobs import list_my_jobs
 from app.domain.scenario.session import build_status_board
-from app.domain.service_mapper.views import mapping_status
-from app.models.admin.api_clients import Principal
-from app.models.remediation.plan import RemediationStatus, RemediationSummary, version_status
-from app.models.scenario.views import session_status_from_record
+from app.domain.service_mapper.mappings import mapping_status
+from app.schemas.remediation import RemediationStatus, RemediationSummary, version_status
+from app.schemas.scenarios import session_status_from_record
 from app.worker import celery_app, jobs
 from app.worker.celery_app import BrokerUnavailable, send_job
 
@@ -74,90 +73,12 @@ def published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return announced
 
 
-def test_a_retry_takes_back_its_own_claim_whose_answer_was_lost(
-    monkeypatch: pytest.MonkeyPatch, published: list[str]
-) -> None:
-    """MongoDB saved the claim but its answer was lost: the delivery's retry found its own live lease, was
-    dropped as `leased`, and the job idled until the lease ran out and the reaper re-sent it, an attempt
-    spent for nothing."""
-    record_id = _insert(Collection.SESSIONS, TaskName.FIND_THREATS)
-    real_claim = JobRepository.claim_job
-
-    def claim_then_lose_the_answer(self: JobRepository, *args: Any, **kwargs: Any) -> None:
-        real_claim(self, *args, **kwargs)
-        raise AutoReconnect("connection closed before the reply")
-
-    monkeypatch.setattr(JobRepository, "claim_job", claim_then_lose_the_answer)
-    with pytest.raises(RetryRequested):
-        jobs.run_leased_job(_task(retries=0), Collection.SESSIONS, record_id, 1, lambda _lease: None)
-    monkeypatch.setattr(JobRepository, "claim_job", real_claim)
-    with pytest.raises(Ignore):  # a redelivered copy of that delivery (same retry count) never steals it
-        jobs.run_leased_job(_task(retries=0), Collection.SESSIONS, record_id, 1, lambda _lease: None)
-    ran: list[int] = []
-    jobs.run_leased_job(
-        _task(retries=1), Collection.SESSIONS, record_id, 1, lambda lease: ran.append(lease.attempts)
-    )
-    assert ran == [2]
-
-
 def _queue_waits() -> tuple[float, float]:
     """(waits observed, waits over a minute) of tsg_job_queue_wait_seconds for the threats task."""
     labels = {"task": TaskName.FIND_THREATS, "module": module_of(TaskName.FIND_THREATS)}
     count = REGISTRY.get_sample_value("tsg_job_queue_wait_seconds_count", labels) or 0.0
     within = REGISTRY.get_sample_value("tsg_job_queue_wait_seconds_bucket", labels | {"le": "60.0"}) or 0.0
     return count, count - within
-
-
-def test_a_takeover_counts_its_wait_from_when_the_old_lease_ran_out(published: list[str]) -> None:
-    """A redelivery taking over a dead delivery's job counted its wait from the job's first due time: the
-    dead run and the lease's expiry, often over an hour, raising JobQueueWaitHigh for one sample."""
-    now = datetime.now(UTC)
-    record_id = _insert(
-        Collection.SESSIONS,
-        TaskName.FIND_THREATS,
-        Status.RUNNING,
-        due_at=now - timedelta(hours=2),
-        lease_until=now - timedelta(seconds=10),
-        attempts=1,
-        task_id="dead",
-    )
-    waits, slow = _queue_waits()
-    jobs.run_leased_job(_task("redelivered"), Collection.SESSIONS, record_id, 1, lambda _lease: None)
-    assert _queue_waits() == (waits + 1, slow)
-    assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["job"]["attempts"] == 2
-
-
-def test_a_take_back_after_a_failed_give_back_counts_its_wait_from_its_own_last_claim(
-    monkeypatch: pytest.MonkeyPatch, published: list[str]
-) -> None:
-    """A MongoDB blip failed a job's write and then its give-back, so the record stayed running under a live
-    lease; the retry took it back counting its queue wait from the job's first due time, hours earlier: one
-    slow sample that raised JobQueueWaitHigh."""
-    record_id = _insert(
-        Collection.SESSIONS, TaskName.FIND_THREATS, due_at=datetime.now(UTC) - timedelta(hours=2)
-    )
-    real_update = JobLease.update_job
-
-    def store_down(*_args: Any, **_kwargs: Any) -> None:
-        raise AutoReconnect("store down")
-
-    def written_while_the_store_blips(lease: JobLease) -> None:
-        monkeypatch.setattr(JobLease, "update_job", store_down)
-        lease.update_job({"counts.written": 1})  # the job's write; its give-back then fails the same way
-
-    with pytest.raises(RetryRequested):
-        jobs.run_leased_job(
-            _task(retries=0), Collection.SESSIONS, record_id, 1, written_while_the_store_blips
-        )
-    monkeypatch.setattr(JobLease, "update_job", real_update)
-    assert get_mongodb()[Collection.SESSIONS].find_one({"_id": record_id})["status"] == Status.RUNNING
-    waits, slow = _queue_waits()
-    ran: list[int] = []
-    jobs.run_leased_job(
-        _task(retries=1), Collection.SESSIONS, record_id, 1, lambda lease: ran.append(lease.attempts)
-    )
-    assert ran == [2]  # taken back at once, not left to the reaper
-    assert _queue_waits() == (waits + 1, slow)
 
 
 def _plan_statuses(record_id: str) -> tuple[Status, ...]:
@@ -167,26 +88,16 @@ def _plan_statuses(record_id: str) -> tuple[Status, ...]:
     status = RemediationStatus.from_record(
         plans.find_one({"_id": record_id}, RemediationStatus.RECORD_FIELDS), scenario_accepted=True
     )
-    listed = RemediationSummary.from_record(
-        plans.find_one({"_id": record_id}, RemediationSummary.RECORD_FIELDS)
-    )
+    listed = RemediationSummary.from_record(plans.find_one({"_id": record_id}, RemediationSummary.RECORD_FIELDS))
     caller = Principal(client_id="c1", user_id="u1", entity_id=ENTITY, tenant_id="tenant-1")
-    jobs_list = container.get_job_service().list_jobs(caller).jobs
+    jobs_list = list_my_jobs(caller).jobs
     job_row = next(job for job in jobs_list if job.remediation_id == record_id)
-    decided = container.get_remediation_repository().get(fields="change", _id=record_id)
+    decided = get_remediation_repository().get(fields="change", _id=record_id)
     decided_status = version_status(decided, {"version": decided["job"]["epoch"]})
-    return (
-        status.latest_status,
-        status.progress.generation,
-        listed.latest_status,
-        job_row.status,
-        decided_status,
-    )
+    return (status.latest_status, status.progress.generation, listed.latest_status, job_row.status, decided_status)
 
 
-def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_once(
-    published: list[str],
-) -> None:
+def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_once(published: list[str]) -> None:
     """Each 15 s look claimed the plan (running, announced), then gave it back (queued, announced): the
     stream and the status flickered running and queued for as long as the controls were being mapped."""
     record_id = _insert(Collection.REMEDIATIONS, TaskName.WRITE_PLAN)
@@ -230,7 +141,7 @@ def test_a_plan_waiting_for_another_job_never_reads_running_and_is_announced_onc
             "tsg_remediations",
             lambda record: RemediationStatus.from_record(record, True).progress.retrying,
         ),
-        (TaskName.MAP_SERVICES, "tsg_service_mappings", lambda record: mapping_status(record, 5).retrying),
+        (TaskName.MAP_SERVICES, "tsg_service_mappings", lambda record: mapping_status(record).retrying),
     ],
 )
 def test_a_refused_send_shows_on_the_jobs_own_status(

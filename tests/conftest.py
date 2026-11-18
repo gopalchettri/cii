@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from urllib.parse import urlsplit
 
-from tests.checkout import CHECKOUT  # standard library only
+from tests.checkout import CHECKOUT, WORKER  # standard library only
 
 TEST_DATABASE = f"cii_tsg_test_{CHECKOUT}"  # one per checkout: another checkout's run never drops it
 os.environ["CII_MONGO_DB"] = TEST_DATABASE
@@ -21,7 +21,7 @@ os.environ["CII_ADMIN_API_KEY"] = "test-admin-key"
 # Grafana reads, and it showed the tests' simulated Redis/MongoDB/SQL outages as real ones (2026-10-09).
 # A real folder, not "": Settings ignores an empty value (env_ignore_empty) and would fall back to .env. One
 # fixed folder, emptied at each run (a new mkdtemp folder per run was never deleted).
-TEST_LOG_DIR = os.path.join(tempfile.gettempdir(), "cii-test-logs")
+TEST_LOG_DIR = os.path.join(tempfile.gettempdir(), f"cii-test-logs{WORKER}")
 shutil.rmtree(TEST_LOG_DIR, ignore_errors=True)
 os.makedirs(TEST_LOG_DIR, exist_ok=True)
 os.environ["CII_LOG_DIR"] = TEST_LOG_DIR
@@ -75,9 +75,14 @@ def _test_redis_numbers(value: str, developers: set[int]) -> list[int]:
 #: Redis databases are numbered, not named, so they cannot be per checkout by themselves (on this laptop 8-12
 #: hold other data). The claim below stops a second run on the same pair, or on a pair sharing one database,
 #: or a run on a database holding other data, at once: never a silent wipe.
+if WORKER:  # a worker inherits the test addresses the starting process set below: not the laptop's
+    os.environ.pop("CII_REDIS_URL", None), os.environ.pop("CII_REDIS_CELERY_BROKER_URL", None)
 _laptop = Settings()  # type: ignore[call-arg]  # the values come from .env
+# ponytail: a parallel run's workers take these pairs in order, so 7 workers at most (Redis has 16
+# databases; 0 and 1 are the laptop's). More workers: raise Redis `databases` and add pairs.
+_WORKER_REDIS_DATABASES = ("14,15", "2,3", "4,5", "6,7", "8,9", "10,11", "12,13")
 _TEST_REDIS_NUMBERS = _test_redis_numbers(
-    os.environ.get("CII_TEST_REDIS_DATABASES", "14,15"),
+    _WORKER_REDIS_DATABASES[int(WORKER[2:])] if WORKER else os.environ.get("CII_TEST_REDIS_DATABASES", "14,15"),
     {_database_number(_laptop.redis_url), _database_number(_laptop.redis_celery_broker_url)},
 )
 TEST_REDIS_DATABASES = dict(zip(("redis_url", "redis_celery_broker_url"), _TEST_REDIS_NUMBERS, strict=True))
@@ -91,9 +96,11 @@ for _field, _number in TEST_REDIS_DATABASES.items():
     _url = urlsplit(getattr(_laptop, _field))._replace(path=f"/{_number}").geturl()
     os.environ[f"CII_{_field.upper()}"] = _url
 
+import inspect  # noqa: E402
 import math  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
+from typing import Any  # noqa: E402
 
 import pytest  # noqa: E402
 import structlog  # noqa: E402
@@ -101,10 +108,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 from redis import Redis  # noqa: E402
 from sqlalchemy import Engine  # noqa: E402
 
-from app.container import create_all_indexes  # noqa: E402
 from app.core import clock  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_mongodb  # noqa: E402
+from app.crud.indexes import create_all_indexes  # noqa: E402
+from app.domain.intel import evidence  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.worker.jobs import JOB_COLLECTIONS  # noqa: E402
 from tests.sql_test_database import build_sql_test_database  # noqa: E402
@@ -151,9 +159,7 @@ def _claim_test_redis_databases(run: str) -> None:
                 f"The Redis databases {numbers} hold data that is not a TSG test run's (or a run without "
                 "this claim is using them). Set CII_TEST_REDIS_DATABASES to two empty spare databases."
             )
-        refused = [
-            db for db in databases if not db.set(TEST_RUN_KEY, run, nx=True, ex=TEST_RUN_CLAIM_SECONDS)
-        ]
+        refused = [db for db in databases if not db.set(TEST_RUN_KEY, run, nx=True, ex=TEST_RUN_CLAIM_SECONDS)]
         if refused:
             holders = ", ".join(sorted({(db.get(TEST_RUN_KEY) or b"?").decode() for db in refused}))
             for db in databases:  # only the claims this run just made
@@ -239,12 +245,48 @@ def no_log_fields_left_over() -> None:
     structlog.contextvars.clear_contextvars()
 
 
+class MethodsOffObjects(pytest.MonkeyPatch):
+    """pytest's own, but undo leaves no method on a patched object: left there, it hid a later patch of the class."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._patched: list[tuple[Any, str]] = []
+
+    def setattr(self, target: Any, name: Any, *value: Any, **options: Any) -> None:
+        is_the_classes = isinstance(name, str) and not inspect.isclass(target)
+        is_the_classes = is_the_classes and name not in getattr(target, "__dict__", {name})
+        super().setattr(target, name, *value, **options)
+        if is_the_classes:
+            self._patched.append((target, name))
+
+    def undo(self) -> None:
+        super().undo()
+        while self._patched:
+            target, name = self._patched.pop()
+            getattr(target, "__dict__", {}).pop(name, None)
+
+
+@pytest.fixture
+def monkeypatch() -> Iterator[pytest.MonkeyPatch]:
+    """Every test's monkeypatch: a method patched on a singleton's object is the class's again after the test."""
+    patch = MethodsOffObjects()
+    yield patch
+    patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def no_rerank_scores_left_over() -> None:
+    """Each test starts with an empty evidence rerank score cache: the same docs and query of an earlier test
+    with other fake scores would be answered from it."""
+    evidence._scored.clear()  # noqa: SLF001
+
+
 @pytest.fixture(autouse=True)
 def pod_clock_is_mongodbs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run where MongoDB is: the shared clock's offset stays 0 and it never asks MongoDB its time
     (tests/test_clock.py measures it on purpose)."""
-    monkeypatch.setattr(clock._clock, "_offset", 0.0)
-    monkeypatch.setattr(clock._clock, "_next_check", math.inf)
+    monkeypatch.setattr(clock, "_offset", 0.0)
+    monkeypatch.setattr(clock, "_next_check", math.inf)
 
 
 @pytest.fixture(scope="session")

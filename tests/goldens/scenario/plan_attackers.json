@@ -18,13 +18,9 @@
  "stored": {
   "ai_threats": 0,
   "category_ids": {},
-  "library_stamp": {
-   "Threat_Catalogue": "01"
-  },
   "library_threats": 2,
   "plan": {
    "paths": [],
-   "prompt_version": "planner-2",
    "target": 0,
    "threats": []
   },
@@ -79,12 +75,7 @@
     }
    ],
    "drops_total": 3,
-   "groups": {},
-   "landscape_cut": false,
-   "turns": {
-    "Historian": 0,
-    "SCADA server": 0
-   }
+   "landscape_cut": false
   }
  }
 }

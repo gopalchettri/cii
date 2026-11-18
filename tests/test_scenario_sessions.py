@@ -10,13 +10,14 @@ import pytest
 
 from app.core.constants import RunActionKind, RunClash, Status, Step
 from app.core.exceptions import LeaseLost
-from app.data_access.jobs.job_repository import JobLease
-from app.data_access.scenario.threat_scenario_repository import RETIRED_ASSET_INDEX, ThreatScenarioRepository
-from app.data_access.scenario.threat_scenario_session_repository import (
+from app.crud.jobs import JobLease
+from app.crud.scenarios import (
     RETIRED_ACTIVE_RUN_INDEX,
+    RETIRED_ASSET_INDEX,
+    ThreatScenarioRepository,
     ThreatScenarioSessionRepository,
 )
-from app.models.scenario.views import session_status_from_record
+from app.schemas.scenarios import session_status_from_record
 
 scenarios = ThreatScenarioRepository()
 scenario_sessions = ThreatScenarioSessionRepository(scenarios=scenarios)
@@ -30,11 +31,7 @@ def indexes(empty_test_database: None) -> None:
 def _session(**fields: Any) -> dict[str, Any]:
     now = datetime.now(UTC)
     record = {"_id": uuid.uuid4().hex, "entity_id": 86, "asset_id": int(uuid.uuid4().int % 10**8)}
-    return (
-        record
-        | {"status": Status.DONE, "step": Step.SCENARIOS, "job": {"epoch": 1}, "updated_at": now}
-        | fields
-    )
+    return record | {"status": Status.DONE, "step": Step.SCENARIOS, "job": {"epoch": 1}, "updated_at": now} | fields
 
 
 def test_only_the_idempotency_key_clashes_never_the_same_asset() -> None:
@@ -63,12 +60,9 @@ def test_start_up_drops_each_retired_index(repository: Any, keys: list[str], ret
 
 def test_a_manual_start_is_saved_once_and_another_body_is_refused() -> None:
     manual = _session(request_hash="a")
-    assert scenario_sessions.create_manual_scenario_session(manual) is None
-    assert scenario_sessions.create_manual_scenario_session(manual) is None  # a retry changes nothing
-    assert (
-        scenario_sessions.create_manual_scenario_session(manual | {"request_hash": "b"})
-        is RunClash.IDEMPOTENCY_KEY
-    )
+    assert scenario_sessions.create_scenario_session(manual) is None
+    assert scenario_sessions.create_scenario_session(manual) is None  # a retry changes nothing
+    assert scenario_sessions.create_scenario_session(manual | {"request_hash": "b"}) is RunClash.IDEMPOTENCY_KEY
 
 
 def test_of_two_clicks_on_one_epoch_one_queues_and_a_deleting_session_is_told_so() -> None:
@@ -77,10 +71,7 @@ def test_of_two_clicks_on_one_epoch_one_queues_and_a_deleting_session_is_told_so
     status = session_status_from_record(record)
     batch = [{"path_id": "p1"}]
     assert scenario_sessions.update_scenario_session_job(status, RunActionKind.REGENERATE, batch) is None
-    assert (
-        scenario_sessions.update_scenario_session_job(status, RunActionKind.REGENERATE, batch)
-        is RunClash.CHANGED
-    )
+    assert scenario_sessions.update_scenario_session_job(status, RunActionKind.REGENERATE, batch) is RunClash.CHANGED
     marked = _session(deleting_at=datetime.now(UTC))
     scenario_sessions.create(marked)
     clash = scenario_sessions.update_scenario_session_job(
@@ -120,11 +111,11 @@ def test_the_plan_write_is_fenced_and_keeps_a_newer_count(monkeypatch: pytest.Mo
     scenario_sessions.update_scenario_session_plan(lease, {"p1": {"served": "s1"}}, figures)
     stored = scenario_sessions.get(_id=record["_id"])
     assert stored is not None
-    assert (
-        stored["plan"]["paths"][0]["served"],
-        stored["counts"]["written"],
-        stored["counts"]["planned"],
-    ) == ("s1", 9, 1)
+    assert (stored["plan"]["paths"][0]["served"], stored["counts"]["written"], stored["counts"]["planned"]) == (
+        "s1",
+        9,
+        1,
+    )
     lost = JobLease(scenario_sessions.collection, record["_id"], 1, "other", 1)
     with pytest.raises(LeaseLost):
         scenario_sessions.update_scenario_session_plan(lost, {}, figures)

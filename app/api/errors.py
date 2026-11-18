@@ -1,7 +1,5 @@
-"""The global error handlers: every error leaves the API as one RFC 9457 problem body. Messages come from
-app/core/constants/ (ErrorMessage and the domain message enums); a title is its HTTP status phrase."""
+"""The global error handlers: every error leaves the API as one RFC 9457 problem body."""
 
-from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any
 
@@ -27,14 +25,9 @@ from app.core.exceptions import (
 log = structlog.get_logger(__name__)
 
 
-#: A framework error's code: the code of our error with the same status. Any other 4xx it raises (405,
-#: 413 …) is the caller's input: validation_error.
-_ERROR_CODE_BY_HTTP_STATUS = {
-    error.status: error.code for error in (Unauthorized, Forbidden, NotFound, Conflict)
-}
+#: A framework error's code: ours for the same status, else validation_error.
+_ERROR_CODE_BY_HTTP_STATUS = {error.status: error.code for error in (Unauthorized, Forbidden, NotFound, Conflict)}
 
-
-#: The parts of an error answer its access line repeats (app/api/middleware.py): a failed call is traceable.
 _LOGGED_PROBLEM_FIELDS = ("code", "detail", "reason", "errors", "details")
 
 
@@ -48,8 +41,7 @@ def build_problem_body(
     errors: list[dict[str, Any]] | None = None,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The one error body (RFC 9457) for every HTTP error response. With type "about:blank" the title is
-    the status phrase ("Not Found"), the same whoever raised the error (RFC 9457 §4.2.1)."""
+    """The one error body (RFC 9457) for every HTTP error response."""
     body: dict[str, Any] = {
         "type": Problem.TYPE,
         "title": HTTPStatus(status).phrase,
@@ -83,7 +75,7 @@ def build_problem_response(
         status, code, detail, request_id=request_id, reason=reason, errors=errors, details=details
     )
     request.state.problem = {key: body[key] for key in _LOGGED_PROBLEM_FIELDS if key in body}
-    # Set here too: a 500 is answered outside every middleware, so only this puts the id on it.
+    # A 500 is answered outside every middleware, so only this puts the id on it.
     headers: dict[str, str] = {Header.REQUEST_ID.value: request_id} if request_id else {}
     if retry_after:
         headers["Retry-After"] = str(retry_after)
@@ -95,8 +87,7 @@ def build_problem_response(
 async def answer_app_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, AppError)  # registered for AppError only
     if exc.status >= 500:
-        # With the driver's own error: a rotated password and a short outage both answer 503, and only the
-        # cause tells them apart.
+        # The cause tells a rotated password from a short outage.
         cause = exc.__cause__
         log.warning(
             LogEvent.HTTP_APP_ERROR,
@@ -120,17 +111,13 @@ async def answer_app_error(request: Request, exc: Exception) -> JSONResponse:
 async def answer_invalid_request(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)  # registered for RequestValidationError only
     errors = [
-        {"field": ".".join(str(part) for part in error["loc"]), "message": error["msg"]}
-        for error in exc.errors()
+        {"field": ".".join(str(part) for part in error["loc"]), "message": error["msg"]} for error in exc.errors()
     ]
-    return build_problem_response(
-        request, Invalid.status, Invalid.code, ErrorMessage.FIELDS_INVALID, errors=errors
-    )
+    return build_problem_response(request, Invalid.status, Invalid.code, ErrorMessage.FIELDS_INVALID, errors=errors)
 
 
 async def answer_http_error(request: Request, exc: Exception) -> JSONResponse:
-    """Errors the framework raises itself (404 unknown route, 405, 413 …), with their own headers kept
-    (e.g. `Allow` on a 405)."""
+    """Errors the framework raises itself (404, 405, 413 …), with their own headers kept."""
     assert isinstance(exc, StarletteHTTPException)  # registered for StarletteHTTPException only
     code = _ERROR_CODE_BY_HTTP_STATUS.get(exc.status_code, ErrorCode.VALIDATION_ERROR)
     response = build_problem_response(request, exc.status_code, code, str(exc.detail))
@@ -138,19 +125,13 @@ async def answer_http_error(request: Request, exc: Exception) -> JSONResponse:
     return response
 
 
-def store_unavailable_answer(
-    dependency: Dependency, message: ErrorMessage
-) -> Callable[[Request, Exception], Awaitable[JSONResponse]]:
+async def answer_store_unavailable(request: Request, exc: Exception) -> JSONResponse:
     """A driver error meaning the store is unreachable: 503 + Retry-After, never a 500."""
-
-    async def answer_store_unavailable(request: Request, exc: Exception) -> JSONResponse:
-        log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=dependency, message=str(exc))
-        outage = Unavailable(message)
-        return build_problem_response(
-            request, outage.status, outage.code, outage.detail, retry_after=outage.retry_after
-        )
-
-    return answer_store_unavailable
+    is_mongo = isinstance(exc, MONGO_UNAVAILABLE_ERRORS)
+    dependency = Dependency.MONGO if is_mongo else Dependency.REDIS
+    log.warning(LogEvent.DEPENDENCY_UNAVAILABLE, dependency=dependency, message=str(exc))
+    outage = Unavailable(ErrorMessage.MONGO_UNREACHABLE if is_mongo else ErrorMessage.REDIS_UNREACHABLE)
+    return build_problem_response(request, outage.status, outage.code, outage.detail, retry_after=outage.retry_after)
 
 
 async def answer_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
@@ -158,19 +139,11 @@ async def answer_unexpected_error(request: Request, exc: Exception) -> JSONRespo
     return build_problem_response(request, AppError.status, AppError.code, ErrorMessage.UNEXPECTED)
 
 
-_STORE_OUTAGES: tuple[tuple[tuple[type[Exception], ...], Dependency, ErrorMessage], ...] = (
-    (MONGO_UNAVAILABLE_ERRORS, Dependency.MONGO, ErrorMessage.MONGO_UNREACHABLE),
-    (REDIS_UNAVAILABLE_ERRORS, Dependency.REDIS, ErrorMessage.REDIS_UNREACHABLE),
-)
-
-
 def register_exception_handlers(app: FastAPI) -> None:
     """Every error leaves the API as one problem body (RFC 9457)."""
     app.add_exception_handler(AppError, answer_app_error)
     app.add_exception_handler(RequestValidationError, answer_invalid_request)
     app.add_exception_handler(StarletteHTTPException, answer_http_error)
-    for errors, dependency, message in _STORE_OUTAGES:
-        answer = store_unavailable_answer(dependency, message)
-        for error_type in errors:
-            app.add_exception_handler(error_type, answer)
+    for error_type in (*MONGO_UNAVAILABLE_ERRORS, *REDIS_UNAVAILABLE_ERRORS):
+        app.add_exception_handler(error_type, answer_store_unavailable)
     app.add_exception_handler(Exception, answer_unexpected_error)

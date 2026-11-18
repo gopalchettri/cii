@@ -1,33 +1,16 @@
-"""A run's plan paths as the write job settles them, each change in one fenced write with the run's counts,
-then the set's next batch handed over, or the set or the regenerate ended."""
+"""A run's plan paths as the write job settles them, each change in one fenced write."""
 
 from datetime import datetime
 from typing import Any
 
 import structlog
 
+from app.core import constants as c
 from app.core import metrics
 from app.core.clock import utc_now
-from app.core.constants import (
-    LogEvent,
-    RunActionKind,
-    RunActionOutcome,
-    ScenarioOutcome,
-    ScenarioStatus,
-    Status,
-    TaskName,
-    UnselectedReason,
-)
-from app.core.exceptions import LeaseLost
-from app.data_access.jobs.job_repository import JobLease, ended_job_fields
-from app.data_access.scenario.threat_scenario_repository import ThreatScenarioRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.scenario.session import (
-    count_plan_paths,
-    pick_next_paths_to_write,
-    pick_replacement_path,
-    summarise_finished_set,
-)
+from app.crud.jobs import JobLease, ended_job_fields
+from app.crud.scenarios import get_threat_scenario_repository, get_threat_scenario_session_repository
+from app.domain.scenario import session
 from app.realtime.publisher import publish_session_status
 from app.worker.jobs import hand_over
 
@@ -37,26 +20,13 @@ log = structlog.get_logger(__name__)
 class PlanProgress:
     """The plan of the run one write job holds, and the fenced writes that move it on."""
 
-    def __init__(
-        self,
-        lease: JobLease,
-        run: dict[str, Any],
-        sessions: ThreatScenarioSessionRepository,
-        scenarios: ThreatScenarioRepository,
-    ) -> None:
+    def __init__(self, lease: JobLease, run: dict[str, Any]) -> None:
         self._lease, self._run_id = lease, run["_id"]
-        self._sessions, self._scenarios = sessions, scenarios
+        self._sessions, self._scenarios = get_threat_scenario_session_repository(), get_threat_scenario_repository()
         self._plan, self._last_action = run["plan"], run.get("last_action") or {}
         self._planning_s = (run.get("timings") or {}).get("threats_s", 0.0)  # a start's plan job; else none
         self.paths = {path["path_id"]: path for path in self._plan["paths"]}
-        # The set being written; none on a run whose job carries no set (it writes its batch, then stops).
         self._set = set(run["job"].get("set") or ())
-
-    def hold(self) -> None:
-        """Renew the job's lease right before a scenario is saved, else raise LeaseLost: a run cancelled or
-        deleted during the AI call, or taken over by a later delivery, never gets the scenario."""
-        if not self._lease.renew_job():
-            raise LeaseLost(self._run_id)
 
     def abandon(
         self,
@@ -64,98 +34,78 @@ class PlanProgress:
         state: dict[str, Any],
         reason: str,
         threats: dict[str, dict[str, Any]],
-        card: ScenarioOutcome | None = None,
-    ) -> str | None:
-        """Give a path up for good, logged and counted with its last `card`; when the set's budget allows and
-        a reserve exists, the reserve takes its place in the same fenced write. Return its id, or None."""
-        log.warning(
-            LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, path_attempts=state["attempts"], reason=reason
-        )
-        counted = (ScenarioOutcome.ABANDONED,) if card is None else (card, ScenarioOutcome.ABANDONED)
+        card: c.ScenarioOutcome | None = None,
+    ) -> None:
+        """Give a path up for good, logged and counted with its last `card`."""
+        log.warning(c.LogEvent.WRITER_PATH_ABANDONED, path_id=path_id, path_attempts=state["attempts"], reason=reason)
+        counted = (c.ScenarioOutcome.ABANDONED,) if card is None else (card, c.ScenarioOutcome.ABANDONED)
         states = {path_id: state | {"abandoned_reason": reason, "settled_epoch": self._lease.epoch}}
-        # Given up (its try counted) before the pick: it covers nothing and hides no try spent.
         self.paths[path_id].update(states[path_id])
-        reserve = pick_replacement_path(self.paths.values(), threats, self._set)
+        reserve = session.pick_replacement_path(self.paths.values(), threats, self._set)
         if reserve is None:
             self.record(states, counted=counted)
-            return None
-        replaced = {"selected": False, "unselected_reason": UnselectedReason.REPLACED_AFTER_FAILURE}
+            return
+        replaced = {"selected": False, "unselected_reason": c.UnselectedReason.REPLACED_AFTER_FAILURE}
         states[path_id] |= replaced | {"replaced_by": reserve["path_id"]}
         states[reserve["path_id"]] = {"selected": True, "unselected_reason": None, "replaces": path_id}
         self._set.add(reserve["path_id"])
         self.record(states, {"job.set": sorted(self._set)}, counted)
-        return str(reserve["path_id"])
 
-    def leave_for_next_set(self, path_id: str, state: dict[str, Any], card: ScenarioOutcome) -> None:
-        """Keep a path open but out of the set being written, so only a later set writes it; its `card`
-        counted."""
+    def leave_for_next_set(self, path_id: str, state: dict[str, Any], card: c.ScenarioOutcome) -> None:
+        """Keep a path open but out of the set being written, so only a later set writes it; its `card`"""
         # ponytail: pick_replacement_path may still pick it as this set's spare; flag it if spares must be new
         self._set.discard(path_id)
         settled = state | {"abandoned": False, "settled_epoch": self._lease.epoch}
         self.record({path_id: settled}, {"job.set": sorted(self._set)}, (card,))
 
-    def settled_by_this_job(self, path_id: str) -> bool:
-        """True when a delivery of this job (its epoch) already settled the path: it is not written again."""
-        return bool(self.paths[path_id].get("settled_epoch") == self._lease.epoch)
+    def serve_written(self, path_ids: list[str]) -> None:
+        """Serve each of the paths that already has a finished scenario, with no AI call."""
+        if not path_ids:
+            return
+        done = c.ScenarioStatus.DONE
+        written = self._scenarios.list(
+            fields="path_id", session_id=self._run_id, path_id_in=path_ids, status=done, newest=True
+        )
+        if written:
+            self.record({row["path_id"]: {"served": row["_id"], "abandoned": False} for row in written})
 
     def record(
         self,
         states: dict[str, dict[str, Any]],
         also: dict[str, Any] | None = None,
-        counted: tuple[ScenarioOutcome, ...] = (),
+        counted: tuple[c.ScenarioOutcome, ...] = (),
     ) -> None:
-        """Save attack path states, the plan's figures and the scenario counts in one fenced write, then
-        count `counted` in tsg_scenarios_total (only the delivery whose write is taken does) and send a live
-        update. `also`: more fields for the same write."""
+        """Save attack path states, the plan's figures and the scenario counts in one fenced write."""
         for attack_path_id, state in states.items():
             self.paths[attack_path_id].update(state)
-        figures = count_plan_paths(self.paths.values())
+        figures = session.count_plan_paths(self.paths.values())
         self._sessions.update_scenario_session_plan(self._lease, states, figures, also)
         for outcome in counted:
             metrics.SCENARIOS.labels(outcome).inc()
         publish_session_status(self._run_id)
 
     def continue_or_finish(self) -> None:
-        """Hand the set's next batch to this same task, or end the set: complete, or partial when a path of
-        this set was abandoned."""
+        """Hand the set's next batch to this same task, or end the set."""
         in_set = [path for path_id, path in self.paths.items() if path_id in self._set]
-        _, batch = pick_next_paths_to_write(in_set)
+        _, batch = session.pick_next_paths_to_write(in_set)
         if batch:
-            hand_over(self._lease, TaskName.WRITE_SCENARIOS, {"job.batch": batch})
+            hand_over(self._lease, c.TaskName.WRITE_SCENARIOS, {"job.batch": batch})
             return
-        # A delivery that had lost its lease may still have saved a path another delivery then gave up on: the
-        # written scenario wins, so the plan never calls a written path abandoned.
-        given_up = [
-            path["path_id"] for path in self.paths.values() if path["abandoned"] and not path["served"]
-        ]
-        written = (
-            self._scenarios.list(
-                fields="path_id",
-                session_id=self._run_id,
-                path_id_in=given_up,
-                status=ScenarioStatus.DONE,
-                newest=True,
-            )
-            if given_up
-            else []
+        self.serve_written(
+            [path["path_id"] for path in self.paths.values() if path["abandoned"] and not path["served"]]
         )
-        rescued = {row["path_id"]: row["_id"] for row in written}
-        if rescued:
-            self.record({path_id: {"served": sid, "abandoned": False} for path_id, sid in rescued.items()})
-        partial = count_plan_paths(in_set)["abandoned"] > 0
-        # This action's own times: from the plan's freeze, or from a later set's start.
+        partial = session.count_plan_paths(in_set)["abandoned"] > 0
         started = max(self._plan["frozen_at"], self._last_action.get("started_at") or self._plan["frozen_at"])
-        outcome = RunActionOutcome.PARTIAL if partial else RunActionOutcome.COMPLETE
+        outcome = c.RunActionOutcome.PARTIAL if partial else c.RunActionOutcome.COMPLETE
         changes: dict[str, Any] = {"last_action.outcome": outcome, **self._action_times(started)}
-        if self._last_action.get("kind") == RunActionKind.NEXT_SET:  # requested and epoch stay as queued
-            summary = summarise_finished_set(in_set, list(self.paths.values()), outcome)
+        if self._last_action.get("kind") == c.RunActionKind.NEXT_SET:  # requested and epoch stay as queued
+            summary = session.summarise_finished_set(in_set, list(self.paths.values()), outcome)
             changes |= {f"last_next_set.{key}": value for key, value in summary.items()}
-        self._lease.update_job(changes | ended_job_fields(Status.DONE))
+        self._lease.update_job(changes | ended_job_fields(c.Status.DONE))
 
     def finish_regenerate(self, replaced: int, requested: int) -> None:
-        """End a regenerate: complete when every target was written (a new version, or an outage card in
-        place), partial when any was not, timed from the click."""
-        outcome = RunActionOutcome.COMPLETE if replaced == requested else RunActionOutcome.PARTIAL
+        """End a regenerate: complete when every target was written, else partial."""
+        outcome = c.RunActionOutcome.COMPLETE if replaced == requested else c.RunActionOutcome.PARTIAL
         started = self._last_action.get("started_at") or utc_now()
         self._lease.update_job(
             {
@@ -164,13 +114,10 @@ class PlanProgress:
                 "last_regen.replaced": replaced,
                 **self._action_times(started),
             }
-            | ended_job_fields(Status.DONE)
+            | ended_job_fields(c.Status.DONE)
         )
 
     def _action_times(self, started: datetime) -> dict[str, float]:
-        """This action's threats time, from `started` (its click, or a start's plan freeze after its plan
-        job's own time) until its writing began (noted by BatchWriter on the run's last_action, after the
-        set's evidence search), and its writing time from then to now."""
         now = utc_now()
         writing_from = self._last_action.get("writing_started_at") or started
         return {

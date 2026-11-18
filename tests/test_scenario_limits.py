@@ -7,16 +7,14 @@ from pydantic import ValidationError
 from app.core.config import get_settings
 from app.core.constants import Generation, Limits, SessionMessage, UnselectedReason
 from app.domain.scenario.plan import build_plan
-from app.models.scenario.views import StartRunRequest
+from app.schemas.scenarios import StartRunRequest
 from tests.planner_samples import planned
 from tests.test_attack_paths import findings_of
 
 
 def _plan(count: int, target: int) -> list[dict]:
     """The paths of `count` threats given deliberately out of rank order (p1 the best), `target` selected."""
-    threats = [
-        planned(f"lib:{rank}", f"p{rank}", confidence=90.0 - rank) for rank in reversed(range(1, count + 1))
-    ]
+    threats = [planned(f"lib:{rank}", f"p{rank}", confidence=90.0 - rank) for rank in reversed(range(1, count + 1))]
     paths = build_plan(findings_of(*threats), target)["paths"]
     return [path | {"path_id": f"p{path['steps'][0].split(':')[1]}"} for path in paths]
 
@@ -67,8 +65,7 @@ def test_a_positive_systems_limit_refuses_one_more(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize(
-    ("system_ids", "message"),
-    [([], SessionMessage.SYSTEMS_REQUIRED), ([321, 321], SessionMessage.SYSTEMS_REPEATED)],
+    ("system_ids", "message"), [([], SessionMessage.SYSTEMS_REQUIRED), ([321, 321], SessionMessage.SYSTEMS_REPEATED)]
 )
 def test_systems_must_be_sent_and_each_only_once(system_ids: list[int], message: str) -> None:
     with pytest.raises(ValidationError, match=message):

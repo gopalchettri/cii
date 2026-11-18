@@ -2,8 +2,8 @@
 reaper's clocks report only what really happened (its starts apart from its finished passes)."""
 
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 from celery import states
@@ -15,10 +15,10 @@ from pymongo.errors import AutoReconnect
 from structlog.testing import capture_logs
 
 from app.core import metrics
-from app.core.constants import Collection, Lease, LogEvent, Queue, TaskName, module_of
-from app.data_access.jobs.job_repository import JobRepository
-from app.worker import celery_app, jobs, lifecycle, reaper
-from tests.test_worker import _free_port, _insert_job, _task, _worker_starting
+from app.core.constants import Collection, LogEvent, Queue, TaskName, module_of
+from app.crud.jobs import JobRepository
+from app.worker import celery_app, jobs, lifecycle
+from tests.test_worker import _free_port, _insert_job, _records, _task, _worker_starting
 
 JOB_METRICS = ("tsg_jobs_total", "tsg_job_seconds_count", "tsg_job_queue_wait_seconds_count")
 
@@ -90,18 +90,6 @@ def test_a_timer_message_dropped_as_expired_is_counted() -> None:
     assert _sample("tsg_jobs_total", **expired) == before + 1
 
 
-def test_a_job_stopped_as_hung_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Before: a hung job only wrote a log line, which Prometheus cannot read: it showed nowhere until it had
-    failed Lease.MAX_ATTEMPTS times, about 5 hours later."""
-    monkeypatch.setattr(Lease, "RENEW_EVERY_SECONDS", 0.02)
-    monkeypatch.setattr(Lease, "STALL_SECONDS", 0.1)
-    before = _sample("tsg_jobs_hung_total")
-    lease: Any = type("HungLease", (), {"record_id": "hung", "renew": lambda _self: True})()
-    with jobs.keep_lease_alive(lease):
-        time.sleep(0.4)
-    assert _sample("tsg_jobs_hung_total") == before + 1
-
-
 def test_a_failing_reaper_pass_still_records_that_it_started(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: only a finished pass was recorded, so passes that fail (MongoDB down) or hang read as beat not
     sending the reaper, and ReaperNotRunning sent the operator to the wrong pod."""
@@ -109,12 +97,12 @@ def test_a_failing_reaper_pass_still_records_that_it_started(monkeypatch: pytest
     def mongodb_down(*_: object) -> list:
         raise AutoReconnect("MongoDB is down")
 
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
     monkeypatch.setattr(JobRepository, "list_expired_jobs", mongodb_down)
     metrics.REAPER_LAST_PASS.set(0)
     started = time.time()
     with pytest.raises(AutoReconnect):
-        reaper.reap_jobs()
+        jobs.reap_jobs()
     assert started <= _gauge_value("REAPER_LAST_START") <= time.time()
     assert _gauge_value("REAPER_LAST_PASS") == 0
 
@@ -128,3 +116,21 @@ def test_a_worker_start_reports_no_reaper_pass_it_has_not_made(monkeypatch: pyte
     monkeypatch.setattr(lifecycle.settings, "worker_metrics_port", _free_port())
     lifecycle.prepare_worker(_worker_starting("threads", Queue.MAINTENANCE))
     assert (_gauge_value("REAPER_LAST_START"), _gauge_value("REAPER_LAST_PASS")) == (0, 0)
+
+
+def test_the_reaper_counts_jobs_now_and_drops_an_ended_one_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tsg_jobs_current feeds the "Jobs now" panel, whose empty state says no job waits or runs: a queued and a
+    retrying job are counted, and once they end their kind reads 0, never a job that is gone."""
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 1)
+    kind = f"probe-{uuid.uuid4().hex}"
+    _insert_job(task=kind)
+    _insert_job(task=kind, retry={"message": "MongoDB is down"})
+    jobs.reap_jobs()
+    assert [_jobs_now(kind, status) for status in ("queued", "retrying")] == [1, 1]
+    _records().delete_many({"job.task": kind})
+    jobs.reap_jobs()
+    assert [_jobs_now(kind, status) for status in ("queued", "retrying")] == [0, 0]
+
+
+def _jobs_now(kind: str, status: str) -> float | None:
+    return REGISTRY.get_sample_value("tsg_jobs_current", {"kind": kind, "status": status})

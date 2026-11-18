@@ -16,34 +16,28 @@ from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
 from app import ai
-from app.ai.embeddings import _EmbeddingProvider
-from app.ai.slots import UNLIMITED_AI_REQUEST_RATE, UNLIMITED_AI_SLOTS
+from app.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 from app.core.clock import utc_now
-from app.core.constants import AiApi, AiLimits, AiTask, AiUsageCollection, Module, TaskName
+from app.core.constants import AiApi, AiLimits, AiTask, AiUsageCollection, Collection, Module, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, Unavailable
 from app.core.lease_signal import start_thread_without_lease
 from app.core.logging import job_origin_scope
-from app.data_access.admin.ai_call_repository import AiCallRepository
-from app.data_access.admin.ai_usage_repository import AiUsageHourlyRepository, AiUsageRepository
-from app.data_access.base import NeverDeletedRepository
-from app.data_access.jobs.job_repository import JobLease, new_job
+from app.core.security import Principal
+from app.crud import ai_calls, ai_usage
+from app.crud.base import NeverDeletedRepository
+from app.crud.jobs import JobLease, new_job
 from app.domain.shared.ask_ai import ask_ai_and_check
 from app.domain.shared.audit import origin_of_its_jobs
-from app.models.ai.profiles import ChatModelProfile, EmbeddingModelProfile, RerankModelProfile
 
 PROFILE = ChatModelProfile(
-    max_output_tokens=100,
-    timeout_seconds=5,
-    supports_json_mode=True,
-    reasoning_effort="none",
-    context_tokens=20_100,
+    max_output_tokens=100, timeout_seconds=5, supports_json_mode=True, reasoning_effort="none", context_tokens=20_100
 )
 TEXTS = "test_ai_call_texts"
 
 
 def _chat() -> ai.ChatModel:
-    records = AiCallRepository(get_mongodb()[TEXTS])
+    records = get_mongodb()[TEXTS]
     return ai.ChatModel("test-chat", PROFILE, "http://ai.invalid", "key", records)
 
 
@@ -92,9 +86,7 @@ def _no_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(AiLimits, "RATE_LIMITED_WAITS_SECONDS", (0, 0, 0, 0))
 
 
-def test_an_answered_chat_call_writes_one_lean_row_saying_who_it_served(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_answered_chat_call_writes_one_lean_row_saying_who_it_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation: drop `api` (or `bucket`) from the row, or write the prompt into it."""
     monkeypatch.setattr(litellm, "completion", lambda **_: _answer())
     job = _job()
@@ -121,9 +113,7 @@ def test_every_retried_attempt_is_a_row_of_the_same_ask_and_only_the_last_counts
     tsg_ai_calls_total (AiErrorRateHigh would misfire), drop the noting of failed attempts, or give the answer
     the caller's seconds."""
     _no_waiting(monkeypatch)
-    replies = iter(
-        [litellm.ServiceUnavailableError("busy", llm_provider="openai", model="m")] * 2 + [_answer()]
-    )
+    replies = iter([litellm.ServiceUnavailableError("busy", llm_provider="openai", model="m")] * 2 + [_answer()])
 
     def flaky(**_: object) -> Any:
         reply = next(replies)
@@ -155,6 +145,30 @@ def test_every_retried_attempt_is_a_row_of_the_same_ask_and_only_the_last_counts
         _counter("tsg_ai_calls_total", **calls, outcome="unavailable"),
     )
     assert (after[0] - before[0], after[1] - before[1]) == (1, 0)
+
+
+def test_a_cut_off_answer_s_attempts_are_rows_as_any_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A runaway answer and its one retry are two rows of one ask; a cut-off answer that is read is one ok row
+    with the tokens it cost, its text kept as read. Mutation: drop the cut-off attempt's row, or note the read
+    answer as truncated."""
+
+    def cut_off(content: str) -> Any:
+        reply = _answer(content, tokens=(11, 100))
+        reply.choices[0].finish_reason = "length"
+        return reply
+
+    blank = "\n" * AiLimits.RUNAWAY_TAIL_CHARS
+    replies = iter([cut_off('{"ok": ' + blank), _answer(), cut_off('{"ok": 1' + blank)])
+    monkeypatch.setattr(litellm, "completion", lambda **_: next(replies))
+    runaway, read = _job(), _job()
+    _ask(_chat(), runaway)
+    assert _ask(_chat(), read) == {"ok": 1}
+    rows = _rows(runaway["request_id"])
+    assert [(row["try_no"], row["outcome"], row["tokens_out"]) for row in rows] == [(1, "truncated", 100), (2, "ok", 7)]
+    assert len({row["ask_id"] for row in rows}) == 1
+    [row] = _rows(read["request_id"])
+    assert (row["try_no"], row["outcome"], row["tokens_in"], row["tokens_out"]) == (1, "ok", 11, 100)
+    assert get_mongodb()[TEXTS].find_one({"_id": row["_id"]})["response"] == '{"ok": 1}'
 
 
 @pytest.mark.parametrize(
@@ -192,9 +206,7 @@ def test_each_failure_is_one_row_with_its_outcome_and_reason(
     assert (row["outcome"], row.get("reason"), row.get("error_type")) == expected
 
 
-def test_a_re_asked_answer_is_the_same_ask_as_the_unreadable_first_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_re_asked_answer_is_the_same_ask_as_the_unreadable_first_one(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation: open an ask per call (call_with_retries' own) when an outer one is open."""
     replies = iter([_answer("not json"), _answer()])
     monkeypatch.setattr(litellm, "completion", lambda **_: next(replies))
@@ -236,10 +248,7 @@ def test_a_reused_answer_is_a_row_but_no_ai_call(monkeypatch: pytest.MonkeyPatch
     before = _counter("tsg_ai_calls_total", task=AiTask.RELEVANCE_GATE, model="test-chat", outcome="ok")
     _ask(chat, job | {"attempt": 2}, reuse=True)  # the job's next delivery reads the answer back
     after = _counter("tsg_ai_calls_total", task=AiTask.RELEVANCE_GATE, model="test-chat", outcome="ok")
-    found = [
-        (row["outcome"], row.get("model"), row["attempt"], row.get("try_no"))
-        for row in _rows(job["request_id"])
-    ]
+    found = [(row["outcome"], row.get("model"), row["attempt"], row.get("try_no")) for row in _rows(job["request_id"])]
     assert found == [("ok", "test-chat", 1, 1), ("reused", "test-chat", 2, None)]
     assert after == before
 
@@ -247,16 +256,10 @@ def test_a_reused_answer_is_a_row_but_no_ai_call(monkeypatch: pytest.MonkeyPatch
 def test_search_calls_are_counted_in_the_part_their_job_stage_serves(monkeypatch: pytest.MonkeyPatch) -> None:
     """Controls are picked by embedding and reranking alone: a scenario's and a plan's both count as
     controls. Mutation: swap one stage's part in SEARCH_STAGE_BUCKETS."""
-    monkeypatch.setattr(
-        litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}])
-    )
-    monkeypatch.setattr(
-        litellm, "rerank", lambda **_: SimpleNamespace(results=[{"index": 0, "relevance_score": 0.5}])
-    )
+    monkeypatch.setattr(litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}]))
+    monkeypatch.setattr(litellm, "rerank", lambda **_: SimpleNamespace(results=[{"index": 0, "relevance_score": 0.5}]))
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
-    embed = _EmbeddingProvider(
-        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
-    )
+    embed = ai.EmbeddingModel("test-embed", profile, "http://ai.invalid", "key", None, None)  # type: ignore[arg-type]
     rerank = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key")
     scenario, plan = (
         _job(TaskName.MAP_CONTROLS),
@@ -280,9 +283,7 @@ def test_search_calls_record_the_tokens_their_gateway_counts(monkeypatch: pytest
     the answer names none. Mutation: drop search_tokens from either call, or skip a meta field."""
     usage = SimpleNamespace(prompt_tokens=12)
     monkeypatch.setattr(
-        litellm,
-        "embedding",
-        lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage),
+        litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage)
     )
     scores = [{"index": 0, "relevance_score": 0.5}]
     reranks = iter(
@@ -294,9 +295,7 @@ def test_search_calls_record_the_tokens_their_gateway_counts(monkeypatch: pytest
     )
     monkeypatch.setattr(litellm, "rerank", lambda **_: next(reranks))
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
-    embed = _EmbeddingProvider(
-        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
-    )
+    embed = ai.EmbeddingModel("test-embed", profile, "http://ai.invalid", "key", None, None)  # type: ignore[arg-type]
     rerank = ai.RerankModel("test-rerank", RerankModelProfile(timeout_seconds=5), "http://ai.invalid", "key")
     job = _job(TaskName.MAP_CONTROLS)
     with structlog.contextvars.bound_contextvars(**job):
@@ -316,15 +315,11 @@ def test_tokens_by_model_count_every_row_s_tokens_once(monkeypatch: pytest.Monke
 
     usage = SimpleNamespace(prompt_tokens=12)
     monkeypatch.setattr(
-        litellm,
-        "embedding",
-        lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage),
+        litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}], usage=usage)
     )
     monkeypatch.setattr(litellm, "completion", lambda **_: _answer())
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
-    embed = _EmbeddingProvider(
-        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
-    )
+    embed = ai.EmbeddingModel("test-embed", profile, "http://ai.invalid", "key", None, None)  # type: ignore[arg-type]
     gate = AiTask.RELEVANCE_GATE
     before = [tokens(AiTask.EMBED, "test-embed", "in"), tokens(gate, "test-chat", "in")]
     before.append(tokens(gate, "test-chat", "out"))
@@ -338,13 +333,9 @@ def test_tokens_by_model_count_every_row_s_tokens_once(monkeypatch: pytest.Monke
 def test_a_shared_threads_calls_are_no_requests_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """A library or evidence index build runs on a thread started from whichever job needed it first: its
     calls are counted as shared, never charged to that job's request. Mutation: drop the shared_work check."""
-    monkeypatch.setattr(
-        litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}])
-    )
+    monkeypatch.setattr(litellm, "embedding", lambda **_: SimpleNamespace(data=[{"index": 0, "embedding": [0.6, 0.8]}]))
     profile = EmbeddingModelProfile(dimensions=2, batch_size=8, timeout_seconds=5, max_text_chars=100)
-    embed = _EmbeddingProvider(
-        "test-embed", profile, "http://ai.invalid", "key", "", UNLIMITED_AI_SLOTS, UNLIMITED_AI_REQUEST_RATE
-    )
+    embed = ai.EmbeddingModel("test-embed", profile, "http://ai.invalid", "key", None, None)  # type: ignore[arg-type]
     job, marker, done = _job(), uuid.uuid4().hex, threading.Event()
 
     def build() -> None:
@@ -375,46 +366,38 @@ def test_the_api_call_that_queues_a_job_is_saved_on_it_and_bound_when_it_is_clai
     records = get_mongodb()["test_jobs"]
     plan = JobLease(records, "plan-1", 1, "task-1", 1, {"job": job, "session_id": "run-9"})
     run = JobLease(records, "run-9", 1, "task-2", 1, {"job": job})
-    assert plan.origin == {
-        "session_id": "run-9",
-        "api": AiApi.CREATE_PLAN,
-        "client_id": "client-1",
-        "entity_id": 7,
-    }
+    assert plan.origin == {"session_id": "run-9", "api": AiApi.CREATE_PLAN, "client_id": "client-1", "entity_id": 7}
     assert run.origin["session_id"] == "run-9"
 
 
-def test_a_service_method_names_its_jobs_only_while_it_runs() -> None:
-    """The decorator on the seven AI-starting service methods: their jobs carry the API call and caller; a
-    method one of them calls keeps the outer name. Mutation: let the inner method's name win."""
+def test_an_ai_starting_function_names_its_jobs_only_while_it_runs() -> None:
+    """The decorator on the seven AI-starting functions: their jobs carry the API call and caller, whichever
+    argument the principal is; a function one of them calls keeps the outer name. Mutation: let the inner
+    function's name win."""
 
-    class Service:
-        @origin_of_its_jobs(AiApi.CREATE_PLAN)
-        def plan(self, principal: Any) -> dict[str, Any]:
-            return self.run(principal)
+    @origin_of_its_jobs(AiApi.CREATE_SCENARIO)
+    def run(principal: Principal) -> dict[str, Any]:
+        return new_job(TaskName.WRITE_PLAN, 1, utc_now())
 
-        @origin_of_its_jobs(AiApi.CREATE_SCENARIO)
-        def run(self, principal: Any) -> dict[str, Any]:
-            return new_job(TaskName.WRITE_PLAN, 1, utc_now())
+    @origin_of_its_jobs(AiApi.CREATE_PLAN)
+    def plan(library: object, principal: Principal) -> dict[str, Any]:
+        return run(principal)
 
-    caller = SimpleNamespace(client_id="ui-client", entity_id=102, user_id="u")
-    assert Service().plan(caller)["origin"] == {
-        "api": AiApi.CREATE_PLAN,
-        "client_id": "ui-client",
-        "entity_id": 102,
-    }
-    assert Service().run(principal=caller)["origin"]["api"] == AiApi.CREATE_SCENARIO
+    caller = Principal(client_id="ui-client", user_id="u", entity_id=102, tenant_id="t")
+    assert plan(None, caller)["origin"] == {"api": AiApi.CREATE_PLAN, "client_id": "ui-client", "entity_id": 102}
+    assert run(principal=caller)["origin"]["api"] == AiApi.CREATE_SCENARIO
+    assert run(caller)["origin"]["api"] == AiApi.CREATE_SCENARIO
     assert new_job(TaskName.WRITE_PLAN, 1, utc_now())["origin"] == {}
 
 
 def test_no_usage_or_call_text_is_ever_expired_or_deleted() -> None:
     """Mutation: give one of them a ttl= again, or let delete through."""
-    for repository in (AiUsageRepository(), AiUsageHourlyRepository(), AiCallRepository()):
+    db = get_mongodb()
+    stores = (ai_usage.store(db, AiUsageCollection.USAGE), ai_usage.store(db, AiUsageCollection.HOURLY))
+    for repository in (*stores, ai_calls.store(db[Collection.AI_CALLS])):
         repository.create_indexes()
         expiring = [
-            name
-            for name, index in repository.collection.index_information().items()
-            if "expireAfterSeconds" in index
+            name for name, index in repository.collection.index_information().items() if "expireAfterSeconds" in index
         ]
         assert expiring == [], repository.collection.name
         with pytest.raises(PermissionError):
@@ -430,26 +413,22 @@ def test_an_expiry_found_at_start_up_is_dropped_and_logged_as_an_error() -> None
     collection = get_mongodb()[f"test_kept_{uuid.uuid4().hex}"]
     collection.create_index("created_at", expireAfterSeconds=60)
     with capture_logs() as logs:
-        AiUsageRepository(collection).create_indexes()
-    assert [
-        (entry["event"], entry["log_level"]) for entry in logs if entry["event"] == "ai.usage_expiry_found"
-    ] == [("ai.usage_expiry_found", "error")]
-    indexes = collection.index_information()
-    assert "created_at_1" in indexes and not [
-        index for index in indexes.values() if "expireAfterSeconds" in index
+        NeverDeletedRepository(collection, indexes=ai_usage.INDEXES[AiUsageCollection.USAGE]).create_indexes()
+    assert [(entry["event"], entry["log_level"]) for entry in logs if entry["event"] == "ai.usage_expiry_found"] == [
+        ("ai.usage_expiry_found", "error")
     ]
+    indexes = collection.index_information()
+    assert "created_at_1" in indexes and not [index for index in indexes.values() if "expireAfterSeconds" in index]
 
 
-def test_a_row_mongodb_does_not_take_is_logged_whole_and_never_fails_the_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_row_mongodb_does_not_take_is_logged_whole_and_never_fails_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation: let the write error raise into the AI call."""
 
     def refused(*_: object) -> None:
         raise ConnectionError("mongodb down")
 
     monkeypatch.setattr(litellm, "completion", lambda **_: _answer())
-    monkeypatch.setattr(AiUsageRepository, "create_rows", refused)
+    monkeypatch.setattr(ai_usage, "insert_rows", refused)
     before, job = _counter("tsg_ai_usage_spilled_total"), _job()
     with capture_logs() as logs:
         assert _ask(_chat(), job) == {"ok": 1}

@@ -9,11 +9,11 @@ import pytest
 from app.core.config import get_settings
 from app.core.constants import AiTask, Collection, RunOverall, ThreatFinding
 from app.core.database import get_mongodb
-from app.data_access.scenario.threat_scenario_session_repository import SESSION_STATUS_FIELDS
+from app.crud.scenarios import SESSION_STATUS_FIELDS
 from app.domain.scenario.session import build_status_board
-from app.models.scenario.views import session_status_from_record
+from app.schemas.scenarios import session_status_from_record
 from app.worker import jobs
-from app.worker.scenario.plan_job import PLAN_JOB_FIELDS
+from app.worker.scenario.tasks import PLAN_JOB_FIELDS
 from tests.planner_samples import LOG_WIPE, PHISHING, finder, planner_chat
 from tests.test_attack_paths import (  # noqa: F401 - `sent` is a fixture used by name
     _plan_job,

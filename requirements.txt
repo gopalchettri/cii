@@ -100,8 +100,9 @@ websockets==17.2
 yarl==1.25.1
 zipp==4.1.1
 
-# Dev extra (pytest, httpx, mypy, ruff) and what it pulls in; httpx is pinned above
+# Dev extra (pytest, pytest-xdist, httpx, mypy, ruff) and what it pulls in; httpx is pinned above
 ast-serialize==0.12.1
+execnet==2.1.2
 iniconfig==2.3.1
 librt==0.16.0
 mypy==2.4.0
@@ -110,6 +111,7 @@ pathspec==1.1.1
 pluggy==1.6.0
 pygments==2.21.0
 pytest==9.1.1
+pytest-xdist==3.8.0
 ruff==0.16.10
 
 # Local extra (laptop only: the local reranker) and what it pulls in

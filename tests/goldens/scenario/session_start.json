@@ -32,12 +32,6 @@
  },
  "frozen": {
   "returned": {
-   "missing_facts": [
-    "dr_drill_frequency",
-    "managed_by",
-    "network_connectivity_primary_dr",
-    "targeted_users"
-   ],
    "record": {
     "asset": {
      "category_code": "OT",
@@ -75,12 +69,6 @@
       "id": 1570,
       "name": "System 1570"
      }
-    ],
-    "missing_facts": [
-     "dr_drill_frequency",
-     "managed_by",
-     "network_connectivity_primary_dr",
-     "targeted_users"
     ],
     "systems": [
      {
@@ -132,24 +120,6 @@
     ]
    }
   }
- },
- "head_missing": {
-  "code": "setup_error",
-  "detail": "dbo.tsg_GetAssetContext must return id, name, category_code in its supporting system rows; it does not.",
-  "details": null,
-  "errors": null,
-  "raised": "SetupError",
-  "reason": null,
-  "status": 500
- },
- "options_shape": {
-  "code": "setup_error",
-  "detail": "dbo.tsg_GetAssetContext's dropdown names (part 5) must return code, name and value (or id), not code, label. Fix the procedure's part 5.",
-  "details": null,
-  "errors": null,
-  "raised": "SetupError",
-  "reason": null,
-  "status": 500
  },
  "required_not_returned": {
   "code": "setup_error",

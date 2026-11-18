@@ -22,18 +22,12 @@ from tests.test_deploy import (
     _objects,
 )
 
-PROXY_PEER = {
-    "namespaceSelector": {},
-    "podSelector": {"matchLabels": {"app": PROXY, "part-of": "tsg-monitoring"}},
-}
+PROXY_PEER = {"namespaceSelector": {}, "podSelector": {"matchLabels": {"app": PROXY, "part-of": "tsg-monitoring"}}}
 OWN_PROJECT = {"podSelector": {}}
 EDGE_TLS = {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}
 NGINX_CONF = REPO / "observability" / "nginx" / "nginx.conf"
-#: Where an address may be written: the deploy folder (but the operator's own secrets.yaml) and the runbook.
-ADDRESS_FILES = [
-    *(path for path in DEPLOY.rglob("*") if path.is_file() and path.name != "secrets.yaml"),
-    REPO / "docs" / "UAT_LLM_TIMEOUT_RUNBOOK.md",
-]
+#: Where an address may be written: the deploy folder (but the operator's own secrets.yaml).
+ADDRESS_FILES = [path for path in DEPLOY.rglob("*") if path.is_file() and path.name != "secrets.yaml"]
 
 
 def _peer(selector: dict | None) -> str:
@@ -79,7 +73,7 @@ def test_every_route_is_https_on_the_api_host_in_ai_threatgen_and_no_two_share_a
 
 
 def test_every_public_address_in_the_deploy_files_is_the_api_host() -> None:
-    """The deploy files, the guide and the runbook name no host but the API's; threatgen-grafana only bare."""
+    """The deploy files and the guide name no host but the API's; threatgen-grafana only bare."""
     for path in ADDRESS_FILES:
         text = path.read_text(encoding="utf-8")
         hosts = set(re.findall(r"threatgen-[\w-]+\.apps\.dda-desc-az1-01\.desccii\.local", text))
@@ -119,9 +113,7 @@ def test_only_the_router_reaches_the_proxy_and_the_proxy_only_tsg_s_grafana_and_
         assert selector.items() <= pods[name]["metadata"]["labels"].items(), name
         listening = {p["containerPort"] for c in pods[name]["spec"]["containers"] for p in c["ports"]}
         assert target in listening, name
-        reached.add(
-            (_peer({"namespaceSelector": {}, "podSelector": {"matchLabels": selector}}), (target, "TCP"))
-        )
+        reached.add((_peer({"namespaceSelector": {}, "podSelector": {"matchLabels": selector}}), (target, "TCP")))
     assert {port for _, (port, _) in reached} == {3000, 5555}
     assert _allowed(policy, "egress") == {("null", port) for port in DNS} | reached
 
@@ -141,9 +133,7 @@ def test_the_proxy_runs_hardened_without_a_token_and_writes_only_under_tmp() -> 
     pod = _deployment(PROXY)["spec"]["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False and pod["enableServiceLinks"] is False
     assert [container["securityContext"] for container in pod["containers"]] == [HARDENED]
-    written = dict(
-        re.findall(r"^\s*(pid|\w+_temp_path) (\S+);", NGINX_CONF.read_text(encoding="utf-8"), re.MULTILINE)
-    )
+    written = dict(re.findall(r"^\s*(pid|\w+_temp_path) (\S+);", NGINX_CONF.read_text(encoding="utf-8"), re.MULTILINE))
     assert set(written) == {
         "pid",
         *(f"{kind}_temp_path" for kind in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi")),

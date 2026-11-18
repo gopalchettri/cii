@@ -5,21 +5,10 @@ OT threat never on an IT system); an empty value, or one that is not a type, fit
 import dataclasses
 from typing import Any
 
-from structlog.testing import capture_logs
-
 from app.core.asset_types import asset_type_fits, asset_type_label, canonical_asset_type
-from app.core.constants import (
-    AiTask,
-    AssetType,
-    AttackerCheck,
-    CandidateRejection,
-    LogEvent,
-    PlanLoss,
-    PlanStage,
-    StrideCategory,
-)
+from app.core.constants import AiTask, AssetType, AttackerCheck, CandidateRejection, PlanLoss, PlanStage, StrideCategory
 from app.domain.scenario.plan import build_plan
-from app.models.library.library import LibraryThreat
+from app.schemas.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
     ADMIN_ABUSE,
@@ -68,9 +57,7 @@ def test_a_threat_whose_type_fits_neither_the_asset_nor_a_system_is_never_judged
     chat = planner_chat({RANSOMWARE.name: ["SYS1"], LOG_WIPE.name: ["SYS1"]})
     findings = finder(chat, threats=_library(_typed(RANSOMWARE, "IT"))).find_threats(context)
     assert [threat.name for threat in findings.threats] == [LOG_WIPE.name]
-    asked = [
-        item["threat"] for user in chat.asked(AiTask.RELEVANCE_GATE) for item in items_in(user, "CANDIDATES")
-    ]
+    asked = [item["threat"] for user in chat.asked(AiTask.RELEVANCE_GATE) for item in items_in(user, "CANDIDATES")]
     assert RANSOMWARE.name not in asked and LOG_WIPE.name in asked
 
 
@@ -94,9 +81,7 @@ def test_a_threat_gets_in_only_where_its_type_fits_and_is_refused_where_it_canno
     }
     ransomware = next(threat for threat in findings.threats if threat.name == RANSOMWARE.name)
     assert ransomware.main_place.entry_points == (321,)
-    refused = {
-        drop.threat_name for drop in findings.drops if drop.reason == CandidateRejection.ASSET_TYPE_MISMATCH
-    }
+    refused = {drop.threat_name for drop in findings.drops if drop.reason == CandidateRejection.ASSET_TYPE_MISMATCH}
     assert refused == {FLOOD.name, ADMIN_ABUSE.name}
     assert S.ELEVATION_OF_PRIVILEGE in gap_filled(chat)
 
@@ -117,9 +102,7 @@ def test_a_system_whose_type_is_not_recorded_takes_the_assets() -> None:
 def test_an_asset_type_that_is_not_a_value_fits_everywhere() -> None:
     """ "IT-OT" is not a value: the threat is still judged, never silently lost."""
     library = _library(_typed(RANSOMWARE, "IT-OT"))
-    findings = finder(
-        planner_chat({RANSOMWARE.name: ["SYS1"]}), threats=library, unknown_asset_type=(1,)
-    ).find_threats(CONTEXT)
+    findings = finder(planner_chat({RANSOMWARE.name: ["SYS1"]}), threats=library).find_threats(CONTEXT)
     assert [threat.name for threat in findings.threats] == [RANSOMWARE.name]
 
 
@@ -136,10 +119,7 @@ def test_an_ai_proposal_is_never_a_repeat_of_a_library_threat_this_run_never_jud
     }
     chat = planner_chat({})
     chat.responders[AiTask.GAP_FILL] = gap_fill_for_elevation(proposal)
-    scores = {
-        ("Insider misuses admin rights", ADMIN_ABUSE.name): 80.0,
-        ("Privilege misuse", "Privilege misuse"): 90.0,
-    }
+    scores = {("Insider misuses admin rights", ADMIN_ABUSE.name): 80.0, ("Privilege misuse", "Privilege misuse"): 90.0}
     library = _library(_typed(ADMIN_ABUSE, "IT"))  # every system of the sample run is OT
     finder(chat, FakeRerankModel(scores), threats=library).find_threats(CONTEXT)
     assert any(proposal["threat"] in user for user in chat.asked(AiTask.RELEVANCE_GATE))  # judged, no repeat
@@ -185,9 +165,9 @@ def test_a_kind_a_twin_brought_onto_no_fitting_place_is_dropped_and_traced() -> 
     ]
 
 
-def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent() -> None:
-    """The procedure from before G211 (no AssetType) still loads, every threat untyped, with a warning naming
-    it; a control whose AssetType is not a value is used for every scenario, with a warning naming it."""
+def test_the_old_threat_procedure_and_an_unknown_control_type_still_load() -> None:
+    """The procedure from before G211 (no AssetType) still loads, every threat untyped; a control whose
+    AssetType is not a value is used for every scenario."""
 
     class _OldProcedures(_Procedures):
         def execute_procedure(self, _procedure: object) -> list[list[dict[str, Any]]]:
@@ -195,10 +175,8 @@ def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent()
             sets[2] = [{key: value for key, value in row.items() if key != "AssetType"} for row in sets[2]]
             return sets
 
-    with capture_logs() as logs:
-        library = load_library_from(_OldProcedures().execute_procedure(None)).threat_library
+    library = load_library_from(_OldProcedures().execute_procedure(None)).threat_library
     assert {threat.asset_type for threat in library.threats} == {None}
-    assert [entry["event"] for entry in logs] == [LogEvent.LIBRARY_THREAT_ASSET_TYPE_MISSING]
 
     class _Controls:
         def execute_procedure(self, _procedure: object) -> list[list[dict[str, Any]]]:
@@ -206,11 +184,8 @@ def test_the_old_threat_procedure_and_an_unknown_control_type_are_never_silent()
                    "ControlName": "Account management", "ControlDescription": "Reviews."}  # fmt: skip
             return [[row], []]
 
-    with capture_logs() as logs:
-        (control,) = load_library_from(control_sets=_Controls().execute_procedure(None)).control_library
-    assert asset_type_fits(control.asset_type, set()) and [entry["event"] for entry in logs] == [
-        LogEvent.LIBRARY_ASSET_TYPE_UNKNOWN
-    ]
+    (control,) = load_library_from(control_sets=_Controls().execute_procedure(None)).control_library
+    assert asset_type_fits(control.asset_type, set())
 
 
 class _Procedures:
@@ -222,12 +197,7 @@ class _Procedures:
             [{"ThreatCategoryID": 2, "ThreatCategoryName": "Tampering"}],
             [{"ThreatTypeID": 7, "ThreatTypeName": "Malware", "ThreatCategoryID": 2}],
             [
-                {
-                    "ThreatCatalogueID": i,
-                    "ThreatName": f"Threat {i}",
-                    "ThreatTypeID": 7,
-                    "AssetType": asset_type,
-                }
+                {"ThreatCatalogueID": i, "ThreatName": f"Threat {i}", "ThreatTypeID": 7, "AssetType": asset_type}
                 for i, asset_type in threats
             ],
             [{"ThreatActorID": 1, "ThreatActorName": "Crew"}],
@@ -241,7 +211,6 @@ class _Procedures:
 def test_the_loader_reads_each_threats_asset_type_and_lists_the_unknown_ones() -> None:
     library = load_library_from(_Procedures().execute_procedure(None)).threat_library
     assert [threat.asset_type for threat in library.threats] == ["OT", r"IT\OT", "IT-OT", None]
-    assert library.threats_unknown_asset_type == (3,)
 
 
 def test_it_slash_ot_is_both_and_is_kept_in_one_spelling() -> None:

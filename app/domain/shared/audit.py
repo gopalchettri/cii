@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from app.core.constants import AiApi, AuditTarget
 from app.core.logging import job_origin_scope
-from app.models.admin.api_clients import Principal
+from app.core.security import Principal
 
 
 def caller_actor(principal: Principal) -> dict[str, Any]:
@@ -16,16 +16,14 @@ def caller_actor(principal: Principal) -> dict[str, Any]:
     return {"client_id": principal.client_id, "user_id": principal.user_id, "entity_id": principal.entity_id}
 
 
-def origin_of_its_jobs[**Params, Result](
-    api: AiApi,
-) -> Callable[[Callable[Params, Result]], Callable[Params, Result]]:
-    """A service method (self, principal, ...) whose jobs work for API call `api` and its caller while it runs
+def origin_of_its_jobs[**Params, Result](api: AiApi) -> Callable[[Callable[Params, Result]], Callable[Params, Result]]:
+    """A function given the caller's principal whose jobs work for API call `api` and its caller while it runs
     (job.origin, carried by their AI usage rows); one it calls keeps the outer name."""
 
     def decorate(method: Callable[Params, Result]) -> Callable[Params, Result]:
         @functools.wraps(method)
         def named(*args: Params.args, **kwargs: Params.kwargs) -> Result:
-            principal = cast(Principal, kwargs.get("principal") or args[1])
+            principal = cast(Principal, kwargs.get("principal") or next(a for a in args if isinstance(a, Principal)))
             with job_origin_scope(api, principal.client_id, principal.entity_id):
                 return method(*args, **kwargs)
 

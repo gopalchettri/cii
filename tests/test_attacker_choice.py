@@ -6,10 +6,10 @@ import dataclasses
 from typing import Any
 
 from app.core.constants import AiTask, AttackerCheck, LibraryStatus
-from app.domain.remediation.manual import pick_manual_attacker
 from app.domain.scenario import plan as plan_module
 from app.domain.scenario.plan import describe_asset_for_ai
-from app.models.scenario.plan import ActorPick, Drop, PlannedThreat
+from app.schemas.scenario_internal import ActorPick, Drop, PlannedThreat
+from app.worker.remediation import pick_manual_attacker
 from tests.fakes import items_in
 from tests.planner_samples import (
     AFFILIATE,
@@ -48,9 +48,7 @@ def _pick_attacker(threat: PlannedThreat) -> tuple[list[PlannedThreat], list[Dro
 def _read_pick(item: dict[str, Any], listed: list[str]) -> ActorPick | None:
     """The gate's pick as code reads a relevant verdict naming these attacker fields."""
     verdict = {"slot": "R1", "threat": "Ransomware", "relevant": True, "likelihood": "HIGH", "systems": []}
-    return plan_module._read_one_threat_answer(
-        verdict | item, {"attackers": listed}, {}, _LANDSCAPE
-    ).actor_pick
+    return plan_module._read_one_threat_answer(verdict | item, {"attackers": listed}, {}, _LANDSCAPE).actor_pick
 
 
 def test_threats_of_one_type_with_different_facts_get_different_actors() -> None:
@@ -146,9 +144,7 @@ def test_a_hand_written_threat_takes_its_linked_actors_else_its_types_else_the_w
 def test_one_kinds_none_fits_never_vetoes_the_attacker_another_kind_named() -> None:
     """A threat folded with its twin keeps a pick that names an attacker over one that says none fits, in
     either order; a "none fits" still beats no pick at all."""
-    named = planned(
-        "lib:1", "Ransomware", actor_pick=ActorPick(GANG.name, "It needs a crew."), linked_actors=LINKED
-    )
+    named = planned("lib:1", "Ransomware", actor_pick=ActorPick(GANG.name, "It needs a crew."), linked_actors=LINKED)
     none_fits = planned(
         "ai:x", "Ransomware", categories=(S.DENIAL_OF_SERVICE,), actor_pick=ActorPick(None, "None could.")
     )

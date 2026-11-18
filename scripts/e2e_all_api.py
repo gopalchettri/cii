@@ -1,14 +1,15 @@
 """Every API operation, end to end, against a running TSG (API, workers, MongoDB, SQL Server, Redis, the AI):
-an API key, the library's vectors, the intel import, a run written, reviewed, regenerated and given its next
-set, a promoted threat rejected again, plans (generated and manual) reviewed, regenerated and cancelled, a
-service mapping, every job listed and an embeddings build cancelled, a second run cancelled and deleted, a
-source withdrawn and approved again, the key revoked.
-At the end, every operation the app's own OpenAPI lists is checked off ("51 of 51 operations called").
+an API key, the library's vectors, the intel import, its schedule changed and put back, the ATT&CK
+mitigations linked to library controls, a run written, reviewed, regenerated and given its next set, a
+promoted threat rejected again, plans (generated and manual) reviewed, regenerated and cancelled, a service
+mapping, a run the AI writes from MITRE ATT&CK (POST /v1/create_session) checked and reviewed the same way,
+every job listed and an embeddings build cancelled, a second run cancelled and deleted, the key revoked.
+At the end, every operation the app's own OpenAPI lists is checked off ("N of N operations called").
 
 It keeps the main run (saved as TSG_RUN_ID in debug/.env, for scripts/scorecard.py) and rejects the threats
-it promoted, so the library ends as it began. The intel switch and the source end as they began too,
-also when a step fails: the switch is turned off again if it was off, and a source Legal has not approved is
-neither withdrawn nor approved.
+it promoted, so the library ends as it began; the ATT&CK run is deleted unless a check on it failed. The
+intel switch and the import schedule end as they began too, also when a step fails: the switch is turned off
+again if it was off, and the schedule is saved again as it was read.
 
 From the project folder: .venv\\Scripts\\python scripts\\e2e_all_api.py [--base http://localhost:8000]"""
 
@@ -16,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,20 +29,23 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from debug_tools import set_debug_value  # noqa: E402  (scripts/ is on the path: this script's own folder)
-from e2e_client import CALLED, FAILED, Api, job_settled, run_settled, wait  # noqa: E402
+from e2e_client import CALLED, FAILED, Api, are_controls_settled, job_settled, run_settled, wait  # noqa: E402
 
 from app.core.constants import Header  # noqa: E402
-from app.models.remediation.requests import PLAN_REQUEST_EXAMPLES  # noqa: E402
+from app.schemas.remediation import PLAN_REQUEST_EXAMPLES  # noqa: E402
 
-#: Operations left out on purpose, not "not called": a source Legal has not approved is never approved here.
-SKIPPED: set[tuple[str, str]] = set()
 RUN = "/v1/sessions/{session_id}"
 PLAN = RUN + "/scenarios/{scenario_id}/treatment-plan"
 MAPPING = "/v1/service-mapper/{mapping_id}"
 REFRESH = "/v1/tsg/intel/refresh/{job_id}"
-SOURCE = "/v1/tsg/intel/sources/{source}"
 JOB = "/v1/admin/jobs/{job_id}"
 USAGE = "/v1/ai-usage"
+SCHEDULE = "/v1/tsg/intel/schedule"
+LINKS = "/v1/tsg/intel/control-links"
+CREATE_SESSION = "/v1/create_session"
+#: What an admin sets on the import schedule: the body of its PUT.
+SCHEDULE_FIELDS = ("enabled", "frequency", "day_of_week", "time", "timezone")
+TECHNIQUE_ID = re.compile(r"T\d{4}(\.\d{3})?")
 
 
 def setup(api: Api) -> str:
@@ -62,10 +68,58 @@ def setup(api: Api) -> str:
     return minted["client_id"]
 
 
-def start_run(api: Api, args: argparse.Namespace, systems: list[int]) -> str:
+def change_and_restore_schedule(api: Api) -> None:
+    """The import schedule read, saved with a slot six days ahead (so nothing starts), read back, then saved
+    again as it was read, also when a check fails."""
+    before = api.call("GET", SCHEDULE) or {}
+    if CALLED[("GET", SCHEDULE)] != 200:
+        return
+    slot = datetime.now(UTC).replace(second=0, microsecond=0) + timedelta(days=6)
+    far = {"enabled": True, "frequency": "weekly", "day_of_week": slot.weekday()}
+    far |= {"time": slot.strftime("%H:%M"), "timezone": "UTC"}
+    try:
+        api.call("PUT", SCHEDULE, body=far)
+        saved = api.call("GET", SCHEDULE) or {}
+        next_run = saved.get("next_run_at")
+        if any(saved.get(name) != far[name] for name in far) or not next_run:
+            FAILED.append(f"schedule: saved {far}, read back {saved}")
+        elif datetime.fromisoformat(next_run) != slot:
+            FAILED.append(f"schedule: next_run_at is {next_run}, the slot saved is {slot.isoformat()}")
+    finally:
+        restored = api.call("PUT", SCHEDULE, body={name: before.get(name) for name in SCHEDULE_FIELDS}) or {}
+    if any(restored.get(name) != before.get(name) for name in SCHEDULE_FIELDS):
+        FAILED.append(f"schedule: not restored: it was {before}, it is {restored}")
+    print(
+        f"      next run {before.get('next_run_at')}, changed to {slot.isoformat()}, now {restored.get('next_run_at')}"
+    )
+
+
+def prepare_control_links(api: Api) -> None:
+    """The control links' summary, then a preparation (409: the import queued one) followed to done: its
+    counts are numbers."""
+    api.call("GET", LINKS)
+    started = api.call("POST", LINKS + "/prepare", (202, 409)) or {}
+    job_id = started.get("job_id") or (started.get("details") or {}).get("job_id")
+    if not job_id:  # 409 with no job: the switch is off
+        FAILED.append(f"control links: no preparation to follow: {started}")
+        return
+    job = wait(api, LINKS + "/{job_id}", job_settled, 60, job_id=job_id) or {}
+    counts = job.get("result") or {}
+    if job.get("status") != "done" or any(
+        type(counts.get(name)) is not int for name in ("judged", "unchanged", "failed")
+    ):
+        FAILED.append(f"control links: preparation {job_id} is not done with its counts: {job}")
+    print(f"      {counts}; {api.call('GET', LINKS, quiet=True)}")
+
+
+def run_request(args: argparse.Namespace, systems: list[int]) -> dict[str, Any]:
+    """The body both start routes take."""
     body = {"asset_id": args.asset, "supporting_system_id": systems, "service_id": args.service}
-    body |= {"sector_id": args.sector, "subsector_id": args.subsector}
-    return api.call("POST", "/v1/sessions", (202,), idempotent=True, body=body)["session_id"]
+    return body | {"sector_id": args.sector, "subsector_id": args.subsector}
+
+
+def start_run(api: Api, args: argparse.Namespace, systems: list[int]) -> str:
+    return api.call("POST", "/v1/sessions", (202,), idempotent=True, body=run_request(args, systems))["session_id"]
 
 
 def review_run(api: Api, args: argparse.Namespace) -> tuple[str, list[str]]:
@@ -84,16 +138,69 @@ def review_run(api: Api, args: argparse.Namespace) -> tuple[str, list[str]]:
         raise SystemExit("  No scenario was written: nothing to review.")
     api.call("GET", RUN + "/scenarios/{scenario_id}", session_id=run, scenario_id=written[0])
     api.call("GET", "/v1/entities/{listed_entity_id}/scenarios", listed_entity_id=args.entity)
+    accepted = decide_and_extend(api, run, written)
+    promote_and_reject(api, run, [item for item in results["scenarios"] if item.get("status") == "done"])
+    return run, accepted
+
+
+def decide_and_extend(
+    api: Api, run: str, written: list[str], settled: Callable[[Any], bool] = run_settled
+) -> list[str]:
+    """Two scenarios accepted, one rejected and written again, then the next set, each followed until
+    `settled`. Returns the scenarios accepted."""
     accepted, rejected = written[:2], written[2:3] or written[-1:]
     api.call("POST", RUN + "/accept", session_id=run, body={"scenario_ids": accepted})
     api.call("POST", RUN + "/scenarios/reject", session_id=run, body={"scenario_ids": rejected})
-    wait(api, RUN, run_settled, 30, session_id=run)  # the accepted scenarios' controls
+    wait(api, RUN, settled, 30, session_id=run)  # the accepted scenarios' controls
     api.call("POST", RUN + "/regenerate/scenarios", (202,), session_id=run, body={"scenario_ids": rejected})
-    wait(api, RUN, run_settled, 30, session_id=run)
+    wait(api, RUN, settled, 30, session_id=run)
     api.call("POST", RUN + "/scenarios/next-set", (202, 409), session_id=run)  # 409: no path left
-    wait(api, RUN, run_settled, 60, session_id=run)
-    promote_and_reject(api, run, [item for item in results["scenarios"] if item.get("status") == "done"])
-    return run, accepted
+    wait(api, RUN, settled, 60, session_id=run)
+    return accepted
+
+
+def review_attack_run(api: Api, args: argparse.Namespace) -> None:
+    """A run the AI writes from MITRE ATT&CK (POST /v1/create_session): written, reviewed, regenerated, given
+    its next set and its promoted threat rejected, as the main run; deleted unless a check on it failed."""
+    failures = len(FAILED)
+    body = run_request(args, args.systems)
+    started = api.call("POST", CREATE_SESSION, (202, 409), idempotent=True, body=body) or {}
+    if CALLED[("POST", CREATE_SESSION)] == 409:
+        no_data = started.get("reason") == "intel_no_data"
+        why = "import the ATT&CK data first (POST /v1/tsg/intel/refresh)" if no_data else json.dumps(started)[:300]
+        FAILED.append(f"create_session: not started: {why}")
+        print(f"      not started: {why}")
+    if not (run := started.get("session_id")):
+        return
+    wait(api, RUN, are_controls_settled, 60, session_id=run)
+    results = api.call("GET", RUN + "/results", session_id=run) or {}
+    written = [item for item in results.get("scenarios", []) if item.get("status") == "done"]
+    print(f"      run {run}: {len(written)} written of {len(results.get('scenarios', []))}")
+    if written:
+        api.call("GET", RUN + "/plan-trace", session_id=run)
+        api.call("GET", RUN + "/scenarios/{scenario_id}", session_id=run, scenario_id=written[0]["scenario_id"])
+        decide_and_extend(api, run, [item["scenario_id"] for item in written], are_controls_settled)
+        promote_and_reject(api, run, written)
+    check_attack_scenarios(api, run)
+    if len(FAILED) == failures:
+        api.call("DELETE", RUN, session_id=run)
+    else:
+        print(f"      run {run} is kept: a check on it failed")
+
+
+def check_attack_scenarios(api: Api, run: str) -> None:
+    """Every scenario the run shows now names its ATT&CK group, cites a technique and has its controls."""
+    shown = api.call("GET", RUN + "/results", session_id=run, params={"include_replaced": "false"}) or {}
+    written = [item for item in shown.get("scenarios", []) if item.get("status") == "done"]
+    if not written:
+        FAILED.append(f"create_session: run {run} shows no written scenario: {shown.get('error')}")
+    for item in written:
+        cited = [str(entry.get("ref")) for entry in item.get("evidence") or []]
+        techniques = [ref for ref in cited if TECHNIQUE_ID.fullmatch(ref)]
+        state = f"group {item.get('actor')}, techniques {techniques}, controls {item.get('controls_status')}"
+        print(f"      {item['scenario_id']}: {state}, {len(item.get('controls') or [])} control(s)")
+        if not (item.get("actor") and techniques and item.get("controls_status") == "done"):
+            FAILED.append(f"create_session: scenario {item['scenario_id']} of run {run}: {state}")
 
 
 def promote_and_reject(api: Api, run: str, written: list[dict[str, Any]]) -> None:
@@ -117,10 +224,7 @@ def plan_request_example(args: argparse.Namespace, kind: int) -> dict[str, Any]:
     body = json.loads(json.dumps(PLAN_REQUEST_EXAMPLES[kind]))
     named = body["supporting_systems_applicable_to_risk"]
     on_asset = {system: args.systems[i % len(args.systems)] for i, system in enumerate(named)}
-    for field in (
-        "supporting_systems_applicable_to_risk",
-        "supporting_systems_applicable_to_existing_controls",
-    ):
+    for field in ("supporting_systems_applicable_to_risk", "supporting_systems_applicable_to_existing_controls"):
         body[field] = [on_asset[system] for system in body[field]]
     return body
 
@@ -205,13 +309,8 @@ def ai_usage(api: Api, run: str, since: str) -> None:
     if not start:
         return
     detail = api.call("GET", USAGE + "/requests/{request_id}", request_id=start["request_id"]) or {}
-    unnamed = [
-        item for item in detail.get("activities", []) if not (item["activity"] and item["description"])
-    ]
-    if (
-        unnamed
-        or sum(item["total_ai_calls"] for item in detail.get("activities", [])) != start["total_ai_calls"]
-    ):
+    unnamed = [item for item in detail.get("activities", []) if not (item["activity"] and item["description"])]
+    if unnamed or sum(item["total_ai_calls"] for item in detail.get("activities", [])) != start["total_ai_calls"]:
         FAILED.append(f"ai usage: the start's activities do not add up or lack a name: {unnamed}")
     calls = api.call("GET", USAGE + "/calls", params={"request_id": start["request_id"], "limit": 500}) or {}
     attempts = [call for call in calls.get("items", []) if call["outcome"] != "reused"]
@@ -246,31 +345,13 @@ def cancel_and_delete(api: Api, args: argparse.Namespace) -> None:
     api.call("DELETE", RUN, session_id=run)
 
 
-def withdraw_and_approve(api: Api, source: str) -> None:
-    """Only a source Legal approved is withdrawn and approved again. The health shows no approval: an
-    approved source waits for its first data (`pending_sources`) or has had some; a withdrawal blanks it."""
-    health = api.call("GET", "/v1/tsg/intel/health") or {}
-    had_data = any(row["source"] == source and row["last_success_at"] for row in health.get("sources", []))
-    if not had_data and source not in health.get("pending_sources", []):
-        SKIPPED.update({("POST", SOURCE + "/revoke"), ("POST", SOURCE + "/approve")})
-        print(f"      {source} is not approved: neither withdrawn nor approved")
-        return
-    try:
-        api.call("POST", SOURCE + "/revoke", source=source)
-    finally:  # approved again also when the withdrawal's answer never came (it waits for an index rebuild)
-        approved = api.call("POST", SOURCE + "/approve", source=source) or {}
-    if job := approved.get("refresh_job_id"):
-        wait(api, REFRESH, job_settled, 30, job_id=job)
-
-
 def coverage() -> int:
     """Every operation the app's OpenAPI lists, checked off; then the failures."""
     from app.main import app
 
     operations = {(method.upper(), path) for path, ops in app.openapi()["paths"].items() for method in ops}
-    uncalled = operations - set(CALLED)
-    missed = sorted(uncalled - SKIPPED)
-    print(f"\n  {len(operations - uncalled)} of {len(operations)} operations called, {len(SKIPPED)} skipped")
+    missed = sorted(operations - set(CALLED))
+    print(f"\n  {len(operations) - len(missed)} of {len(operations)} operations called")
     for method, path in missed:
         print(f"    not called: {method} {path}")
     print(f"  {len(FAILED)} failure(s)")
@@ -294,13 +375,11 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--subsector", type=int, default=199)
     parser.add_argument("--mapper-service-name", default="Power Generation System")
     parser.add_argument(
-        "--mapper-service-description",
-        default="Generates electricity and dispatches it to the transmission grid.",
+        "--mapper-service-description", default="Generates electricity and dispatches it to the transmission grid."
     )
     parser.add_argument("--mapper-sector", default="Energy")
     parser.add_argument("--mapper-subsector", default="Power")
     parser.add_argument("--mapper-entity-name", default="Example Utility")
-    parser.add_argument("--source", default="cisa_kev", help="the intel source withdrawn and approved again")
     return parser.parse_args()
 
 
@@ -312,20 +391,24 @@ def main() -> int:
     try:
         print("Setup")
         client_id = setup(api)
+        print("Intel schedule")
+        change_and_restore_schedule(api)
+        print("Control links")
+        prepare_control_links(api)
         print("Run")
         run, accepted = review_run(api, args)
         print("Plans")
         plans(api, args, run, accepted[0])
         print("Service mapper")
         service_mapper(api, args)
+        print("ATT&CK run")
+        review_attack_run(api, args)
         print("AI usage")
         ai_usage(api, run, since)
         print("Admin jobs")
         admin_jobs(api, run)
         print("Cancel and delete")
         cancel_and_delete(api, args)
-        print("Intel source")
-        withdraw_and_approve(api, args.source)
         print("Key")
         api.call("POST", "/v1/tsg/api-clients/{client_id}/revoke", admin=True, client_id=client_id)
         api.call("GET", "/v1/jobs", (401,))  # the revoked key no longer works

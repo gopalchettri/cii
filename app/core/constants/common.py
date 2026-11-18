@@ -1,9 +1,10 @@
-"""Statuses, store names and limits, AI calls and log events shared by every layer (waits: timing.py)."""
+"""Statuses, store names, limits, waits, job modules and log events shared by every layer."""
 
 from enum import StrEnum
 from typing import Final
 
 from app.core.ai_tuning_settings import TUNING
+from app.core.constants.jobs import TaskName
 from app.core.prompts import PROMPTS
 
 
@@ -52,6 +53,8 @@ class Collection(StrEnum):
     EXTERNAL_FEED_STATUS = "tsg_external_feed_status"  # per source: last refresh, checkpoint; the switch
     EXTERNAL_INTELLIGENCE_SNAPSHOTS = "tsg_external_intelligence_snapshots"  # built snapshots, one active
     SQL_OPERATIONS = "tsg_sql_operations"  # one record per SQL Server write, so a lost answer is reconciled
+    ATTACK = "tsg_attack"  # the MITRE ATT&CK graph: groups, techniques, mitigations and their relationships
+    CONTROL_LINKS = "tsg_control_links"  # per ATT&CK mitigation: the library controls that do what it says
 
 
 class SqlOperationStatus(StrEnum):
@@ -130,6 +133,8 @@ class AiTask(StrEnum):
     REPAIR_SCENARIO = "repair_scenario"  # a draft written again for actions not carried out
     PLAN_CHECK = "plan_check"  # does the written scenario carry out its plan
     REMEDIATION_PLAN = "remediation_plan"
+    LINK_CONTROLS = "link_controls"  # which library controls do what one ATT&CK mitigation says
+    PICK_CONTROLS = "pick_controls"  # which shortlisted control reduces which sentence of a written set
     EMBED = "embed"
     RERANK = "rerank"
 
@@ -138,20 +143,22 @@ class PromptVersion:
     """One number for every AI prompt's label: the version in app/prompts.toml."""
 
     NUMBER: Final[int] = PROMPTS["version"]
-    PLANNER: Final = f"planner-{NUMBER}"  # plan.prompt_version ([scenario.gate], [scenario.gap_fill])
     SCENARIO_WRITER: Final = f"scenario writer-{NUMBER}"  # content.prompt_version (writer, reviewer)
     SCENARIO_WRITER_EVIDENCE: Final = f"scenario writer-evidence-{NUMBER}"  # a story's content.prompt_version
+    ATTACK_WRITER: Final = f"attack writer-{NUMBER}"  # content.prompt_version of a run with pipeline "attack"
     REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
 
 
-#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default, so a new action
-#: (a new epoch) gets a new answer, while a re-delivery of the same job reads its accepted answer back.
+#: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default. Scenario writing at 0.6:
+#: a new action (a new epoch) still gets a new answer, without Kimi-K2.6's stray Chinese words (0 in 192 answers).
 CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.SERVICE_MAPPER: 0.0,
     AiTask.RELEVANCE_GATE: 0.0,
     AiTask.GAP_FILL: 0.0,
     AiTask.REMEDIATION_PLAN: 0.0,
-    AiTask.WRITE_SCENARIO: None,
+    AiTask.LINK_CONTROLS: 0.0,
+    AiTask.PICK_CONTROLS: 0.0,
+    AiTask.WRITE_SCENARIO: 0.6,
     AiTask.REPAIR_SCENARIO: None,
 }
 #: The asks a run answers with an earlier run's answer to the very same conversation, within
@@ -159,7 +166,8 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
 REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
 
 #: Most answer tokens per chat task (CII_ANSWER_TOKENS_<TASK>), counted against the AI service's budget while
-#: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is.
+#: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is (one
+#: that ran away, AiLimits.RUNAWAY_*, at the same limit).
 CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.RELEVANCE_GATE: TUNING.answer_tokens_relevance_gate,
     AiTask.GAP_FILL: TUNING.answer_tokens_gap_fill,
@@ -167,6 +175,8 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.REPAIR_SCENARIO: TUNING.answer_tokens_repair_scenario,
     AiTask.REMEDIATION_PLAN: TUNING.answer_tokens_remediation_plan,
     AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
+    AiTask.LINK_CONTROLS: TUNING.answer_tokens_link_controls,
+    AiTask.PICK_CONTROLS: TUNING.answer_tokens_pick_controls,
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
@@ -226,6 +236,7 @@ class LogEvent(StrEnum):
     AI_ANSWER_REUSED = "ai.answer_reused"  # this job got this exact conversation's answer before: no call
     AI_ANSWER_LOOKUP_FAILED = "ai.answer_lookup_failed"  # the AI is asked instead
     AI_FIRST_ANSWER_KEPT = "ai.first_answer_kept"  # a re-ask failed: the usable first answer, faults and all
+    AI_CUT_OFF_ANSWER_READ = "ai.cut_off_answer_read"  # whole but for its end at the limit: read, not asked again
     AI_GATEWAY_ROUTE = "ai.gateway_route"
     AI_REQUEST_RATE_BUSY = "ai.request_rate_busy"
     AI_SLOTS_BUSY = "ai.slots_busy"
@@ -235,18 +246,11 @@ class LogEvent(StrEnum):
     AI_SLOTS_UNTRACKED = "ai.slots_untracked"
     AI_LIMIT_CUT = "ai.limit_cut"  # a gateway 429 set the limit on AI calls in flight
     LIBRARY_RELOADED = "library.reloaded"
-    LIBRARY_RETIRED_CONTROLS_MISSING = "library.retired_controls_missing"  # an old tsg_GetControlLibrary
-    LIBRARY_THREAT_ASSET_TYPE_MISSING = "library.threat_asset_type_missing"  # an old tsg_GetThreatLibrary
-    LIBRARY_ASSET_TYPE_UNKNOWN = "library.asset_type_unknown"  # an AssetType not IT, OT or IT\OT
-    CONTEXT_SERVICE_NOT_LINKED = "context.service_not_linked"  # the asked service is used anyway
-    CONTEXT_OPTION_VALUE_NOT_FOUND = "context.option_value_not_found"  # a stored code with no name
     LIBRARY_CHECK_FAILED = "library.check_failed"
     LIBRARY_INDEXES_BUILT = "library.indexes_built"
     LIBRARY_INDEXES_BUILD_FAILED = "library.indexes_build_failed"
     PLANNER_THREATS_NOT_JUDGED = "planner.threats_not_judged"  # a gate or gap-fill reply skipped
-    PLANNER_CATEGORY_DROPPED = "planner.category_dropped"  # the gate named a category the threat lacks
     PLANNER_FUNNEL = "planner.funnel"  # a plan made: how many candidates entered and left each stage
-    PLANNER_THREAT_NOT_PLANNED = "planner.threat_not_planned"  # a threat or a gap-fill type links no attacker
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"
@@ -261,7 +265,7 @@ class LogEvent(StrEnum):
     JOB_FINISHED = "job.finished"  # the same with its outcome and seconds
     WORKER_START_FAILED = "worker.start_failed"  # a worker that cannot start says why before it exits
     CONTROLS_SWEPT = "controls.swept"  # the controls sweep's requeued and abandoned mappings, by run
-    JOB_NOT_CLAIMED = "job.not_claimed"  # with its reason: missing, other_epoch, other_task, not_due, ...
+    JOB_NOT_CLAIMED = "job.not_claimed"  # a delivery that found its job not queued, due or at its epoch
     CLOCK_OFF = "clock.off"  # this pod's clock differs from MongoDB's by more than Clock.WARN_OVER_SECONDS
     JOB_LEASE_LOST = "job.lease_lost"
     JOB_STOPPED_BY_OWNER = "job.stopped_by_owner"  # its run or plan was cancelled or deleted
@@ -272,16 +276,13 @@ class LogEvent(StrEnum):
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
-    JOB_STALLED = "job.stalled"  # no lease check for Lease.STALL_SECONDS: it stopped renewing its lease
     JOB_HANDED_BACK = "job.handed_back"  # a stopping worker queued its running job again, no attempt used
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
     JOB_QUEUE_SIZE_UNKNOWN = "job.queue_size_unknown"
     JOB_REAP_FAILED = "job.reap_failed"
     WORKER_METRICS_SERVING = "worker.metrics_serving"
-    WORKER_RERANKER_PRELOAD_FAILED = "worker.reranker_preload_failed"  # the first rerank loads it instead
     WORKER_HEARTBEAT_FAILED = "worker.heartbeat_failed"
-    WORKER_JOB_HUNG = "worker.job_hung"  # a job thread ignored its lost lease: the liveness probe restarts it
     WORKER_NONE_ONLINE = "worker.none_online"
     WORKERS_UNKNOWN = "worker.count_unknown"
     EVENT_PUBLISH_FAILED = "event.publish_failed"
@@ -300,3 +301,143 @@ class LogEvent(StrEnum):
     EXTERNAL_INTELLIGENCE_SWITCH_CHANGED = "external_intelligence.switch_changed"
     EXTERNAL_INTELLIGENCE_TEXT_QUARANTINED = "external_intelligence.text_quarantined"
     EXTERNAL_INTELLIGENCE_SENTENCES_REMOVED = "external_intelligence.sentences_removed"
+    EXTERNAL_INTELLIGENCE_SCHEDULE_SAVED = "external_intelligence.schedule_saved"
+    EXTERNAL_INTELLIGENCE_SCHEDULE_CLAIMED = "external_intelligence.schedule_claimed"  # a due import started
+    # an import deleted what a source no longer imported left: its records and status document
+    EXTERNAL_INTELLIGENCE_REMOVED_SOURCES_DELETED = "external_intelligence.removed_sources_deleted"
+    ATTACK_GRAPH_STORED = "attack.graph_stored"  # one source's ATT&CK graph replaced in tsg_attack
+    ATTACK_NAME_NOT_CONFIRMED = "attack.name_not_confirmed"  # a group, technique or mitigation ATT&CK lacks
+    ATTACK_SCENARIO_NOT_CONFIRMED = "attack.scenario_not_confirmed"  # no confirmed group or technique: given up
+    CONTROL_LINKS_PREPARED = "control_links.prepared"  # one linking run: judged, unchanged, failed
+    CONTROL_LINKS_BUSY = "control_links.busy"  # another linking run holds the lock
+    CONTROL_LINKS_LOCK_LOST = "control_links.lock_lost"  # the lock expired and another run took it
+    CONTROL_LINKS_NOT_QUEUED = "control_links.not_queued"  # after an import: the queue was unreachable
+    CONTROL_LINKS_EMBED_FAILED = "control_links.embed_failed"  # every mitigation keeps its earlier links
+    CONTROL_LINK_FAILED = "control_links.link_failed"  # one mitigation: its earlier links stay
+    CONTROLS_PICKED = "controls.picked"  # a written set's controls picked per sentence
+    CONTROLS_PICK_DROPPED = "controls.pick_dropped"  # a pick code refused, with its reason
+    CONTROLS_PICK_UNUSABLE = "controls.pick_unusable"  # the answer could not be used: the search maps the set
+
+
+class AdminJobKind(StrEnum):
+    """What an admin job does (tsg_admin_jobs.kind); one of each kind at a time."""
+
+    EMBEDDINGS_BUILD = "embeddings_build"  # the library's vectors made now, not at the next build
+    INTEL_REFRESH = "intel_refresh"  # external intelligence sources read now, not at the next check
+
+
+#: tsg_admin_jobs.kind of a control-links preparation. Not an AdminJobKind member: that enum is part of
+#: AdminJobOut, a response shape the UI already reads, and those never change.
+CONTROL_LINKS_JOB_KIND: Final = "control_links"
+
+
+class AdminJobs:
+    STALE_AFTER_SECONDS: Final = 3_600  # a job not started this long is abandoned: a new request takes over
+    KEEP_DAYS: Final = 90  # tsg_admin_jobs retention (TTL on created_at)
+
+
+class AdminJobMessage(StrEnum):
+    IN_PROGRESS = "An embeddings build is already queued or running: details.job_id names it."
+    NOT_FOUND = "Admin job '{job_id}' does not exist."
+    NOT_SENT = "The job queue is unreachable: the build was not started. Try again shortly."
+    ABANDONED = "Its worker stopped (or it never started in {seconds} s): marked failed; a new one can start."
+
+
+class Module(StrEnum):
+    """The product module a job works for: on every job.started/job.finished log line and every
+    GET /v1/admin/jobs row, so a job is traced to its module without knowing task names."""
+
+    THREAT_SCENARIOS = "threat_scenarios"
+    REMEDIATION = "remediation"
+    SERVICE_MAPPER = "service_mapper"
+    EXTERNAL_INTELLIGENCE = "external_intelligence"
+    LIBRARY_EMBEDDINGS = "library_embeddings"
+    MAINTENANCE = "maintenance"
+
+
+#: Each task's and each admin job kind's module.
+JOB_MODULES: Final[dict[str, Module]] = {
+    TaskName.FIND_THREATS: Module.THREAT_SCENARIOS,
+    TaskName.WRITE_SCENARIOS: Module.THREAT_SCENARIOS,
+    TaskName.MAP_CONTROLS: Module.THREAT_SCENARIOS,
+    TaskName.RETRY_CONTROLS: Module.THREAT_SCENARIOS,
+    TaskName.WRITE_PLAN: Module.REMEDIATION,
+    TaskName.MAP_SERVICES: Module.SERVICE_MAPPER,
+    TaskName.REFRESH_EXTERNAL_INTELLIGENCE: Module.EXTERNAL_INTELLIGENCE,
+    AdminJobKind.INTEL_REFRESH: Module.EXTERNAL_INTELLIGENCE,
+    TaskName.LINK_MITIGATIONS: Module.EXTERNAL_INTELLIGENCE,
+    CONTROL_LINKS_JOB_KIND: Module.EXTERNAL_INTELLIGENCE,
+    TaskName.BUILD_LIBRARY_INDEXES: Module.LIBRARY_EMBEDDINGS,
+    AdminJobKind.EMBEDDINGS_BUILD: Module.LIBRARY_EMBEDDINGS,
+    TaskName.REAP: Module.MAINTENANCE,
+    TaskName.ROLL_UP_AI_USAGE: Module.MAINTENANCE,
+}
+
+
+#: The task that runs each admin job kind: the reaper's job.failed line for an abandoned one names it.
+ADMIN_JOB_TASKS: Final[dict[str, str]] = {
+    AdminJobKind.EMBEDDINGS_BUILD: TaskName.BUILD_LIBRARY_INDEXES,
+    AdminJobKind.INTEL_REFRESH: TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+    CONTROL_LINKS_JOB_KIND: TaskName.LINK_MITIGATIONS,
+}
+
+
+class AbandonReason(StrEnum):
+    """Why a job was given up (a job_abandoned error's reason); the job.failed lines carry the same words."""
+
+    WORKER_STOPPED = "abandoned"  # its worker stopped renewing its lease on every attempt
+    NEVER_STARTED = "never_started"  # sent again and again, or left queued, and no worker ever took it
+    WAITED_TOO_LONG = "waited_too_long"  # it waited Lease.MAX_WAIT_SECONDS for another job to finish
+
+
+#: The collection whose record carries each task's leased job (a refused send is noted there).
+JOB_RECORD_COLLECTIONS: Final[dict[str, Collection]] = {
+    TaskName.FIND_THREATS: Collection.SESSIONS,
+    TaskName.WRITE_SCENARIOS: Collection.SESSIONS,
+    TaskName.WRITE_PLAN: Collection.REMEDIATIONS,
+    TaskName.MAP_SERVICES: Collection.SERVICE_MAPPINGS,
+}
+
+
+def module_of(kind: str) -> str:
+    """The module of a task or admin job kind; "other" for one not listed."""
+    return JOB_MODULES.get(kind, "other")
+
+
+class JobMonitorMessage(StrEnum):
+    NOT_FOUND = "Job '{job_id}' does not exist (or ended more than its listing's retention ago)."
+    NOT_ADMIN_JOB = (
+        "Job '{job_id}' is a {module} job: cancel it with its own call (a run: POST "
+        "/v1/sessions/{{id}}/cancel; a plan: its cancel call). Only intelligence imports and embeddings "
+        "builds are cancelled here."
+    )
+    ALREADY_ENDED = "Job '{job_id}' is already {status}: there is nothing to cancel."
+
+
+class Timeouts:
+    """Every network wait is bounded, so a hung store never holds a worker thread for ever."""
+
+    MONGO_MS: Final = 5_000  # find a server / open a connection
+    MONGO_SOCKET_MS: Final = 30_000  # one network wait inside an operation
+    MONGO_MAJORITY_WRITE_MS: Final = 10_000  # a write waits this long for a majority to confirm it
+    SQL_CONNECT_SECONDS: Final = 5  # short, so an outage answers 503 quickly
+    SQL_QUERY_SECONDS: Final = 30  # one procedure call
+    REDIS_SECONDS: Final = 5  # connect and each command
+    REDIS_HEALTH_CHECK_SECONDS: Final = 30  # a pooled connection idle this long is PINGed before use
+    READY_CHECK_SECONDS: Final = 5  # /ready waits at most this for its checks; a slower one counts as down
+    READY_CHECK_REUSE_SECONDS: Final = 2  # a finished check is reused this long (below the probe period)
+    RECORD_WRITE_SECONDS: Final = 5  # an audit or AI-call record write never holds an answer longer
+
+
+class Cache:
+    SERVICE_MAPPER_CATALOG_SECONDS: Final = 60
+    API_KEY_TTL_SECONDS: Final = 60  # an API key is checked again after this
+    LIBRARY_STAMP_EVERY_SECONDS: Final = 60  # the library stamp is read again after this
+    LIBRARY_INDEXES_EVERY_SECONDS: Final = 1_800  # the maintenance worker embeds new library rows this often
+    QUERY_VECTOR_DAYS: Final = 14  # a search query's vector expires after this
+    RETIRED_VECTOR_DAYS: Final = 365  # a library vector no row uses is kept this long, then deleted
+
+
+class Clock:
+    CHECK_EVERY_SECONDS: Final = 60  # each process asks MongoDB its time this often (app/core/clock.py)
+    WARN_OVER_SECONDS: Final = 5  # a pod clock further off than this is logged (and alerted: ClockSkew)

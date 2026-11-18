@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
-from app import container
+from app.core import readiness
 from app.core.constants import AdminJobKind, AdminJobs, Collection, ErrorCode, LogEvent, Status, TaskName
 from app.core.database import get_mongodb
-from app.data_access.admin.admin_job_repository import AdminJobRepository
-from app.data_access.jobs.job_repository import JobRepository
-from app.worker import celery_app, lifecycle, reaper
+from app.crud.admin_jobs import AdminJobRepository, get_admin_job_repository
+from app.crud.jobs import JobRepository
+from app.domain import jobs
+from app.worker import celery_app, lifecycle
+from app.worker import jobs as worker_jobs
 from app.worker.celery_app import REQUEST_ID_HEADER, send_job
 from tests.conftest import ADMIN
 
@@ -40,9 +42,8 @@ def _mapping(status: Status, **job: object) -> str:
 
 
 def test_every_job_its_queue_and_its_worker_in_one_call(client: TestClient, monkeypatch) -> None:
-    monitor = container.get_job_monitor_service()
-    monkeypatch.setattr(monitor, "_count_waiting", lambda queue: 3 if queue == "tsg_servicemapper" else 0)
-    monkeypatch.setattr(monitor, "_count_workers", lambda queues: dict.fromkeys(queues, 1))
+    monkeypatch.setattr(jobs, "_count_waiting", lambda queue: 3 if queue == "tsg_servicemapper" else 0)
+    monkeypatch.setattr(readiness, "count_online_workers", lambda queues: dict.fromkeys(queues, 1))
     queued = _mapping(Status.QUEUED)
     error = {"code": "ai_unavailable", "message": "The AI is down."}
     failed = _mapping(Status.FAILED, error=error)
@@ -50,7 +51,7 @@ def test_every_job_its_queue_and_its_worker_in_one_call(client: TestClient, monk
         queued, 1, TaskName.MAP_SERVICES, "task-9", worker="mapper@uat"
     )
     assert claimed is not None
-    admin_jobs = container.get_admin_job_repository()
+    admin_jobs = get_admin_job_repository()
     new_refresh = {"_id": uuid.uuid4().hex, "kind": "monitor_test", "status": Status.QUEUED}
     refresh = admin_jobs.create_admin_job(new_refresh | {"created_at": datetime.now(UTC)})
     assert refresh is not None
@@ -71,12 +72,8 @@ def test_every_job_its_queue_and_its_worker_in_one_call(client: TestClient, monk
 
         failures = client.get("/v1/admin/jobs", params={"status": "failed"}, headers=ADMIN).json()["jobs"]
         assert {job["status"] for job in failures} == {Status.FAILED}
-        mapper = client.get("/v1/admin/jobs", params={"module": "service_mapper"}, headers=ADMIN).json()[
-            "jobs"
-        ]
-        assert {job["module"] for job in mapper} == {"service_mapper"} and refresh not in {
-            j["id"] for j in mapper
-        }
+        mapper = client.get("/v1/admin/jobs", params={"module": "service_mapper"}, headers=ADMIN).json()["jobs"]
+        assert {job["module"] for job in mapper} == {"service_mapper"} and refresh not in {j["id"] for j in mapper}
         assert client.get("/v1/admin/jobs", headers={"X-Admin-Key": "wrong"}).status_code == 401
     finally:
         admin_jobs.update_admin_job_finished(refresh, datetime.now(UTC), result={})
@@ -111,7 +108,7 @@ def test_the_api_request_id_travels_with_the_job_and_its_start_and_finish_are_lo
 
 
 def test_the_reaper_fails_an_admin_job_left_running_and_leaves_a_fresh_one(monkeypatch) -> None:
-    monkeypatch.setattr(reaper, "_queue_sizes_read_once", lambda: lambda _queue: True)
+    monkeypatch.setattr(worker_jobs, "_queue_sizes_read_once", lambda: lambda _queue: True)
     jobs = AdminJobRepository()
     long_ago = datetime.now(UTC) - timedelta(seconds=AdminJobs.STALE_AFTER_SECONDS + 60)
     stuck, fresh = uuid.uuid4().hex, uuid.uuid4().hex
@@ -119,15 +116,11 @@ def test_the_reaper_fails_an_admin_job_left_running_and_leaves_a_fresh_one(monke
     base = {"status": Status.RUNNING, "active": True}
     jobs.create(base | {"_id": stuck, "kind": AdminJobKind.INTEL_REFRESH, "created_at": long_ago})
     jobs.create(base | {"_id": fresh, "kind": "fresh_kind", "created_at": datetime.now(UTC)})
-    failures = {
-        "task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
-        "module": "external_intelligence",
-        "outcome": "failure",
-    }
+    failures = {"task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE, "module": "external_intelligence", "outcome": "failure"}
     before = REGISTRY.get_sample_value("tsg_jobs_total", failures) or 0.0
     try:
         with capture_logs() as logs:
-            reaper.reap_jobs()
+            worker_jobs.reap_jobs()
         assert jobs.get(None, _id=stuck)["error"]["code"] == ErrorCode.JOB_ABANDONED
         assert jobs.get(None, _id=stuck)["status"] == Status.FAILED
         assert jobs.get(None, _id=fresh)["status"] == Status.RUNNING
@@ -146,15 +139,10 @@ def test_the_reaper_fails_an_admin_job_left_running_and_leaves_a_fresh_one(monke
 
 
 def test_one_job_is_read_by_id_and_an_import_or_build_can_be_cancelled(client: TestClient) -> None:
-    jobs = container.get_admin_job_repository()
+    jobs = get_admin_job_repository()
     jobs.collection.delete_many({"kind": "cancel_test"})
     job_id = jobs.create_admin_job(
-        {
-            "_id": uuid.uuid4().hex,
-            "kind": "cancel_test",
-            "status": Status.QUEUED,
-            "created_at": datetime.now(UTC),
-        }
+        {"_id": uuid.uuid4().hex, "kind": "cancel_test", "status": Status.QUEUED, "created_at": datetime.now(UTC)}
     )
     mapping = _mapping(Status.QUEUED)
     try:

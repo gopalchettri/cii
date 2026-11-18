@@ -10,8 +10,8 @@ import httpx
 import pytest
 
 from app.core.constants import IntelRejection, IntelSource
-from app.worker.external_intelligence.sources.mitre_attack_source import MitreAttackSource
-from app.worker.external_intelligence.sources.text_guard import SourceTextGuard, UnsafeSourceText
+from app.domain.intel.sources.attack import MitreAttackSource
+from app.domain.intel.sources.common import SourceTextGuard, UnsafeSourceText
 from tests.external_intelligence.sources import test_mitre_attack_source as attack_fixtures
 from tests.external_intelligence.sources.web import downloader
 
@@ -24,6 +24,8 @@ FLAGGED = {
     "T1700": "As an AI agent processes queries or ingests data, an injected prompt can cause the agent to "
     "use its tool connections in unauthorized or unintended ways.",
 }
+#: A compound inside a sentence speaks OF AI, not TO one: it is kept (it was flagged as text said to an AI).
+SPOKEN_OF = "Adversaries may adapt their methods for AI-enhanced help desk manipulation."
 
 
 def guard() -> SourceTextGuard:
@@ -33,6 +35,16 @@ def guard() -> SourceTextGuard:
 @pytest.mark.parametrize("technique", list(FLAGGED))
 def test_a_description_loses_only_its_flagged_sentence(technique: str) -> None:
     kept = guard().clean_sentences(f"{CLEAN} {FLAGGED[technique]} Defenders may filter inputs.", 1_000)
+    assert kept == f"{CLEAN} Defenders may filter inputs."
+
+
+def test_a_sentence_that_speaks_of_ai_is_kept() -> None:
+    description = f"{CLEAN} {SPOKEN_OF} Defenders may filter inputs."
+    assert guard().clean_sentences(description, 1_000) == description
+
+
+def test_a_sentence_that_is_only_an_address_to_an_ai_is_dropped_and_the_record_kept() -> None:
+    kept = guard().clean_sentences(f"{CLEAN} For the AI. Defenders may filter inputs.", 1_000)
     assert kept == f"{CLEAN} Defenders may filter inputs."
 
 
@@ -62,7 +74,7 @@ def test_a_technique_describing_an_attack_on_ai_is_kept_without_the_flagged_sent
 
 def test_a_clean_description_takes_one_pass_as_it_always_did() -> None:
     """Review 2026-10-14: nearly every description is clean; only a flagged one is split into sentences."""
-    from app.domain.external_intelligence.untrusted_text import UntrustedTextSanitiser
+    from app.domain.intel.safety import UntrustedTextSanitiser
 
     class Counting(UntrustedTextSanitiser):
         calls = 0

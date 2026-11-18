@@ -9,13 +9,14 @@ from fastapi import Body, FastAPI
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
-from app import container
 from app.ai import common as ai_common
 from app.api import middleware
 from app.api.middleware import _bind_request_context
 from app.core.config import get_settings
 from app.core.constants import ErrorCode, Header, LogEvent
+from app.core.database import get_mongodb
 from app.core.logging import configure_logging, mask_secret_values
+from app.crud import admin as admin_crud
 from app.main import create_app
 
 
@@ -48,9 +49,7 @@ def test_a_plain_request_id_is_kept_and_an_unsafe_one_replaced(app_client: TestC
     assert len(replaced.headers[Header.REQUEST_ID]) == 32
 
 
-def test_a_body_over_the_limit_is_refused_with_413(
-    app_client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_body_over_the_limit_is_refused_with_413(app_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(middleware, "_BYTES_PER_MB", 1)  # the .env values then read as bytes
     monkeypatch.setattr(get_settings(), "max_request_mb", 10)
     assert app_client.post("/test-only/echo", json={"a": 1}).status_code == 200
@@ -108,9 +107,7 @@ def test_a_body_labelled_as_an_upload_gets_the_same_limit(
     for every request (owner, 2026-10-09)."""
     monkeypatch.setattr(middleware, "_BYTES_PER_MB", 1)  # the .env value then reads as bytes
     monkeypatch.setattr(get_settings(), "max_request_mb", 10)
-    as_json = app_client.post(
-        "/test-only/echo", content=b"x" * 500, headers={"Content-Type": "application/json"}
-    )
+    as_json = app_client.post("/test-only/echo", content=b"x" * 500, headers={"Content-Type": "application/json"})
     no_type = app_client.post("/test-only/echo", content=b"x" * 500)
     upload = app_client.post("/test-only/echo", files={"file": ("a.csv", b"x" * 500)})
     assert [as_json.status_code, no_type.status_code, upload.status_code] == [413, 413, 413]
@@ -126,14 +123,10 @@ class _RecordedLines:
         return lambda event, **fields: self.lines.append({"event": event, "level": level, **fields})
 
 
-def test_the_access_line_names_the_calling_system(
-    app_client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_access_line_names_the_calling_system(app_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner, 2026-10-09: the platform and the chatbot each call with their own key, and each request's line
     says which system it was (None without a valid key). Nothing is refused because of it."""
-    client, api_key = container.get_admin_service().create_api_client(
-        f"line-{uuid.uuid4().hex[:8]}", None, "test"
-    )
+    client, api_key = admin_crud.create_api_client(get_mongodb(), f"line-{uuid.uuid4().hex[:8]}", None, "test")
     recorded = _RecordedLines()
     monkeypatch.setattr(middleware, "log", recorded)
     identity = {Header.USER_ID: "u1", Header.ENTITY_ID: "86", Header.TENANT_ID: "DESC"}
@@ -141,10 +134,7 @@ def test_the_access_line_names_the_calling_system(
     app_client.get(unknown_run, headers=identity | {Header.API_KEY: api_key})  # 404, after the key check
     app_client.get(unknown_run, headers=identity | {Header.API_KEY: "tsg_wrong"})  # 401
     access = [line for line in recorded.lines if line["event"] == LogEvent.HTTP_REQUEST]
-    assert [(line["status"], line["client_id"]) for line in access] == [
-        (404, client["client_id"]),
-        (401, None),
-    ]
+    assert [(line["status"], line["client_id"]) for line in access] == [(404, client["client_id"]), (401, None)]
 
 
 def test_a_failed_call_s_access_line_says_where_and_what_it_answered(
@@ -168,9 +158,7 @@ def test_a_failed_call_s_access_line_says_where_and_what_it_answered(
     assert access[2]["detail"] and access[3]["errors"][0]["field"] == "body"
 
 
-def test_an_unexpected_error_reaches_a_browser_with_cors_and_the_request_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_unexpected_error_reaches_a_browser_with_cors_and_the_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """Before: Starlette answered the 500 outside the CORS middleware, so a browser could not read the problem
     body or the request id it asks the user to quote."""
     monkeypatch.setattr(get_settings(), "cors_origins", "http://ui.test")
@@ -194,8 +182,7 @@ def test_cors_allows_exactly_the_methods_the_routes_use(monkeypatch: pytest.Monk
     app = create_app()
     routed = {method.upper() for operations in app.openapi()["paths"].values() for method in operations}
     preflight = TestClient(app).options(
-        "/v1/jobs/any",
-        headers={"Origin": "http://ui.test", "Access-Control-Request-Method": "DELETE"},
+        "/v1/jobs/any", headers={"Origin": "http://ui.test", "Access-Control-Request-Method": "DELETE"}
     )
     assert preflight.status_code == 200
     assert set(preflight.headers["access-control-allow-methods"].split(", ")) == routed

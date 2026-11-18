@@ -15,9 +15,9 @@ from app.core.config import get_settings
 from app.core.constants import Collection, Controls, ErrorMessage, Lease, LogEvent, Status, TaskName
 from app.core.database import get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.jobs.job_repository import JobLease, JobRepository, ended_job_fields
+from app.crud.jobs import JobLease, JobRepository, ended_job_fields
 from app.realtime import publisher
-from app.worker import jobs, reaper
+from app.worker import jobs
 from app.worker.scenario import controls_job
 from tests.test_control_mapping import (  # noqa: F401 - fixture used by name
     _controls_of,
@@ -52,17 +52,9 @@ def test_a_live_update_redis_refuses_is_logged_and_never_fails_the_saved_change(
         publisher.publish_remediation_status("plan-1")
         publisher.publish_mapping_status("mapping-1")
         jobs.run_leased_job(
-            _task(),
-            Collection.SESSIONS,
-            record_id,
-            1,
-            lambda lease: lease.update_job(ended_job_fields(Status.DONE)),
+            _task(), Collection.SESSIONS, record_id, 1, lambda lease: lease.update_job(ended_job_fields(Status.DONE))
         )
-    failed = [
-        (line["channel"], line["log_level"])
-        for line in logs
-        if line["event"] == LogEvent.EVENT_PUBLISH_FAILED
-    ]
+    failed = [(line["channel"], line["log_level"]) for line in logs if line["event"] == LogEvent.EVENT_PUBLISH_FAILED]
     channels = [publisher.session_channel("run-1"), publisher.remediation_channel("plan-1")]
     channels += [publisher.mapping_channel("mapping-1")] + [publisher.session_channel(record_id)] * 2
     assert failed == [(channel, "warning") for channel in channels]  # the job's: claimed, then done
@@ -106,8 +98,8 @@ def test_a_reaper_pass_on_reads_another_pass_already_settled_repeats_nothing(
     for collection in jobs.JOB_COLLECTIONS:
         get_mongodb()[collection].delete_many({})
     sent: list[tuple] = []
-    monkeypatch.setattr(reaper, "send_job", lambda *args, **_priority: sent.append(args) or True)
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    monkeypatch.setattr(jobs, "send_job", lambda *args, **_priority: sent.append(args) or True)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
     long_ago = datetime.now(UTC) - timedelta(hours=1)
     dead = _insert_job(Status.RUNNING, attempts=1, lease_until=long_ago, task_id="gone")
     worn_out = _insert_job(Status.RUNNING, attempts=Lease.MAX_ATTEMPTS, lease_until=long_ago, task_id="gone")
@@ -116,11 +108,11 @@ def test_a_reaper_pass_on_reads_another_pass_already_settled_repeats_nothing(
     expired = list(runs.list_expired_jobs(now))
     unsent = list(runs.list_unsent_jobs(now - timedelta(seconds=Lease.REQUEUE_QUEUED_AFTER_SECONDS)))
     failures_before = _job_failures()
-    reaper.reap_jobs()
+    jobs.reap_jobs()
     assert runs.claim_job(dead, 1, TaskName.FIND_THREATS, "new-delivery") is not None  # the re-send ran
     monkeypatch.setattr(JobRepository, "list_expired_jobs", _reads(expired))
     monkeypatch.setattr(JobRepository, "list_unsent_jobs", _reads(unsent))
-    reaper.reap_jobs()
+    jobs.reap_jobs()
     assert sorted(record_id for _, record_id, _ in sent) == sorted([dead, lost])
     assert _job_failures() == failures_before + 1
     taken = _records().find_one({"_id": dead})["job"]
@@ -143,9 +135,7 @@ def test_a_delivery_whose_run_was_taken_over_mid_turn_maps_no_more_and_leaves_th
 
     def map_then_lose_the_run(self: controls_job.RunControls, scenario: dict[str, Any]) -> int:
         mapped = map_one(self, scenario)
-        get_mongodb()[Collection.SESSIONS].update_one(
-            {"_id": record_id}, {"$set": {"controls_delivery": another}}
-        )
+        get_mongodb()[Collection.SESSIONS].update_one({"_id": record_id}, {"$set": {"controls_delivery": another}})
         return mapped
 
     monkeypatch.setattr(controls_job.RunControls, "_map_one", map_then_lose_the_run)

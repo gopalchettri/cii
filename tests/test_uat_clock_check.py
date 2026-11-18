@@ -42,10 +42,7 @@ def _uat_run():  # type: ignore[no-untyped-def]
         _pod("worker-reaper-7d4874bb8-h7fbx", PWK03, (44.75, 0.88), -34.13, -45.01, namespace="ai-common"),
         _pod("loki-64bd6885d5-fj96v", PWK03, (44.76, 0.89), namespace="ai-common"),
         _pod(
-            "kube-state-metrics-77fc96bf7d-2f2zh",
-            PWK03,
-            namespace="ai-common",
-            unread="its container is not running",
+            "kube-state-metrics-77fc96bf7d-2f2zh", PWK03, namespace="ai-common", unread="its container is not running"
         ),
     ]
 
@@ -109,11 +106,7 @@ def test_only_running_pods_are_listed_with_their_node_first_container_and_image(
         spec = {"nodeName": "w1", "containers": [{"name": "main", "image": f"registry/dda-desc/{image}"}]}
         return {"metadata": {"name": name}, "spec": spec, "status": {"phase": phase}}
 
-    items = [
-        item("api-1", "Running", "tsg-api:1"),
-        item("loki-1", "Running", "loki:3"),
-        item("old", "Done", "x"),
-    ]
+    items = [item("api-1", "Running", "tsg-api:1"), item("loki-1", "Running", "loki:3"), item("old", "Done", "x")]
     api, loki = check.pods_from_listing({"items": items}, "ai-threatgen")
     assert (api.name, api.node, api.container, api.runs_app) == ("api-1", "w1", "main", True)
     assert (loki.name, loki.runs_app) == ("loki-1", False)
@@ -167,12 +160,9 @@ def test_the_log_has_one_plain_line_per_clock_with_its_time_and_gap_from_utc() -
         "[OK]  Redis server 10.228.146.4:6379 shows 09:15:02 UTC: 0.3 s behind UTC",
         "[N/A] Pod ai-common/kube-state-metrics-77fc96bf7d-2f2zh on node aos1descpwk03: not read"
         " (its container is not running)",
-        "[GAP] Pod ai-common/loki-64bd6885d5-fj96v on node aos1descpwk03 shows 09:15:47 UTC:"
-        " 45 s ahead of UTC",
-        "[OK]  Pod ai-threatgen/api-79794b5968-6qv5n on node aos1descpwk06 shows 09:15:02 UTC:"
-        " in step with UTC",
-        "[GAP] Pod ai-threatgen/api-79794b5968-h8jbk on node aos1descpwk02 shows 09:16:20 UTC:"
-        " 1 min 18 s ahead of UTC",
+        "[GAP] Pod ai-common/loki-64bd6885d5-fj96v on node aos1descpwk03 shows 09:15:47 UTC: 45 s ahead of UTC",
+        "[OK]  Pod ai-threatgen/api-79794b5968-6qv5n on node aos1descpwk06 shows 09:15:02 UTC: in step with UTC",
+        "[GAP] Pod ai-threatgen/api-79794b5968-h8jbk on node aos1descpwk02 shows 09:16:20 UTC: 1 min 18 s ahead of UTC",
     ):
         assert expected in lines
 
@@ -199,9 +189,7 @@ def test_the_summary_numbers_each_gap_and_says_who_fixes_it() -> None:
 
 def test_a_nodes_gap_comes_from_its_most_accurate_reading() -> None:
     rough, sharp = _pod("a-pod", PWK02, (14.0, 3.0)), _pod("b-pod", PWK02, (10.0, 0.5))  # one node, one clock
-    assert "1. OpenShift node aos1descpwk02 is 10 s ahead of UTC." in check.report(
-        [rough, sharp], 2.0, STANDARD
-    )
+    assert "1. OpenShift node aos1descpwk02 is 10 s ahead of UTC." in check.report([rough, sharp], 2.0, STANDARD)
 
 
 def test_nothing_read_is_never_a_pass() -> None:

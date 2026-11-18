@@ -6,12 +6,7 @@ from collections.abc import Callable
 
 
 class singleton[T]:  # lower case on purpose: it is used as a decorator, `@singleton def get_x() -> X`
-    """Decorates a zero-argument builder: the first call builds the value, every later call returns it.
-
-    Not functools.lru_cache: it takes no lock while it builds, so threads calling at the same moment each
-    build their own copy. A worker's 10 job threads starting together each made a library cache (with its own
-    SQL checker thread and SQL pool), and every extra copy lived until the pod restarted. Here concurrent
-    first callers wait for ONE build; a failed build stores nothing, so the next call tries again."""
+    """The first call builds the value under a lock (lru_cache would build once per racing thread)."""
 
     def __init__(self, build: Callable[[], T]) -> None:
         functools.update_wrapper(self, build)

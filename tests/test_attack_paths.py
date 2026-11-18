@@ -6,12 +6,12 @@ import random
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiTask,
@@ -21,7 +21,6 @@ from app.core.constants import (
     Lease,
     PlanMessage,
     PlanStage,
-    PromptVersion,
     RunActionKind,
     RunActionOutcome,
     ScenarioStatus,
@@ -32,16 +31,12 @@ from app.core.constants import (
 )
 from app.core.database import get_mongodb
 from app.core.exceptions import PlanRefused, Unavailable
+from app.domain.intel.switch import get_intelligence_switch
 from app.domain.scenario import plan as plan_module
-from app.domain.scenario.plan import (
-    build_plan,
-    build_plan_trace,
-    describe_asset_for_ai,
-    spread_paths_across_systems,
-)
-from app.models.scenario.plan import AttackPlace, PlannedThreat, ThreatFindings
+from app.domain.scenario.plan import build_plan, describe_asset_for_ai, spread_paths_across_systems
+from app.schemas.scenario_internal import AttackPlace, PlannedThreat, ThreatFindings
 from app.worker import jobs
-from app.worker.scenario.plan_job import PLAN_JOB_FIELDS, PlanJob
+from app.worker.scenario.tasks import PLAN_JOB_FIELDS, plan_run
 from tests.planner_samples import ADMIN_ABUSE, CONTEXT, LOG_WIPE, THREATS, S, finder, planned, planner_chat
 
 LANDSCAPE = describe_asset_for_ai(CONTEXT, 30_000)
@@ -57,10 +52,7 @@ def one_step(key: str, category: S, systems: tuple[int, ...], impact: int) -> Pl
 
 def ranked(*threats: PlannedThreat) -> list[str]:
     """The threats' keys in their paths' rank order, before the turns."""
-    return [
-        threat.key
-        for threat in sorted(threats, key=lambda threat: plan_module._build_path_record(threat, {})[0])
-    ]
+    return [threat.key for threat in sorted(threats, key=lambda threat: plan_module._build_path_record(threat, {})[0])]
 
 
 def test_every_threat_is_its_own_asset_level_path_none_grouped_under_another() -> None:
@@ -109,20 +101,13 @@ def test_the_card_enters_through_its_main_kinds_own_systems_with_its_own_impact_
         main_place=AttackPlace((321,), (321,), 80.0),
     )
     (path,) = build_plan(findings_of(merged), 0)["paths"]
-    assert (path["category"], path["systems"], path["impact"], path["confidence"]) == (
-        S.TAMPERING,
-        [321],
-        3,
-        80.0,
-    )
+    assert (path["category"], path["systems"], path["impact"], path["confidence"]) == (S.TAMPERING, [321], 3, 80.0)
     assert path["categories"] == [S.TAMPERING, S.DENIAL_OF_SERVICE]
 
 
 def test_a_path_takes_its_id_categories_systems_impact_and_confidence_from_its_steps() -> None:
     """The card's id names its threat, its main kind and the systems it is on."""
-    wipe = planned(
-        "ai:wipe", "Wipe", (321,), categories=(S.TAMPERING, S.REPUDIATION), impact=3, confidence=60.0
-    )
+    wipe = planned("ai:wipe", "Wipe", (321,), categories=(S.TAMPERING, S.REPUDIATION), impact=3, confidence=60.0)
     findings = replace(findings_of(wipe), category_ids={"tampering": 5, "spoofing": 1})
     (record,) = build_plan(findings, 0)["paths"]  # one card, as its main kind
     assert record["path_id"] == hashlib.sha256(b"ai:wipe@Tampering@system:321").hexdigest()[:16]
@@ -189,53 +174,33 @@ def test_paths_take_turns_over_the_systems_each_through_a_way_in_the_gate_named(
         ("flood", 2),
     ]
     assert all(  # the whole sequence: every turn's system is one of that path's ways in
-        record["entry_system"] in record["entry_points"]
-        or (record["entry_system"] is None and not record["systems"])
+        record["entry_system"] in record["entry_points"] or (record["entry_system"] is None and not record["systems"])
         for record in dealt
     )
     skipped = spread_paths_across_systems(
         [_turn("a", [1, 2], [1]), _turn("b", [1], [1]), _turn("c", [3], [3])], [1, 2, 3]
     )
-    assert [(record["path_id"], record["entry_system"]) for record in skipped] == [
-        ("a", 1),
-        ("c", 3),
-        ("b", 1),
-    ]
+    assert [(record["path_id"], record["entry_system"]) for record in skipped] == [("a", 1), ("c", 3), ("b", 1)]
     # SYS1's turn passes over the one path SYS4 could take, while it has another of its own
     shared = [_turn("r1", [1, 4], [1, 4]), _turn("r2", [1], [1]), _turn("r3", [1], [1])]
     assert [
-        (record["path_id"], record["entry_system"])
-        for record in spread_paths_across_systems(shared, [1, 2, 3, 4])
-    ] == [
-        ("r2", 1),
-        ("r1", 4),
-        ("r3", 1),
-    ]
+        (record["path_id"], record["entry_system"]) for record in spread_paths_across_systems(shared, [1, 2, 3, 4])
+    ] == [("r2", 1), ("r1", 4), ("r3", 1)]
 
 
-def test_the_plan_stores_each_paths_ways_in_and_turn_and_the_trace_counts_them() -> None:
+def test_the_plan_stores_each_paths_ways_in_and_turn() -> None:
     """The stronger threat gets in through the Historian only, so the SCADA server's first turn goes to the
-    weaker one; the ranks follow the turns, and the trace counts each system's turns and each group."""
+    weaker one; the ranks follow the turns."""
     via_historian = planned(
         "lib:1", "Firmware change", (321, 322), impact=3, main_place=AttackPlace((321, 322), (322,), 70.0)
     )
     on_scada = planned("lib:2", "Log wipe", (321,), impact=1)
     findings = findings_of(via_historian, on_scada)
     plan = build_plan(findings, 0)
-    assert [
-        (p["steps"], p["systems"], p["entry_points"], p["entry_system"], p["rank"]) for p in plan["paths"]
-    ] == [
+    assert [(p["steps"], p["systems"], p["entry_points"], p["entry_system"], p["rank"]) for p in plan["paths"]] == [
         (["lib:2"], [321], [321], 321, 1),
         (["lib:1"], [321, 322], [322], 322, 2),
     ]
-    trace = build_plan_trace(findings, plan, 2)
-    assert trace["turns"] == {"SCADA server": 1, "Historian": 1}
-    assert trace["groups"] == {"SCADA server": 1, "SCADA server + Historian": 1}
-    # every system is listed, 0 when no path gets in through it, and two systems named alike stay apart
-    alike = replace(LANDSCAPE, system_names=dict.fromkeys(LANDSCAPE.system_names, "HMI"))
-    only_scada = {"paths": [p | {"entry_system": 321} for p in plan["paths"]], "threats": plan["threats"]}
-    trace = build_plan_trace(replace(findings, landscape=alike), only_scada, 2)
-    assert trace["turns"] == {"HMI (SYS1)": 2, "HMI (SYS2)": 0}
 
 
 def test_equal_paths_rank_library_first_then_by_library_id_whatever_the_input_order() -> None:
@@ -295,13 +260,11 @@ def _stored_run(record_id: str) -> dict[str, Any]:
 
 def _plan_job(threat_finder: Any) -> Any:
     """The plan job as the app builds it, planning with `threat_finder`."""
-    return PlanJob(threat_finder, container.get_intelligence_switch()).plan_threat_scenario_session
+    return partial(plan_run, find_threats=threat_finder.find_threats, switch=get_intelligence_switch())
 
 
 def _threats_task() -> Any:
-    return SimpleNamespace(
-        name=TaskName.FIND_THREATS, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None
-    )
+    return SimpleNamespace(name=TaskName.FIND_THREATS, request=SimpleNamespace(id=uuid.uuid4().hex), retry=None)
 
 
 @pytest.fixture
@@ -325,37 +288,22 @@ def test_the_plan_is_frozen_and_handed_to_scenario_writing_in_one_write(
     jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert (run["status"], run["step"]) == (Status.QUEUED, Step.SCENARIOS)
-    assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (
-        TaskName.WRITE_SCENARIOS,
-        1,
-        0,
-    )
+    assert (run["job"]["task"], run["job"]["epoch"], run["job"]["attempts"]) == (TaskName.WRITE_SCENARIOS, 1, 0)
     plan = run["plan"]
-    assert plan["prompt_version"] == PromptVersion.PLANNER and plan["frozen_at"] is not None
+    assert plan["frozen_at"] is not None
     assert sorted(threat["name"] for threat in plan["threats"]) == sorted([LOG_WIPE.name, ADMIN_ABUSE.name])
     best = min(plan["paths"], key=lambda path: path["rank"])["path_id"]
     assert run["job"]["set"] == [best] and run["job"]["batch"] == [{"path_id": best, "replaces": None}]
     assert run["counts"]["planned"] == 2 and sent == [(TaskName.WRITE_SCENARIOS, record_id, 1)]
-    # What made the plan, so a later reviewer can tell why this plan and not another.
-    assert set(plan["made_with"]) == {"chat_models", "embedding_model", "rerank_model", "library"}
-    assert plan["made_with"]["chat_models"][0] == get_settings().scenario_chat_model
     # Its trace, saved in the same write: each stage's counts add up.
     counts = run["plan_trace"]["counts"]
     assert (counts["threats"], counts["paths"], counts["selected"], counts["first_set"]) == (2, 2, 2, 1)
     assert counts["already_held"] == 0 and counts["gate_accepted"] == 2
-    lost = (
-        "not_judged",
-        "not_relevant",
-        "needs_unrecorded",
-        "asset_type_mismatch",
-        "needs_unrecorded_elsewhere",
-    )
+    lost = ("not_judged", "not_relevant", "needs_unrecorded", "asset_type_mismatch", "needs_unrecorded_elsewhere")
     assert counts["gate_asked"] == counts["gate_accepted"] + sum(counts[name] for name in lost)
 
 
-def test_a_plan_with_no_path_ends_the_run_at_once(
-    monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]
-) -> None:
+def test_a_plan_with_no_path_ends_the_run_at_once(monkeypatch: pytest.MonkeyPatch, sent: list[tuple[Any, ...]]) -> None:
     """Nothing applies: the run is done in the same write; no writer job is queued for nothing."""
     chat = planner_chat({})
     plan = _plan_job(finder(chat))
@@ -411,17 +359,11 @@ def test_another_session_of_the_asset_never_takes_a_path_away(
     assert planned == [path["steps"] for path in first["plan"]["paths"]]
     assert len(sent) == 1 and run["job"]["set"] == [path["path_id"] for path in run["plan"]["paths"]]
     trace = run["plan_trace"]
-    assert (trace["counts"]["paths"], trace["counts"]["already_held"], trace["counts"]["first_set"]) == (
-        2,
-        0,
-        2,
-    )
+    assert (trace["counts"]["paths"], trace["counts"]["already_held"], trace["counts"]["first_set"]) == (2, 0, 2)
     assert not [drop for drop in trace["drops"] if drop["stage"] == PlanStage.HELD]
 
 
-def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(
-    sent: list[tuple[Any, ...]],
-) -> None:
+def test_a_last_attempt_that_checks_not_one_threat_fails_the_run_as_an_ai_outage(sent: list[tuple[Any, ...]]) -> None:
     """Not one gate reply usable on the job's last attempt: the run fails unavailable, never "none apply"."""
     chat = planner_chat({})
     chat.responders[AiTask.RELEVANCE_GATE] = lambda _: {"verdicts": "?"}
@@ -445,8 +387,5 @@ def test_a_refused_plan_fails_the_run_with_its_own_code(sent: list[tuple[Any, ..
         jobs.run_leased_job(_threats_task(), Collection.SESSIONS, record_id, 1, plan, fields=PLAN_JOB_FIELDS)
     run = _stored_run(record_id)
     assert run["status"] == Status.FAILED and "active" not in run and "plan" not in run
-    assert run["job"]["error"] == {
-        "code": ErrorCode.ACTOR_LIBRARY_EMPTY,
-        "message": PlanMessage.ACTOR_LIBRARY_EMPTY,
-    }
+    assert run["job"]["error"] == {"code": ErrorCode.ACTOR_LIBRARY_EMPTY, "message": PlanMessage.ACTOR_LIBRARY_EMPTY}
     assert sent == []

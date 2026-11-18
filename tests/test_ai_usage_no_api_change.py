@@ -33,11 +33,16 @@ def test_every_existing_data_shape_is_unchanged() -> None:
     assert changed == [], f"existing request or response shapes changed: {changed}"
 
 
-def test_the_ai_usage_routes_are_the_only_new_ones() -> None:
+def test_only_the_approved_routes_are_new() -> None:
     added = sorted(set(_current()["paths"]) - set(FROZEN["paths"]))
     assert added == [
         "/v1/ai-usage",
         "/v1/ai-usage/calls",
         "/v1/ai-usage/requests",
         "/v1/ai-usage/requests/{request_id}",
+        "/v1/create_session",
+        "/v1/tsg/intel/control-links",
+        "/v1/tsg/intel/control-links/prepare",
+        "/v1/tsg/intel/control-links/{job_id}",
+        "/v1/tsg/intel/schedule",
     ]

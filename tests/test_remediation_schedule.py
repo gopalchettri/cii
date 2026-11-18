@@ -4,7 +4,7 @@ from datetime import date
 from typing import Any
 
 from app.core.constants import PlanWarning, Remediation
-from app.domain.remediation.schedule import schedule_plan
+from app.domain.remediation.write import schedule_plan
 
 WINDOW = {"timeline_start_date": "2026-10-01", "timeline_end_date": "2026-12-31", "total_days": 92}
 
@@ -86,9 +86,7 @@ def test_a_start_alone_dates_the_plan_with_no_deadline_and_no_warning() -> None:
 def test_durations_and_dependencies_are_repaired_with_one_warning_each() -> None:
     """Below 1 → 1 day, above the limit → capped; a forward, self or unknown reference is dropped with one
     warning per distinct reference."""
-    plan = _plan(
-        _act("A1", 0, ("A2", "A2")), _act("A2", 5000, ("A2",)), _act("A3", 3, ("Z9",)), _act("A4", 2, ("A1",))
-    )
+    plan = _plan(_act("A1", 0, ("A2", "A2")), _act("A2", 5000, ("A2",)), _act("A3", 3, ("Z9",)), _act("A4", 2, ("A1",)))
     warnings = schedule_plan(plan, _snapshot(window=None))
     limit = Remediation.MAX_ACTION_DAYS
     assert sorted(warnings) == sorted(
@@ -120,11 +118,7 @@ def test_a_repeated_action_id_belongs_to_its_first_holder() -> None:
     warnings = schedule_plan(plan, _snapshot())
     assert warnings == [PlanWarning.ACTION_ID_REPEATED.format(action="A1", action_id="A1", position=0)]
     waiting = plan["remediation_action_plan"][2]
-    assert (waiting["depends_on"], waiting["start_date"], waiting["end_date"]) == (
-        ["A1"],
-        "2026-10-03",
-        "2026-10-06",
-    )
+    assert (waiting["depends_on"], waiting["start_date"], waiting["end_date"]) == (["A1"], "2026-10-03", "2026-10-06")
 
 
 def test_a_plan_past_its_window_says_by_how_many_days() -> None:
@@ -156,9 +150,6 @@ def test_dates_past_the_calendar_are_clamped_with_a_warning() -> None:
     warnings = schedule_plan(plan, _snapshot(window=window))
     assert plan["remediation_action_plan"][1]["end_date"] == date.max.isoformat()
     clamped = PlanWarning.PAST_CALENDAR.format(
-        total=7300,
-        anchor=anchor.isoformat(),
-        fit=f"{(date.max - anchor).days + 1} days",
-        last=date.max.isoformat(),
+        total=7300, anchor=anchor.isoformat(), fit=f"{(date.max - anchor).days + 1} days", last=date.max.isoformat()
     )
     assert clamped in warnings

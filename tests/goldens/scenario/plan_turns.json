@@ -32,9 +32,6 @@
    "spoofing": 11,
    "tampering": 12
   },
-  "library_stamp": {
-   "Threat_Catalogue": "01"
-  },
   "library_threats": 7,
   "plan": {
    "paths": [
@@ -197,7 +194,6 @@
      "unselected_reason": "target_reached"
     }
    ],
-   "prompt_version": "planner-2",
    "target": 4,
    "threats": [
     {
@@ -455,20 +451,7 @@
     }
    ],
    "drops_total": 1,
-   "groups": {
-    "Historian": 2,
-    "Operator HMI": 1,
-    "SCADA server + Historian": 1,
-    "SCADA server + Operator HMI": 1,
-    "the asset itself": 1
-   },
-   "landscape_cut": false,
-   "turns": {
-    "Historian": 2,
-    "Operator HMI": 2,
-    "SCADA server": 1,
-    "the asset itself": 1
-   }
+   "landscape_cut": false
   }
  }
 }

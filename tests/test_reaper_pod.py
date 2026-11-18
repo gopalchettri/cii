@@ -46,10 +46,7 @@ def test_worker_reaper_runs_in_ai_common_on_tsg_reaper_alone() -> None:
     command = container["command"]
     assert command[:4] == ["celery", "-A", "app.worker", "worker"] and "--pool=threads" in command
     assert command[command.index("-Q") + 1] == Queue.REAPER
-    assert container["envFrom"] == [
-        {"configMapRef": {"name": "tsg-config"}},
-        {"secretRef": {"name": "tsg-secrets"}},
-    ]
+    assert container["envFrom"] == [{"configMapRef": {"name": "tsg-config"}}, {"secretRef": {"name": "tsg-secrets"}}]
     for probe, expected in WORKER_PROBES.items():  # the heartbeat's file, no Redis: as every worker
         assert container[probe]["exec"]["command"] == expected, probe
     assert container["securityContext"] == HARDENED
@@ -59,9 +56,7 @@ def test_worker_reaper_reaches_only_dns_redis_and_mongodb_and_only_prometheus_re
     """Once a rule selects the pod, everything not listed is blocked: no proxy, AI gateway or SQL Server."""
     rules = _reaper_rules()
     reachable, dns_only = set(), []
-    egress = [
-        r for policy in rules if "Egress" in policy["spec"]["policyTypes"] for r in policy["spec"]["egress"]
-    ]
+    egress = [r for policy in rules if "Egress" in policy["spec"]["policyTypes"] for r in policy["spec"]["egress"]]
     for rule in egress:
         ports = {(port["port"], port["protocol"]) for port in rule["ports"]}
         if "to" not in rule:
@@ -70,9 +65,7 @@ def test_worker_reaper_reaches_only_dns_redis_and_mongodb_and_only_prometheus_re
             reachable |= {(peer["ipBlock"]["cidr"], port) for peer in rule["to"] for port, _ in ports}
     assert dns_only == [DNS]
     assert reachable == {REDIS, MONGODB}
-    ingress = [
-        r for policy in rules if "Ingress" in policy["spec"]["policyTypes"] for r in policy["spec"]["ingress"]
-    ]
+    ingress = [r for policy in rules if "Ingress" in policy["spec"]["policyTypes"] for r in policy["spec"]["ingress"]]
     assert ingress == [
         {
             "from": [{"podSelector": {"matchLabels": {"part-of": "tsg-monitoring"}}}],  # Prometheus, here

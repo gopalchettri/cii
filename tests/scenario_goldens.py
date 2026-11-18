@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import BaseModel
 
 from app.core.constants import AiTask, StrideCategory
-from app.models.library.library import LibraryActor, LibraryThreat, ThreatLibrary
+from app.schemas.library import LibraryActor, LibraryThreat, ThreatLibrary
 from tests.fakes import FakeChatModel, FakeEmbeddings, FakeRerankModel, items_in
 
 GOLDENS = pathlib.Path(__file__).parent / "goldens" / "scenario"
@@ -119,12 +119,8 @@ def gate_by_spec(spec: dict[str, dict[str, Any]]) -> Any:
                 "confidence": found.pop("confidence", 80),
                 "likelihood": found.pop("likelihood", "MEDIUM"),
                 "needs": found.pop("needs", []),
-                "attacker": found.pop(
-                    "attacker", candidate["attackers"][0] if candidate["attackers"] else ""
-                ),
-                "attacker_reason": found.pop(
-                    "attacker_reason", "It could reach SYS1 from the office network."
-                ),
+                "attacker": found.pop("attacker", candidate["attackers"][0] if candidate["attackers"] else ""),
+                "attacker_reason": found.pop("attacker_reason", "It could reach SYS1 from the office network."),
             }
             verdicts.append(verdict | found)
         return {"verdicts": verdicts}

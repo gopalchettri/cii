@@ -1,5 +1,4 @@
-"""Background job of the library: keep the search indexes built (maintenance queue), every 30 minutes and
-when an admin asks for it now (#18, an embeddings build with its own job record)."""
+"""The library's search indexes, built every 30 minutes and on an admin's request (#18)."""
 
 from typing import Any
 
@@ -7,36 +6,32 @@ from celery.exceptions import Ignore
 
 from app.core.clock import utc_now
 from app.core.constants import LIBRARY_OF_CORPUS, AuditAction, AuditTarget, Status, TaskName
-from app.data_access.admin.admin_job_repository import AdminJobLease, AdminJobRepository
-from app.data_access.admin.audit_repository import AuditRepository
-from app.data_access.admin.embedding_repository import EmbeddingRepository
+from app.core.exceptions import job_error_of
+from app.crud.admin_jobs import AdminJobRepository, get_admin_job_repository
+from app.crud.audit import AuditRepository, get_audit_repository
+from app.crud.embeddings import EmbeddingRepository, get_embedding_repository
 from app.domain.shared.audit import audit_target
-from app.search.library_cache import LibraryCache
-from app.search.service import LibrarySearch
+from app.search.library_cache import LibraryCache, get_library_cache
+from app.search.service import LibrarySearch, get_library_search
 from app.search.snapshot import LibrarySnapshot
 from app.worker.celery_app import celery_app, current_worker
-from app.worker.jobs import job_error_of
 from app.worker.lease_renewal import keep_lease_alive
 
 
 @celery_app.task(name=TaskName.BUILD_LIBRARY_INDEXES)
 def build_library_indexes(job_id: str | None = None) -> None:
-    """Compute vectors for new or edited library rows now (every Cache.LIBRARY_INDEXES_EVERY_SECONDS), so the
-    first run after a library edit does not wait for them. Unchanged rows are read from the vector store.
-    Waits for the build (searches never do), so a failed build fails this job and is counted. With `job_id`
-    (an admin's build, #18) the job record says how it went."""
-    from app import container
+    """Build vectors for new or edited library rows; with `job_id` (an admin's build) its record says how."""
 
     if job_id is None:
-        container.get_library_search().snapshot(wait=True)
+        get_library_search().snapshot(wait=True)
         return
     run_embeddings_job(
         job_id,
-        container.get_admin_job_repository(),
-        container.get_library_cache(),
-        container.get_library_search(),
-        container.get_embedding_repository(),
-        container.get_audit_repository(),
+        get_admin_job_repository(),
+        get_library_cache(),
+        get_library_search(),
+        get_embedding_repository(),
+        get_audit_repository(),
     )
 
 
@@ -48,17 +43,12 @@ def run_embeddings_job(
     vectors: EmbeddingRepository,
     audit: AuditRepository,
 ) -> None:
-    """Reads the library now (an edit made a moment ago is built now, not after the next stamp check), builds
-    every library's vectors, and records the row counts and how many vectors were made while it ran, its
-    heartbeat beating meanwhile. A failure (SQL Server unreachable while reading the library included: never
-    "done" on the old library) is recorded, then raised (counted like any failed job). Audited only when this
-    job ended the record: one cancelled or taken over as abandoned keeps that outcome, and its failure ends
-    the delivery as Ignore (never counted)."""
+    """Reload the library, build its vectors and record the counts; a failure is recorded, then raised."""
     started_at = utc_now()
     if not jobs.update_admin_job_running(job_id, started_at, **current_worker()):
         return  # done, failed or taken over already: a late or repeated message
     try:
-        with keep_lease_alive(AdminJobLease(jobs, job_id), watch_progress=False):
+        with keep_lease_alive(job_id, lambda: jobs.renew_admin_job(job_id, utc_now()) or True):  # never lost
             library.reload_if_library_changed()  # raises, unlike the background check: the job must say so
             snapshot = search.snapshot(wait=True)
             made = vectors.count_library_vectors_made_since(started_at)
@@ -77,7 +67,7 @@ def run_embeddings_job(
 
 
 def library_counts(snapshot: LibrarySnapshot) -> dict[str, int]:
-    """How many rows each library holds now, each with its vector."""
+    """How many rows each library holds now."""
     threat_library = snapshot.library.threat_library
     return {
         "threats": len(threat_library.threats),

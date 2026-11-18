@@ -1,4 +1,4 @@
-"""Promoting an accepted AI-proposed threat to the library (#27; BUILD_PLAN S42): T-SCN-28..30, T-LIB-07..09.
+"""Promoting an accepted AI-proposed threat to the library (#27): T-SCN-28..30, T-LIB-07..09.
 The library is the SQL test database (tests/sql_test_database.py); runs and scenarios are written straight
 into the test MongoDB."""
 
@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 
-from app import container
 from app.core.constants import (
     AuditAction,
     Collection,
@@ -19,16 +18,18 @@ from app.core.constants import (
     Decision,
     Header,
     PromotionOutcome,
+    ResolveOutcome,
     ScenarioStatus,
     Status,
     Step,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.models.library.library import ThreatProposal
-from tests.service_builders import threat_scenario_service
+from app.crud import admin as admin_crud
+from app.crud.library import SqlOperationRepository, ThreatRepository
+from app.domain.scenario import runs as scenario_runs
+from app.schemas.library import ProposedThreat, ThreatProposal
+from tests.service_builders import use_scenario_parts
 
 #: The person promoting in these tests: the library rows they create carry it (CreatedBy).
 REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"
@@ -36,12 +37,14 @@ REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"
 
 @pytest.fixture(scope="module")
 def api_key() -> str:
-    _, key = container.get_admin_service().create_api_client(f"promote-{uuid.uuid4().hex[:8]}", None, "test")
+    _, key = admin_crud.create_api_client(get_mongodb(), f"promote-{uuid.uuid4().hex[:8]}", None, "test")
     return key
 
 
 @pytest.fixture
-def proposals(client: TestClient, sql_test_engine: Engine) -> Iterator[list[ThreatProposal]]:
+def proposals(
+    client: TestClient, sql_test_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[ThreatProposal]]:
     """The promote service on the SQL test database; every proposal that reaches SQL Server, recorded."""
     procedures = StoredProcedureClient(sql_test_engine)
     repository = ThreatRepository(procedures, SqlOperationRepository(procedures))
@@ -54,11 +57,8 @@ def proposals(client: TestClient, sql_test_engine: Engine) -> Iterator[list[Thre
         return propose(operation_id, proposal)
 
     repository.propose_threat = recorded  # type: ignore[method-assign]
-    service = threat_scenario_service(threats=repository, threat_library=lambda: library)
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    overrides[container.get_threat_scenario_service] = lambda: service
+    use_scenario_parts(monkeypatch, threats=repository, threat_library=lambda: library)
     yield sent
-    overrides.pop(container.get_threat_scenario_service, None)
     _remove_promoted_rows(sql_test_engine)
 
 
@@ -84,17 +84,10 @@ def _identity(api_key: str, entity_id: int = 86) -> dict[str, str]:
     }
 
 
-def _accepted(
-    threat_name: str, ai_generated: bool = True, decision: Decision = Decision.ACCEPTED
-) -> tuple[str, str]:
+def _accepted(threat_name: str, ai_generated: bool = True, decision: Decision = Decision.ACCEPTED) -> tuple[str, str]:
     """A run whose plan holds one threat under the live type "Malicious code", and its scenario."""
     record_id, scenario_id, key = uuid.uuid4().hex, uuid.uuid4().hex, f"ai:{uuid.uuid4().hex[:8]}"
-    threat = {
-        "key": key,
-        "name": threat_name,
-        "type": {"id": 2, "name": "Malicious code"},
-        "category": "Tampering",
-    }
+    threat = {"key": key, "name": threat_name, "type": {"id": 2, "name": "Malicious code"}, "category": "Tampering"}
     get_mongodb()[Collection.SESSIONS].insert_one(
         {"_id": record_id, "entity_id": 86, "asset_id": 1, "status": Status.DONE, "step": Step.SCENARIOS,
          "job": {"epoch": 1}, "plan": {"threats": [threat]}, "updated_at": datetime.now(UTC)}
@@ -129,9 +122,7 @@ def test_promoting_twice_inserts_one_pending_threat_and_audits_once(
     assert proposals[0].created_by == REVIEWER and proposals[0].actor_ids == (1,)
     with sql_test_engine.connect() as connection:
         row = connection.execute(
-            text(
-                "SELECT IsActive, IsDeleted, Source FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = :id"
-            ),
+            text("SELECT IsActive, IsDeleted, Source FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = :id"),
             {"id": result["threat_catalogue_id"]},
         ).one()
     assert tuple(row) == (False, False, "ai")
@@ -177,6 +168,31 @@ def test_only_an_accepted_ai_threat_of_the_callers_run_is_promoted(
     assert proposals == []
 
 
+@pytest.mark.parametrize(
+    ("answered", "shown"),
+    [
+        (ResolveOutcome.CREATED_PENDING, PromotionOutcome.INSERTED),
+        (ResolveOutcome.CURATOR_REJECTED, PromotionOutcome.CURATOR_REJECTED),
+        (ResolveOutcome.EXISTING_ACTIVE, PromotionOutcome.EXISTING),
+        (ResolveOutcome.EXISTING_PENDING, PromotionOutcome.EXISTING),
+    ],
+)
+def test_the_librarys_answer_is_the_promotion_outcome(
+    client: TestClient,
+    api_key: str,
+    proposals: list[ThreatProposal],
+    monkeypatch: pytest.MonkeyPatch,
+    answered: ResolveOutcome,
+    shown: PromotionOutcome,
+) -> None:
+    """A name the in-memory library does not hold yet: SQL Server's answer decides the outcome."""
+    record_id, scenario_id = _accepted(f"A threat the library answers {uuid.uuid4().hex[:6]}")
+    answer = (ProposedThreat(type_id=2, catalogue_id=99, outcome=answered), True)
+    monkeypatch.setattr(scenario_runs.get_threat_repository(), "propose_threat", lambda *args: answer)
+    result = _promote(client, api_key, record_id, scenario_id).json()["results"][0]
+    assert result["outcome"] == shown
+
+
 def test_sql_server_down_records_nothing(
     client: TestClient, api_key: str, proposals: list[ThreatProposal], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -186,9 +202,7 @@ def test_sql_server_down_records_nothing(
     def down(operation_id: str, proposal: ThreatProposal) -> Any:
         raise Unavailable("SQL down")
 
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    service = overrides[container.get_threat_scenario_service]()
-    monkeypatch.setattr(service._threats, "propose_threat", down)
+    monkeypatch.setattr(scenario_runs.get_threat_repository(), "propose_threat", down)
     answer = _promote(client, api_key, record_id, scenario_id)
     assert answer.status_code == 503 and "Retry-After" in answer.headers
     assert "library_promotion" not in get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})

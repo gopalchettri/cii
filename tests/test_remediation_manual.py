@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
-from app import container
 from app.core.config import get_settings
 from app.core.constants import (
     AiOutage,
@@ -24,7 +23,6 @@ from app.core.constants import (
     Header,
     Lease,
     LibraryStatus,
-    RemediationMessage,
     ResolveOutcome,
     RunKind,
     StrideCategory,
@@ -32,14 +30,13 @@ from app.core.constants import (
 )
 from app.core.database import StoredProcedureClient, get_mongodb
 from app.core.exceptions import Unavailable
-from app.data_access.library.sql_operation_repository import SqlOperationRepository
-from app.data_access.library.threat_repository import ThreatRepository
-from app.data_access.scenario.asset_repository import AssetRepository
-from app.data_access.scenario.threat_scenario_session_repository import ThreatScenarioSessionRepository
-from app.domain.remediation.manual import manual_ids, manual_request_fingerprint
-from app.models.library.library import LibraryControl
-from app.models.remediation.requests import SYSTEM_LISTS, PlanRequest
-from app.services.remediation.remediation_plan_service import RemediationPlanService
+from app.crud import scenarios as scenario_crud
+from app.crud.library import SqlOperationRepository, ThreatRepository
+from app.crud.remediation import get_remediation_repository
+from app.crud.scenarios import ThreatScenarioSessionRepository
+from app.domain.remediation.plans import manual_ids, manual_request_fingerprint
+from app.schemas.library import LibraryControl
+from app.schemas.remediation import SYSTEM_LISTS, PlanRequest
 from tests.plan_addresses import plan_url
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
     CONTROLS,
@@ -72,27 +69,25 @@ BODY = {
 }
 
 
-def _manual_service(
-    world: dict[str, Any], engine: Engine, controls: tuple[LibraryControl, ...]
-) -> RemediationPlanService:
-    """The remediation service on the SQL test database's assets, a library of `controls` and the world's
-    send and publish fakes."""
+def _manual_service(world: dict[str, Any], controls: tuple[LibraryControl, ...]) -> dict[str, Any]:
+    """The remediation service on a library of `controls` and the world's send and publish fakes."""
     return remediation_plan_service(
         library=fake_library(controls),
-        assets=AssetRepository(StoredProcedureClient(engine)),
         send_job=lambda *args: world["sent"].append(args[:3]),  # its priority: test_remediation_busy_entity
         publish_remediation_status=world["published"].append,
     )
 
 
 @pytest.fixture
-def manual(client: TestClient, world: dict[str, Any], sql_test_engine: Engine) -> Iterator[dict[str, Any]]:
+def manual(
+    client: TestClient, world: dict[str, Any], sql_test_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Any]]:
     """`world` with its service on the SQL test database's asset 103 (entity 86), and that `engine`."""
     world["engine"] = sql_test_engine
-    built = _manual_service(world, sql_test_engine, tuple(CONTROLS.values()))
-    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: built  # type: ignore[attr-defined]
+    monkeypatch.setattr(scenario_crud, "get_stored_procedure_client", lambda: StoredProcedureClient(sql_test_engine))
+    built = _manual_service(world, tuple(CONTROLS.values()))
+    world["plans"] = built
     yield world
-    client.app.dependency_overrides.pop(container.get_remediation_plan_service, None)  # type: ignore[attr-defined]
 
 
 def _post(client: TestClient, key: str, body: dict[str, Any], idempotency_key: str | None) -> Any:
@@ -142,9 +137,7 @@ def _assessed(answer: Any, manual: dict[str, Any]) -> tuple[str, list[str], list
     manual["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
     deliver(answer.json()["remediation_id"])
     (row,) = _plan(answer.json()["remediation_id"])["versions"][0]["plan"]["control_assessment"]
-    on, needed = (
-        [system["name"] for system in row[key]] for key in ("protected_systems", "required_systems")
-    )
+    on, needed = ([system["name"] for system in row[key]] for key in ("protected_systems", "required_systems"))
     return row["implementation_status"], on, needed
 
 
@@ -157,16 +150,16 @@ def test_the_lists_name_the_assets_systems_and_a_refusal_saves_nothing(
     control CII-CID-1 is still needed on the station. On the station while the risk is on the historian
     alone, they are accepted too, and only the overlap counts: none."""
     key = uuid.uuid4().hex
-    for wrong, field in (
-        (_on(322, 322, 323), "existing_controls[2]"),
-        (_on(322, risk=(321, 321, 323)), "risk[2]"),
-    ):
+    for wrong, field in ((_on(322, 322, 323), "existing_controls[2]"), (_on(322, risk=(321, 321, 323)), "risk[2]")):
         refused = _post(client, api_key, wrong, key)
         assert refused.status_code == 422, refused.text
         assert refused.json()["errors"] == [
             {
                 "field": f"body.supporting_systems_applicable_to_{field}",
-                "message": RemediationMessage.SYSTEM_NOT_OF_ASSET.format(system_id=323, known="321, 322"),
+                "message": (
+                    "{system_id} is not a supporting system of this scenario's asset (its systems "
+                    "when its run started: {known})."
+                ).format(system_id=323, known="321, 322"),
             }
         ]
     assert _runs_with_key(key) == 0
@@ -230,11 +223,7 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert (planned["is_manual"], planned["replayed"]) == (True, False)
     assert (planned["session_id"], planned["scenario_id"]) == manual_ids(86, key)
     scenario = _scenario(planned["scenario_id"])
-    assert (scenario["content"]["actors"], scenario["pending"]["actors"], manual["search"].queries) == (
-        [],
-        True,
-        [],
-    )
+    assert (scenario["content"]["actors"], scenario["pending"]["actors"], manual["search"].queries) == ([], True, [])
     assert _plan(planned["remediation_id"])["versions"][0]["snapshot"] is None
     run = get_mongodb()[Collection.SESSIONS].find_one({"_id": planned["session_id"]})
     assert (run["kind"], run["counts"]["accepted"]) == (RunKind.MANUAL, 1)
@@ -262,14 +251,9 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     assert manual["search"].queries == [f"Malware: Firmware tampering. {words}"]  # the address redacted
     version = _plan(planned["remediation_id"])["versions"][0]
     assert version["status"] == "done" and version["snapshot"]["threat"]["actors"][0]["role"] == "acting"
-    given = (
-        version["snapshot"]["existing_controls"]["library_mapped"][0],
-        version["plan"]["control_assessment"][0],
-    )
+    given = (version["snapshot"]["existing_controls"]["library_mapped"][0], version["plan"]["control_assessment"][0])
     assert [row["match"] for row in given] == ["given", "given"]  # as the scenario shows it
-    assert (
-        '"match":"exact"' in manual["chat"].asked(AiTask.REMEDIATION_PLAN)[-1]
-    )  # the AI knows exact, nearest
+    assert '"match":"exact"' in manual["chat"].asked(AiTask.REMEDIATION_PLAN)[-1]  # the AI knows exact, nearest
     assert manual["mapper"].asked == [] and manual["proposals"] == []  # its controls given, its threat live
     listed = client.get("/v1/entities/86/scenarios", headers=IDENTITY | {Header.API_KEY: api_key})
     assert planned["scenario_id"] in [row["scenario_id"] for row in listed.json()["scenarios"]]
@@ -280,8 +264,7 @@ def test_a_hand_written_scenario_is_saved_planned_and_replayed(
     )
     assert (regenerate.status_code, regenerate.json()["errors"][0]["reason"]) == (409, "hand_written")
     next_set = client.post(
-        f"/v1/sessions/{planned['session_id']}/scenarios/next-set",
-        headers=IDENTITY | {Header.API_KEY: api_key},
+        f"/v1/sessions/{planned['session_id']}/scenarios/next-set", headers=IDENTITY | {Header.API_KEY: api_key}
     )
     assert next_set.status_code == 409
 
@@ -304,12 +287,10 @@ def test_a_key_names_one_request(
     )  # fmt: skip
     taken = _post(client, api_key, new_wording, generated)
     assert (taken.status_code, taken.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
-    sessions = container.get_threat_scenario_session_repository()
+    sessions = scenario_crud.get_threat_scenario_session_repository()
     real_get = sessions.get
     monkeypatch.setattr(
-        sessions,
-        "get",
-        lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where),
+        sessions, "get", lambda fields=None, **where: None if fields == "replay" else real_get(fields, **where)
     )  # the parallel request looked for the key before the first saved
     parallel = _post(client, api_key, another, key)
     assert (parallel.status_code, parallel.json()["reason"]) == (409, ConflictReason.IDEMPOTENCY_KEY_CONFLICT)
@@ -331,9 +312,7 @@ def test_a_new_wording_is_proposed_once_by_the_plan_job_and_a_rejected_one_never
     proposal = manual["proposals"][0]
     found = (proposal.category, proposal.type_name, proposal.actor_ids, proposal.source, proposal.created_by)
     assert found == (StrideCategory.TAMPERING, "Malware", (), "manual", "u1")
-    audit = get_mongodb()[Collection.AUDIT].find_one(
-        {"action": AuditAction.LIBRARY_PROPOSED, "target.id": "901"}
-    )
+    audit = get_mongodb()[Collection.AUDIT].find_one({"action": AuditAction.LIBRARY_PROPOSED, "target.id": "901"})
     assert audit is not None and audit["actor"]["user_id"] == "u1"
     headers = IDENTITY | {Header.API_KEY: api_key}
     url = plan_url(request["remediation_id"], "regenerate")
@@ -383,8 +362,7 @@ def test_nothing_is_saved_when_a_property_is_missing_or_the_control_library_is_e
     assert (refused.status_code, refused.json()["reason"]) == (422, "required_facts_missing")
     assert refused.json()["errors"][0]["field"] == "body.manual_scenario.supporting_system_id.1"
     assert _runs_with_key(key) == 0 and manual["proposals"] == []
-    empty = _manual_service(manual, manual["engine"], ())
-    client.app.dependency_overrides[container.get_remediation_plan_service] = lambda: empty  # type: ignore[attr-defined]
+    manual["plans"] = _manual_service(manual, ())
     refused = _post(client, api_key, _with(mapped_controls=None), key)
     assert (refused.status_code, refused.json()["reason"]) == (409, ErrorCode.CONTROL_LIBRARY_EMPTY)
     assert _runs_with_key(key) == 0
@@ -446,7 +424,7 @@ def test_the_same_request_after_an_outage_writes_the_plan_again_and_after_anothe
     again = _post(client, api_key, BODY, key)
     assert (again.status_code, again.json()) == (200, replayed)
     _failed_for_outage(manual, remediation_id)
-    plans = container.get_remediation_repository()
+    plans = get_remediation_repository()
     real_retry = plans.retry_remediation_plan_version
 
     def retried_by_another_repeat(*args: Any) -> bool:

@@ -29,11 +29,7 @@ PAGE_SIZE = 500  # the reports' largest page
 WINDOW_SECONDS = 60  # the gateway's tokens- and requests-a-minute window
 REFUSED = "unavailable"  # refused (429) or unreachable: no such call once the limit fits the load
 NOT_SENT = "reused"  # an earlier answer used again: nothing was sent
-SETTING_MODULES = {
-    "threat_scenarios": "SCENARIO",
-    "remediation": "REMEDIATION",
-    "service_mapper": "SERVICE_MAPPER",
-}
+SETTING_MODULES = {"threat_scenarios": "SCENARIO", "remediation": "REMEDIATION", "service_mapper": "SERVICE_MAPPER"}
 TIMEOUT_SECONDS = 60
 
 
@@ -69,9 +65,7 @@ def calls_of(rows: list[dict], caps: dict[str, int]) -> list[Call]:
         held = tokens_in + max(cap, tokens_out) if tokens_in else tokens_out
         model = (row.get("model") or "").rsplit("/", 1)[-1]
         start = end - (row.get("seconds") or 0.0)
-        calls.append(
-            Call(row["task"], model, row["outcome"] != REFUSED, tokens_in, tokens_out, held, start, end)
-        )
+        calls.append(Call(row["task"], model, row["outcome"] != REFUSED, tokens_in, tokens_out, held, start, end))
     return sorted(calls, key=lambda call: call.start)
 
 
@@ -187,9 +181,7 @@ def all_pages(client: httpx.Client, path: str, params: dict[str, str]) -> list[d
     items: list[dict] = []
     after = None
     while True:
-        page = client.get(
-            path, params={**params, "limit": str(PAGE_SIZE), **({"after": after} if after else {})}
-        )
+        page = client.get(path, params={**params, "limit": str(PAGE_SIZE), **({"after": after} if after else {})})
         page.raise_for_status()
         body = page.json()
         items += body["items"]
@@ -209,9 +201,7 @@ def sampled_requests(client: httpx.Client, since: str, per_api: int) -> dict[tup
     return found
 
 
-def report_lines(
-    client: httpx.Client, since: str, per_api: int, users: int, caps: dict[str, int]
-) -> list[str]:
+def report_lines(client: httpx.Client, since: str, per_api: int, users: int, caps: dict[str, int]) -> list[str]:
     """The whole report: one section per API, then the headline."""
     lines, needs = [f"AI capacity from requests since {since}, as the gateway counts them", ""], []
     for (module, api, label), ids in sorted(sampled_requests(client, since, per_api).items()):

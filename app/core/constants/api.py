@@ -22,9 +22,7 @@ class ErrorCode(StrEnum):
     AI_ANSWER_UNUSABLE = "ai_answer_unusable"  # no retry can fix it: the model profile or provider is wrong
     AI_MISCONFIGURED = "ai_misconfigured"  # the gateway refused the key, permission or model name
     LIBRARY_RECORD_RETIRED = "library_record_retired"  # a path's threat or attacker retired after planning
-    EVIDENCE_NOT_FOUND = (
-        "evidence_not_found"  # intelligence on and no evidence: a reserve path may replace it
-    )
+    EVIDENCE_NOT_FOUND = "evidence_not_found"  # intelligence on and no evidence: a reserve path may replace it
     SCENARIO_BLOCKED = "scenario_blocked"  # a regenerated version broke a fixed rule
     SETUP_ERROR = "setup_error"  # the server is set up wrongly: the operator fixes it, a retry cannot
 
@@ -55,11 +53,8 @@ class ErrorMessage(StrEnum):
     AI_ANSWER_TRUNCATED = "The AI answer for '{task}' from '{model}' was cut off at its length limit."
     AI_PROMPT_TOO_LONG = "The prompt for '{task}' has {chars} characters; the model takes at most {limit}."
     AI_BUSY = "Every AI slot stayed busy for {seconds} s. Try again shortly."
-    RERANK_BUSY = "The evidence reranker stayed busy for {seconds} s."
     MODEL_PROFILE_MISSING = "No profile for AI model '{model}': add it to app/ai/profiles.py or fix .env."
-    EMBEDDING_SIZE_MISMATCH = (
-        "Embedding model '{model}' returned {received} numbers per text, not {expected}."
-    )
+    EMBEDDING_SIZE_MISMATCH = "Embedding model '{model}' returned {received} numbers per text, not {expected}."
     AI_ANSWER_INCOMPLETE = "The {task} answer from '{model}' did not match its {expected} inputs one to one."
     EMBEDDING_NOT_FINITE = (
         "Embedding model '{model}' returned a vector with a missing, infinite or all-zero value: it cannot "
@@ -71,15 +66,10 @@ class ErrorMessage(StrEnum):
     )
     FIELDS_INVALID = "One or more fields are invalid."
     REQUEST_TOO_LARGE = "The request body is larger than the allowed {limit} bytes."
-    EVENT_HUB_SILENT = (
-        "Redis answered nothing for {seconds} s, not even PING: the live-update connection is lost."
-    )
+    EVENT_HUB_SILENT = "Redis answered nothing for {seconds} s, not even PING: the live-update connection is lost."
     JOB_ABANDONED = "The job stopped responding {attempts} times and was given up."
     JOB_NEVER_STARTED = "The job was sent {sends} times and never started, so it was given up."
     JOB_WAITED_TOO_LONG = "The job waited {minutes} minutes for another job to finish and was given up."
-    WORKER_METRICS_PORT_BUSY = (
-        "Worker metrics port {port} is in use: set CII_WORKER_METRICS_PORT to a free port."
-    )
     WORKER_POOL_UNSUPPORTED = (
         "Worker pool '{pool}' is not supported: start the worker with --pool=threads (or solo to debug)."
     )
@@ -92,8 +82,7 @@ class ErrorMessage(StrEnum):
         "or set CII_RERANK_BASE_URL to a reranker service."
     )
     PROXY_URL_WITHOUT_SCHEME = (
-        "CII_PROXY_URL must start with http:// or https://, for example http://10.61.192.2:8080 "
-        "(empty = none)."
+        "CII_PROXY_URL must start with http:// or https://, for example http://10.61.192.2:8080 (empty = none)."
     )
     COUNTRY_UNKNOWN = (
         "THREAT_CONTEXT_COUNTRY={value} is not a country this app knows the places of; set one of: {known}."
@@ -117,13 +106,10 @@ class ErrorMessage(StrEnum):
         "its permissions in the settings."
     )
     REGENERATE_BLOCKED = (
-        "The new version broke a fixed rule ({codes}): it is kept for audit only, "
-        "and this version stays current."
+        "The new version broke a fixed rule ({codes}): it is kept for audit only, and this version stays current."
     )
     UNEXPECTED = "Unexpected error. Quote the X-Request-Id header when reporting it."
-    JOB_UNEXPECTED = (
-        "Unexpected error. Quote run id {record_id} when reporting it."  # a job has no request id
-    )
+    JOB_UNEXPECTED = "Unexpected error. Quote run id {record_id} when reporting it."  # a job has no request id
     PROCEDURE_NOT_ALLOWED = "{procedure!r} is not a TSG stored procedure: only StoredProcedure members run."
     SQL_VALUE_REFUSED = "The library database refused a value as out of range or already present."
     SQL_PROCEDURE_BROKEN = (
@@ -206,8 +192,7 @@ class AuditAction(StrEnum):
     EXTERNAL_INTELLIGENCE_REFRESH_FAILED = "external_intelligence.refresh_failed"
     EXTERNAL_INTELLIGENCE_EVIDENCE_USED = "external_intelligence.evidence_used"  # one batch's search
     EXTERNAL_INTELLIGENCE_SWITCHED = "external_intelligence.switched"
-    EXTERNAL_INTELLIGENCE_SOURCE_REVOKED = "external_intelligence.source_revoked"  # records, vectors purged
-    EXTERNAL_INTELLIGENCE_SOURCE_APPROVED = "external_intelligence.source_approved"
+    EXTERNAL_INTELLIGENCE_SCHEDULE_CHANGED = "external_intelligence.schedule_changed"
 
 
 class AuditTarget(StrEnum):

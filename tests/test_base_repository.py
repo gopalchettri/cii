@@ -12,8 +12,8 @@ from structlog.testing import capture_logs
 from app.core.constants import Collection, LogEvent
 from app.core.database import get_mongodb
 from app.core.exceptions import DuplicateRecord
-from app.data_access.base import SCHEMA_VERSION_FIELD, MongoRepository
-from app.data_access.jobs.job_repository import JobRepository
+from app.crud.base import SCHEMA_VERSION_FIELD, MongoRepository
+from app.crud.jobs import JobRepository
 
 SCRATCH = "tsg_test_base_repository"
 
@@ -26,10 +26,7 @@ def records() -> Iterator[MongoRepository]:
         SCRATCH,
         indexes=[{"keys": "title", "name": "one_title", "unique": True}],
         ttl=[("expires_at", lambda: 3600)],
-        conditions={
-            "open": {"status": {"$ne": "done"}},
-            "scores_at_least": lambda score: {"score": {"$gte": score}},
-        },
+        conditions={"open": {"status": {"$ne": "done"}}, "scores_at_least": lambda score: {"score": {"$gte": score}}},
         field_lists={"summary": ["title", "score"]},
     )
     repository.create_indexes()
@@ -60,9 +57,7 @@ def test_create_returns_the_id_and_a_duplicate_names_its_index(records: MongoRep
 
 def test_save_inserts_replaces_and_honours_only_if(records: MongoRepository) -> None:
     assert records.save({"_id": "r1", "title": "first", "status": "new"}) is True
-    assert (
-        records.save({"_id": "r1", "title": "first again", "status": "done"}, only_if={"open": True}) is True
-    )
+    assert records.save({"_id": "r1", "title": "first again", "status": "done"}, only_if={"open": True}) is True
     assert records.get(_id="r1")["title"] == "first again"
     assert records.save({"_id": "r1", "title": "late", "status": "new"}, only_if={"open": True}) is False
     assert records.get(_id="r1")["title"] == "first again"  # a done record is never replaced
@@ -101,10 +96,7 @@ def test_a_named_condition_and_a_field_on_the_same_name_both_hold(records: Mongo
     _add(records, 1, status="done")
     _add(records, 2)
     assert records.count(status="done", open=True) == 0
-    assert records.filter({"status": "new", "open": True}) == {
-        "status": "new",
-        "$and": [{"status": {"$ne": "done"}}],
-    }
+    assert records.filter({"status": "new", "open": True}) == {"status": "new", "$and": [{"status": {"$ne": "done"}}]}
 
 
 def test_update_sets_fields_honours_only_if_and_many(records: MongoRepository) -> None:
@@ -154,9 +146,7 @@ def test_a_collection_may_be_passed_instead_of_a_name(records: MongoRepository) 
     assert MongoRepository(get_mongodb()[SCRATCH]).count(_id="r1") == 1
 
 
-def test_create_and_save_stamp_the_schema_version_and_a_record_without_one_reads_as_1(
-    records: MongoRepository,
-) -> None:
+def test_create_and_save_stamp_the_schema_version_and_a_record_without_one_reads_as_1(records: MongoRepository) -> None:
     records.create({"_id": "r1", "title": "first"})
     assert records.get(_id="r1")["schema_version"] == 1
     MongoRepository(records.collection, schema_version=2).save({"_id": "r1", "title": "again"})
@@ -237,9 +227,7 @@ def test_a_refused_validator_still_requiring_a_dropped_field_is_an_error_naming_
     server = _RefusingServer((*MAPPING_FIELDS[:4], "generation", "job"))
     logs = _start_up(server)
     assert len(server.commands) == 1
-    assert [(line["event"], line["log_level"]) for line in logs] == [
-        (LogEvent.MONGODB_VALIDATOR_STALE, "error")
-    ]
+    assert [(line["event"], line["log_level"]) for line in logs] == [(LogEvent.MONGODB_VALIDATOR_STALE, "error")]
     assert logs[0]["stale_fields"] == ["generation"]
     command = logs[0]["command"]
     assert command.startswith('db.runCommand({"collMod": "tsg_service_mappings"')

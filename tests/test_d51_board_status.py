@@ -9,7 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
-from app import container
 from app.core.constants import (
     AbandonReason,
     AiOutage,
@@ -30,11 +29,12 @@ from app.core.constants import RunOverall as Overall
 from app.core.constants import SessionState as Session
 from app.core.constants import StageState as S
 from app.core.database import get_mongodb
-from app.data_access.admin.admin_job_repository import AdminJobRepository
+from app.crud import scenarios as scenario_crud
+from app.crud.admin_jobs import AdminJobRepository
 from app.domain.scenario.session import build_status_board, count_plan_paths
-from app.domain.service_mapper.views import mapping_status
-from app.models.scenario.views import session_status_from_record
-from app.worker import jobs, reaper
+from app.domain.service_mapper.mappings import mapping_status
+from app.schemas.scenarios import session_status_from_record
+from app.worker import jobs
 from tests.fakes import FakeChatModel
 from tests.test_control_mapping import _controls_of, _waiting_scenario
 from tests.test_job_control import _run as _stored_run
@@ -145,8 +145,8 @@ def reaper_alone(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     published: list[str] = []
     for collection in list(jobs.JOB_COLLECTIONS):
         monkeypatch.setitem(jobs.JOB_COLLECTIONS, collection, published.append)
-    monkeypatch.setattr(reaper, "send_job", lambda *_args, **_priority: True)
-    monkeypatch.setattr(reaper, "count_waiting_messages", lambda _queue: 0)
+    monkeypatch.setattr(jobs, "send_job", lambda *_args, **_priority: True)
+    monkeypatch.setattr(jobs, "count_waiting_messages", lambda _queue: 0)
     return published
 
 
@@ -170,7 +170,7 @@ def test_the_reaper_stores_why_it_gave_each_job_up() -> None:
     never_started = _insert_job(Status.QUEUED, due_at=LONG_AGO, resends=Lease.MAX_ATTEMPTS)
     mapping = _mapping_running_out_of_attempts()
     with capture_logs() as logs:
-        reaper.reap_jobs()
+        jobs.reap_jobs()
     stored = {record_id: _records().find_one({"_id": record_id})["job"]["error"] for record_id in
               (worn_out, never_started)}  # fmt: skip
     assert {key: (error["code"], error.get("reason")) for key, error in stored.items()} == {
@@ -183,7 +183,7 @@ def test_the_reaper_stores_why_it_gave_each_job_up() -> None:
     board = build_status_board(session_status_from_record(_records().find_one({"_id": worn_out})))
     assert board.error is not None and board.error.reason == AbandonReason.WORKER_STOPPED
     assert board.progress.error_reason is None  # an AI outage's reason only
-    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}), 5)
+    shown = mapping_status(get_mongodb()[Collection.SERVICE_MAPPINGS].find_one({"_id": mapping}))
     assert shown.error is not None and shown.error.reason == AbandonReason.WORKER_STOPPED
 
 
@@ -220,10 +220,8 @@ def test_a_stale_admin_job_says_whether_it_ever_started() -> None:
 
 def test_controls_given_up_after_their_last_attempt_say_their_worker_stopped() -> None:
     expired = datetime.now(UTC) - timedelta(seconds=1)
-    run_id, scenario_id = _waiting_scenario(
-        status=Status.RUNNING, lease_until=expired, attempts=Controls.MAX_ATTEMPTS
-    )
-    assert run_id in container.get_threat_scenario_repository().fail_abandoned_controls(datetime.now(UTC))
+    run_id, scenario_id = _waiting_scenario(status=Status.RUNNING, lease_until=expired, attempts=Controls.MAX_ATTEMPTS)
+    assert run_id in scenario_crud.get_threat_scenario_repository().fail_abandoned_controls(datetime.now(UTC))
     error = _controls_of(scenario_id)["error"]
     assert (error["code"], error.get("reason")) == (ErrorCode.JOB_ABANDONED, AbandonReason.WORKER_STOPPED)
 
@@ -248,9 +246,7 @@ def test_the_plan_counts_a_path_an_ai_outage_cost_as_an_outage_card() -> None:
 
 
 def test_a_run_holding_an_outage_card_waits_for_its_regenerate() -> None:
-    board = build_status_board(
-        _run(**_written(planned=6, written=5, accepted=5, abandoned=1, outage_cards=1))
-    )
+    board = build_status_board(_run(**_written(planned=6, written=5, accepted=5, abandoned=1, outage_cards=1)))
     count = board.progress.scenario_count
     assert (board.progress.overall, count.remaining, count.complete) == (Overall.AWAITING_REVIEW, 0, False)
 
@@ -272,8 +268,6 @@ def test_a_path_given_up_after_its_last_ai_outage_keeps_the_run_awaiting_its_reg
     assert (run["status"], run["counts"]["remaining"], run["counts"]["outage_cards"]) == (Status.DONE, 0, 1)
     written = {"session_id": record_id, "status": ScenarioStatus.DONE}
     get_mongodb()[Collection.SCENARIOS].update_many(written, {"$set": {"decision": "accepted"}})
-    container.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)
-    progress = build_status_board(
-        session_status_from_record(_records().find_one({"_id": record_id}))
-    ).progress
+    scenario_crud.get_threat_scenario_session_repository().update_scenario_session_counts(record_id)
+    progress = build_status_board(session_status_from_record(_records().find_one({"_id": record_id}))).progress
     assert (progress.overall, progress.scenario_count.complete) == (Overall.AWAITING_REVIEW, False)

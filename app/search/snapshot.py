@@ -1,11 +1,8 @@
-"""One library snapshot and its searches. A run takes one snapshot and does every lookup on it, so a library
-edit made while it plans never mixes two library versions into one plan (v1 loaded its library once per
-round).
-
-Many queries at once: one embedding call for all of them (each query's vector is stored in MongoDB for a
-while), then in-memory ranking. No database or AI call otherwise."""
+"""One library snapshot and its searches: a run does every lookup on one, so a plan never mixes two library
+versions. Many queries share one embedding call, then rank in memory."""
 
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -13,80 +10,49 @@ import numpy as np
 from app.ai import EmbeddingModel
 from app.core.asset_types import asset_type_fits
 from app.core.constants import Controls, EmbeddingCorpus, StrideCategory
-from app.models.library.library import (
-    LibraryActor,
-    LibraryControl,
-    LibraryThreat,
-    LibraryThreatType,
-    LoadedLibraries,
-    ThreatLibrary,
-)
+from app.schemas import library as m
 from app.search.indexes import HybridIndex
 
 
-def linked_actors_by_type(library: ThreatLibrary) -> dict[int, tuple[LibraryActor, ...]]:
-    """The actors the library links to each type (ThreatType_ThreatActor_Map): a type's own record, else
-    what its live threats carry (G108: an AI threat takes those of the library type it matched)."""
+def describe_control(control: m.LibraryControl) -> str:
+    """The text a control is searched by: v1's "ControlName: ControlDescription"."""
+    return f"{control.name}: {control.description or ''}"
+
+
+def linked_actors_by_type(library: m.ThreatLibrary) -> dict[int, tuple[m.LibraryActor, ...]]:
+    """The actors linked to each type id: the type's own record, else its live threats'."""
     by_threat = {threat.type_id: threat.linked_actors for threat in library.threats}
     return by_threat | {threat_type.type_id: threat_type.linked_actors for threat_type in library.types}
 
 
-def threat_types_of(library: ThreatLibrary) -> tuple[LibraryThreatType, ...]:
-    """The types the live threats use, by id, each with the actors the library links to it: an AI proposal's
-    matched type lists them to the relevance gate, so its attacker is judged (owner 2026-10-17: "a
-    defensible relationship"), never only the nearest by similarity."""
+def threat_types_of(library: m.ThreatLibrary) -> tuple[m.LibraryThreatType, ...]:
+    """The types the live threats use, by id, each with the actors the library links to it."""
     linked = linked_actors_by_type(library)
     pairs = sorted({(threat.type_id, threat.type_name) for threat in library.threats})
-    return tuple(LibraryThreatType(*pair, linked_actors=linked.get(pair[0], ())) for pair in pairs)
+    return tuple(m.LibraryThreatType(*pair, linked_actors=linked.get(pair[0], ())) for pair in pairs)
 
 
+@dataclass(frozen=True, eq=False)
 class LibrarySnapshot:
-    """Built by app/search/service.py for each library version; never changed after that, so it is shared by
-    every thread."""
+    """One library version's searches; never changed once built, so every thread shares it."""
 
-    def __init__(
-        self,
-        library: LoadedLibraries,
-        embeddings: EmbeddingModel,
-        indexes: dict[EmbeddingCorpus, HybridIndex],
-        threat_types: tuple[LibraryThreatType, ...],
-    ) -> None:
-        self.library = library
-        self.threat_types = threat_types
-        self._embeddings = embeddings
-        self._indexes = indexes
-        threats = library.threat_library.threats
-        self._threats_in_category = {
-            category: np.array([category in threat.categories for threat in threats], dtype=bool)
-            for category in StrideCategory
-        }
-        used = {
-            category: {t.type_id for t in threats if category in t.categories} for category in StrideCategory
-        }
-        self._types_in_category = {
-            category: np.array(
-                [threat_type.type_id in used[category] for threat_type in threat_types], dtype=bool
-            )
-            for category in StrideCategory
-        }
+    library: m.LoadedLibraries
+    embeddings: EmbeddingModel
+    indexes: dict[EmbeddingCorpus, HybridIndex]
+    threat_types: tuple[m.LibraryThreatType, ...]
 
     def find_threats(
-        self,
-        queries: Sequence[tuple[str, StrideCategory]],
-        top_k: int,
-        allowed_types: Collection[str] | None = None,
-    ) -> list[list[tuple[LibraryThreat, float]]]:
-        """Each query ranks only its own category's threats, before the top-k cut; with `allowed_types`, only
-        those whose AssetType fits too (G211), as for controls. None = every threat of the category."""
+        self, queries: Sequence[tuple[str, StrideCategory]], top_k: int, allowed_types: Collection[str] | None = None
+    ) -> list[list[tuple[m.LibraryThreat, float]]]:
+        """Each query ranks only its category's threats, and with `allowed_types` fitting ones, before top-k."""
         threats = self.library.threat_library.threats
-        fits = (
-            np.ones(len(threats), dtype=bool)
-            if allowed_types is None
-            else np.array(
-                [asset_type_fits(threat.asset_type, allowed_types) for threat in threats], dtype=bool
+        fits = [allowed_types is None or asset_type_fits(threat.asset_type, allowed_types) for threat in threats]
+        scopes = [
+            np.array(
+                [fit and category in threat.categories for threat, fit in zip(threats, fits, strict=True)], dtype=bool
             )
-        )
-        scopes = [self._threats_in_category[category] & fits for _, category in queries]
+            for _, category in queries
+        ]
         texts = [query for query, _ in queries]
         return self._search(EmbeddingCorpus.THREAT, threats, texts, top_k, scopes)
 
@@ -97,10 +63,8 @@ class LibrarySnapshot:
         allowed_types: Collection[str] | None = None,
         *,
         ai_controls: bool = True,
-    ) -> list[list[tuple[LibraryControl, float]]]:
-        """`allowed_types`: the only AssetType values ranked (upper case), before the top-k cut, as categories
-        are for threats; a control with no AssetType always takes part. None = every control. `ai_controls`
-        False: no control of Controls.AI_DOMAIN takes part (G243: a card whose threat is not about AI)."""
+    ) -> list[list[tuple[m.LibraryControl, float]]]:
+        """Ranks only `allowed_types` controls (no AssetType always fits); no AI domain unless `ai_controls`."""
         controls = self.library.control_library
         if allowed_types is None and ai_controls:
             return self._search(EmbeddingCorpus.CONTROL, controls, queries, top_k)
@@ -117,17 +81,17 @@ class LibrarySnapshot:
 
     def embed_control_queries(self, queries: Sequence[str]) -> None:
         """Embed control queries in one call ahead of their searches, which then read the stored vectors."""
-        self._embeddings.embed_search_queries(list(queries), EmbeddingCorpus.CONTROL)
+        self.embeddings.embed_search_queries(list(queries), EmbeddingCorpus.CONTROL)
 
     def embed_gap_fill_queries(self, threats: Sequence[str], threat_types: Sequence[str]) -> None:
         """Embed gap-fill threats and types in one call each ahead of their per-category searches."""
         if threats:
-            self._embeddings.embed_search_queries(list(threats), EmbeddingCorpus.THREAT)
-            self._embeddings.embed_search_queries(list(threat_types), EmbeddingCorpus.THREAT_TYPE)
+            self.embeddings.embed_search_queries(list(threats), EmbeddingCorpus.THREAT)
+            self.embeddings.embed_search_queries(list(threat_types), EmbeddingCorpus.THREAT_TYPE)
 
     def find_actors(
         self, queries: Sequence[str], top_k: int, allowed_ids: Sequence[Collection[int] | None] | None = None
-    ) -> list[list[tuple[LibraryActor, float]]]:
+    ) -> list[list[tuple[m.LibraryActor, float]]]:
         """`allowed_ids[i]`: the only actors query i ranks (its threat type's linked actors); None = all."""
         actors = self.library.threat_library.actors
         scopes = [
@@ -136,22 +100,16 @@ class LibrarySnapshot:
         ]
         # v1 ranks actors with hybrid_match: no similarity floor, every row in both legs.
         return self._search(
-            EmbeddingCorpus.THREAT_ACTOR,
-            actors,
-            queries,
-            top_k,
-            scopes,
-            vector_floor=None,
-            leg_depth=len(actors),
+            EmbeddingCorpus.THREAT_ACTOR, actors, queries, top_k, scopes, vector_floor=None, leg_depth=len(actors)
         )
 
     def find_threat_types(
         self, queries: Sequence[str], top_k: int, category: StrideCategory | None = None
-    ) -> list[list[tuple[LibraryThreatType, float]]]:
-        """The threat types closest to each query (a gap-fill proposal's type, BR-THR-03), as actors; with a
-        `category`, only the types the library uses in it (v1 Library.types_for)."""
-        scope = None if category is None else self._types_in_category[category]
+    ) -> list[list[tuple[m.LibraryThreatType, float]]]:
+        """The types closest to each query; with `category`, only the types the library uses in it."""
         types = self.threat_types
+        used = {threat.type_id for threat in self.library.threat_library.threats if category in threat.categories}
+        scope = None if category is None else np.array([kind.type_id in used for kind in types], dtype=bool)
         return self._search(
             EmbeddingCorpus.THREAT_TYPE,
             types,
@@ -173,8 +131,8 @@ class LibrarySnapshot:
     ) -> list[list[tuple[Row, float]]]:
         if not queries:  # nothing to embed: no MongoDB read, no AI call
             return []
-        index = self._indexes[corpus]
-        vectors = self._embeddings.embed_search_queries(list(queries), corpus)
+        index = self.indexes[corpus]
+        vectors = self.embeddings.embed_search_queries(list(queries), corpus)
         return [
             [(rows[hit.position], hit.score) for hit in index.search(query, vector, top_k, scope, **options)]
             for query, vector, scope in zip(queries, vectors, scopes or [None] * len(queries), strict=True)

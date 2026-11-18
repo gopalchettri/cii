@@ -248,23 +248,6 @@ tests:
               summary: "tsg_reap timer jobs were dropped unrun: they reached a worker after their expiry."
               description: "Check that the worker taking them is not stuck or too busy, then the clock of beat's node against the workers': oc debug node/<node> -- chroot /host chronyc tracking."
 
-  # One job stopped as hung at 5 minutes: named for the hour after.
-  - interval: 1m
-    input_series:
-      - series: tsg_jobs_hung_total{instance="worker-threats"}
-        values: 0x5 1x30
-    alert_rule_test:
-      - eval_time: 4m
-        alertname: JobHung
-        exp_alerts: []
-      - eval_time: 10m
-        alertname: JobHung
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "A job made no progress for 15 minutes and was stopped as hung in the last hour."
-              description: "Grafana Explore, Loki: {app=\"tsg\"} |= \"job.stalled\" names it (record_id, task). The reaper runs it again on another worker; a thread still running 10 minutes later logs worker.job_hung and restarts its pod."
-
   # The UAT case (2026-10-24): one worker 76 s behind MongoDB, another 0.2 s. Quiet for the first 5 minutes,
   # then only the far one is named; a pod off by under 5 s never is.
   - interval: 1m

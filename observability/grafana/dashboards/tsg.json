@@ -634,21 +634,17 @@
                         "text": "Timer jobs are dropped unrun: a clock is off or a worker is stuck",
                         "index": 28
                       },
-                      "JobHung": {
-                        "text": "A job hung and was stopped: it runs again on another worker",
-                        "index": 29
-                      },
                       "LogLinesLost": {
                         "text": "Log lines were lost on the way to Loki",
-                        "index": 30
+                        "index": 29
                       },
                       "AiUsageNotRecorded": {
                         "text": "AI usage rows could not be stored: replay them within 7 days",
-                        "index": 31
+                        "index": 30
                       },
                       "AiUsageRollupBehind": {
                         "text": "The AI usage totals are behind",
-                        "index": 32
+                        "index": 31
                       }
                     }
                   }
@@ -1603,109 +1599,105 @@
                         "text": "A job could not renew its lease",
                         "index": 14
                       },
-                      "job.stalled": {
-                        "text": "A job made no progress for 15 minutes",
-                        "index": 15
-                      },
                       "job.send_failed": {
                         "text": "A job could not be queued",
-                        "index": 16
+                        "index": 15
                       },
                       "job.queue_size_unknown": {
                         "text": "A queue's length could not be read",
-                        "index": 17
+                        "index": 16
                       },
                       "job.reap_failed": {
                         "text": "A stuck job could not be repaired",
-                        "index": 18
+                        "index": 17
                       },
                       "job.requeued": {
                         "text": "A stuck job was sent again",
-                        "index": 19
+                        "index": 18
                       },
                       "worker.none_online": {
                         "text": "No worker on a queue",
-                        "index": 20
+                        "index": 19
                       },
                       "worker.count_unknown": {
                         "text": "The workers could not be counted",
-                        "index": 21
+                        "index": 20
                       },
                       "worker.heartbeat_failed": {
                         "text": "A worker could not say it is alive",
-                        "index": 22
+                        "index": 21
                       },
                       "event.publish_failed": {
                         "text": "A live update was not sent",
-                        "index": 23
+                        "index": 22
                       },
                       "event.hub_reconnecting": {
                         "text": "Live updates are reconnecting",
-                        "index": 24
+                        "index": 23
                       },
                       "event.hub_failed": {
                         "text": "Live updates stopped",
-                        "index": 25
+                        "index": 24
                       },
                       "audit.write_failed": {
                         "text": "An audit record was not saved",
-                        "index": 26
+                        "index": 25
                       },
                       "library.check_failed": {
                         "text": "The library could not be read from SQL Server",
-                        "index": 27
+                        "index": 26
                       },
                       "library.indexes_build_failed": {
                         "text": "The library search could not be built",
-                        "index": 28
+                        "index": 27
                       },
                       "writer.path_failed": {
                         "text": "A scenario could not be written",
-                        "index": 29
+                        "index": 28
                       },
                       "writer.path_abandoned": {
                         "text": "A scenario was given up",
-                        "index": 30
+                        "index": 29
                       },
                       "writer.regenerate_failed": {
                         "text": "A scenario could not be regenerated",
-                        "index": 31
+                        "index": 30
                       },
                       "writer.outage_settled": {
                         "text": "Some scenarios failed in an outage",
-                        "index": 32
+                        "index": 31
                       },
                       "writer.plan_check_not_made": {
                         "text": "A scenario's plan check was skipped",
-                        "index": 33
+                        "index": 32
                       },
                       "controls.map_failed": {
                         "text": "Controls could not be mapped",
-                        "index": 34
+                        "index": 33
                       },
                       "controls.not_mapped": {
                         "text": "No controls were mapped",
-                        "index": 35
+                        "index": 34
                       },
                       "planner.threats_not_judged": {
                         "text": "Some threats were not judged by the AI",
-                        "index": 36
+                        "index": 35
                       },
                       "external_intelligence.source_failed": {
                         "text": "A threat-intelligence source failed",
-                        "index": 37
+                        "index": 36
                       },
                       "external_intelligence.snapshot_build_failed": {
                         "text": "Threat intelligence could not be rebuilt",
-                        "index": 38
+                        "index": 37
                       },
                       "external_intelligence.evidence_search_failed": {
                         "text": "The evidence search failed",
-                        "index": 39
+                        "index": 38
                       },
                       "mongodb.validator_not_applied": {
                         "text": "A MongoDB rule was not applied",
-                        "index": 40
+                        "index": 39
                       }
                     }
                   },
@@ -2120,109 +2112,105 @@
                         "text": "A job could not renew its lease",
                         "index": 14
                       },
-                      "job.stalled": {
-                        "text": "A job made no progress for 15 minutes",
-                        "index": 15
-                      },
                       "job.send_failed": {
                         "text": "A job could not be queued",
-                        "index": 16
+                        "index": 15
                       },
                       "job.queue_size_unknown": {
                         "text": "A queue's length could not be read",
-                        "index": 17
+                        "index": 16
                       },
                       "job.reap_failed": {
                         "text": "A stuck job could not be repaired",
-                        "index": 18
+                        "index": 17
                       },
                       "job.requeued": {
                         "text": "A stuck job was sent again",
-                        "index": 19
+                        "index": 18
                       },
                       "worker.none_online": {
                         "text": "No worker on a queue",
-                        "index": 20
+                        "index": 19
                       },
                       "worker.count_unknown": {
                         "text": "The workers could not be counted",
-                        "index": 21
+                        "index": 20
                       },
                       "worker.heartbeat_failed": {
                         "text": "A worker could not say it is alive",
-                        "index": 22
+                        "index": 21
                       },
                       "event.publish_failed": {
                         "text": "A live update was not sent",
-                        "index": 23
+                        "index": 22
                       },
                       "event.hub_reconnecting": {
                         "text": "Live updates are reconnecting",
-                        "index": 24
+                        "index": 23
                       },
                       "event.hub_failed": {
                         "text": "Live updates stopped",
-                        "index": 25
+                        "index": 24
                       },
                       "audit.write_failed": {
                         "text": "An audit record was not saved",
-                        "index": 26
+                        "index": 25
                       },
                       "library.check_failed": {
                         "text": "The library could not be read from SQL Server",
-                        "index": 27
+                        "index": 26
                       },
                       "library.indexes_build_failed": {
                         "text": "The library search could not be built",
-                        "index": 28
+                        "index": 27
                       },
                       "writer.path_failed": {
                         "text": "A scenario could not be written",
-                        "index": 29
+                        "index": 28
                       },
                       "writer.path_abandoned": {
                         "text": "A scenario was given up",
-                        "index": 30
+                        "index": 29
                       },
                       "writer.regenerate_failed": {
                         "text": "A scenario could not be regenerated",
-                        "index": 31
+                        "index": 30
                       },
                       "writer.outage_settled": {
                         "text": "Some scenarios failed in an outage",
-                        "index": 32
+                        "index": 31
                       },
                       "writer.plan_check_not_made": {
                         "text": "A scenario's plan check was skipped",
-                        "index": 33
+                        "index": 32
                       },
                       "controls.map_failed": {
                         "text": "Controls could not be mapped",
-                        "index": 34
+                        "index": 33
                       },
                       "controls.not_mapped": {
                         "text": "No controls were mapped",
-                        "index": 35
+                        "index": 34
                       },
                       "planner.threats_not_judged": {
                         "text": "Some threats were not judged by the AI",
-                        "index": 36
+                        "index": 35
                       },
                       "external_intelligence.source_failed": {
                         "text": "A threat-intelligence source failed",
-                        "index": 37
+                        "index": 36
                       },
                       "external_intelligence.snapshot_build_failed": {
                         "text": "Threat intelligence could not be rebuilt",
-                        "index": 38
+                        "index": 37
                       },
                       "external_intelligence.evidence_search_failed": {
                         "text": "The evidence search failed",
-                        "index": 39
+                        "index": 38
                       },
                       "mongodb.validator_not_applied": {
                         "text": "A MongoDB rule was not applied",
-                        "index": 40
+                        "index": 39
                       }
                     }
                   },
@@ -6326,7 +6314,7 @@
     {
       "id": 65,
       "type": "row",
-      "title": "AI usage (counts): click a tile for the full AI usage page",
+      "title": "AI usage",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -6335,580 +6323,22 @@
         "x": 0,
         "y": 136
       },
-      "description": "How many AI calls TSG made in the chosen time, by module, API call, part of the work and model, and how many failed: counts only. One request or session in full: GET /v1/ai-usage/requests (no key). Click any tile below for the TSG — AI usage dashboard: by API call, part, activity and model, and one session or request."
+      "description": "How many AI calls TSG made, failed and reused, and their tokens: on the TSG — AI usage dashboard. One request or session in full: GET /v1/ai-usage/requests (no key)."
     },
     {
       "id": 66,
-      "type": "stat",
-      "title": "AI calls",
-      "description": "Attempts sent to an AI model (chat, embedding, rerank), retries included. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)",
-          "legendFormat": "AI calls",
-          "instant": true,
-          "range": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "0",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "blue"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "The AI usage page",
-              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
-            }
-          ]
-        },
-        "overrides": []
-      },
+      "type": "text",
+      "title": "The AI usage page",
+      "description": "Opens the TSG — AI usage dashboard for the chosen time (and the id above, when one is set).",
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value",
-        "justifyMode": "center",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
+        "mode": "markdown",
+        "content": "**[Open the TSG — AI usage page](/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode})**: AI calls by module, API call, part of the work, activity and model; failed ones by reason; tokens; one session or request."
       },
       "gridPos": {
-        "h": 4,
-        "w": 6,
+        "h": 3,
+        "w": 24,
         "x": 0,
         "y": 137
-      }
-    },
-    {
-      "id": 67,
-      "type": "stat",
-      "title": "Successful AI calls",
-      "description": "AI calls that ended ok. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"ok\"} - tsg_ai_usage_calls_total{outcome=\"ok\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"ok\"}[1h] offset $__range)))) or vector(0)",
-          "legendFormat": "Successful AI calls",
-          "instant": true,
-          "range": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "0",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "green"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "The AI usage page",
-              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value",
-        "justifyMode": "center",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 137
-      }
-    },
-    {
-      "id": 68,
-      "type": "stat",
-      "title": "Failed AI calls",
-      "description": "AI calls with no usable answer: busy, timed out, cut off, unusable, refused. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) or vector(0)",
-          "legendFormat": "Failed AI calls",
-          "instant": true,
-          "range": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "0",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "red"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "The AI usage page",
-              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}&viewPanel=panel-114"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value",
-        "justifyMode": "center",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 137
-      }
-    },
-    {
-      "id": 69,
-      "type": "stat",
-      "title": "Earlier answers reused",
-      "description": "Answers a job's retry read back: no AI call made. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum((((tsg_ai_usage_calls_total{outcome=\"reused\"} - tsg_ai_usage_calls_total{outcome=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome=\"reused\"}[1h] offset $__range)))) or vector(0)",
-          "legendFormat": "Earlier answers reused",
-          "instant": true,
-          "range": false,
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "0",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "purple"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "purple",
-                "value": null
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "The AI usage page",
-              "url": "/grafana/d/tsg-ai-usage/tsg-ai-usage?${__url_time_range}&var-session=${id:percentencode}"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value",
-        "justifyMode": "center",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 137
-      }
-    },
-    {
-      "id": 70,
-      "type": "table",
-      "title": "AI calls by module, API call and part",
-      "description": "Parts: threats (finding threats), scenario (writing scenarios), controls (picking controls), remediation (writing the plan), service_mapper (mapping services), shared (indexing no request asked for). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (module, api, bucket) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "module": "Module",
-              "api": "API call",
-              "bucket": "Part",
-              "Value #A": "AI calls",
-              "Value #B": "Failed"
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "No AI calls"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": true,
-          "reducer": [
-            "sum"
-          ]
-        }
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 141
-      }
-    },
-    {
-      "id": 71,
-      "type": "table",
-      "title": "Failed AI calls by module, API call and reason",
-      "description": "Why calls failed: ai_busy (429 or overloaded), ai_timed_out, ai_unreachable, ai_down (server error), no_choices; unreadable and truncated answers have no outage reason. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (module, api, outcome, reason) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "module": "Module",
-              "api": "API call",
-              "outcome": "Outcome",
-              "reason": "Reason",
-              "Value": "Failed calls"
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "No AI calls"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": true,
-          "reducer": [
-            "sum"
-          ]
-        }
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 141
-      }
-    },
-    {
-      "id": 72,
-      "type": "table",
-      "title": "AI calls by model and task",
-      "description": "Each model's calls per task (relevance_gate, gap_fill, threat_actions, write_scenario, repair_scenario, plan_check, remediation_plan, service_mapper, embed, rerank). Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!=\"reused\"} - tsg_ai_usage_calls_total{outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!=\"reused\"}[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (model, task) ((((tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} - tsg_ai_usage_calls_total{outcome!~\"ok|reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{outcome!~\"ok|reused\"}[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "model": "Model",
-              "task": "Task",
-              "Value #A": "AI calls",
-              "Value #B": "Failed"
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "No AI calls"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": true,
-          "reducer": [
-            "sum"
-          ]
-        }
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 150
-      }
-    },
-    {
-      "id": 73,
-      "type": "table",
-      "title": "AI tokens by module and API call",
-      "description": "Tokens sent (in) and answered (out) by every AI call: writing, embedding and ranking. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (module, api, direction) ((((tsg_ai_usage_tokens_total - tsg_ai_usage_tokens_total offset $__range) and resets(tsg_ai_usage_tokens_total[$__range]) == 0) or (round(increase(tsg_ai_usage_tokens_total[$__range])) and last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)) or (max_over_time(tsg_ai_usage_tokens_total[$__range]) unless last_over_time(tsg_ai_usage_tokens_total[1h] offset $__range)))) > 0",
-          "legendFormat": "__auto",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "module": "Module",
-              "api": "API call",
-              "direction": "Direction",
-              "Value": "Tokens"
-            }
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "noValue": "No AI calls"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": true,
-          "reducer": [
-            "sum"
-          ]
-        }
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 150
       }
     }
   ]

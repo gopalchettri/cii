@@ -1,0 +1,33 @@
+# The monitoring's config files as OpenShift ConfigMaps, made from the files in this folder (ADR-001):
+#   oc apply -k observability
+# The laptop uses the same files directly, so a dashboard or rule change is one edit.
+apiVersion: kustomize.config.k8s.io/v1beta1        # the kustomization format
+kind: Kustomization                                # makes the ConfigMaps below from files
+generatorOptions:                                  # applies to every ConfigMap below
+  disableNameSuffixHash: true                      # keep the exact names the Deployments mount (deploy_common.yaml, deploy_threatgen.yaml)
+  labels: { part-of: tsg-monitoring }              # marks them as TSG's monitoring
+configMapGenerator:                                # one ConfigMap per pod that reads config files
+  - name: prometheus-config                        # Prometheus, mounted at /etc/prometheus
+    namespace: ai-common                           # the monitoring's project
+    files: [prometheus/prometheus.yml, prometheus/rules.yml]   # what to scrape, and the alert rules
+  - name: alertmanager-config                      # Alertmanager, mounted at /etc/alertmanager
+    namespace: ai-common                           # the monitoring's project
+    files: [alertmanager/alertmanager.yml]         # receivers and routing
+  - name: loki-config                              # Loki, mounted at /etc/loki
+    namespace: ai-common                           # the monitoring's project
+    files: [loki/loki.yaml]                        # storage and retention
+  - name: alloy-config                             # Alloy, mounted at /etc/alloy
+    namespace: ai-common                           # the monitoring's project
+    files: [config.alloy=alloy/uat.alloy]          # which pods' logs to read (the UAT file, under the name Alloy loads)
+  - name: grafana-provisioning                     # Grafana's start-up files, mounted under /etc/grafana/provisioning
+    namespace: ai-common                           # the monitoring's project
+    files: [grafana/provisioning/datasources/datasources.yaml, grafana/provisioning/dashboards/dashboards.yaml]   # data sources, and the dashboards folder
+  - name: grafana-dashboards                       # the TSG dashboard, mounted at /var/lib/grafana/dashboards
+    namespace: ai-common                           # the monitoring's project
+    files: [grafana/dashboards/tsg.json]           # the TSG dashboard
+  - name: grafana-dashboard-ai-usage               # the AI usage dashboard, mounted beside tsg.json
+    namespace: ai-common                           # the monitoring's project
+    files: [grafana/dashboards/ai_usage.json]      # the AI usage dashboard
+  - name: monitoring-proxy                         # nginx, mounted at /etc/nginx/tsg
+    namespace: ai-threatgen                        # the proxy's project: only it may use the API's address
+    files: [nginx/nginx.conf]                      # where /grafana and /flower go

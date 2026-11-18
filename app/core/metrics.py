@@ -5,7 +5,7 @@ from contextlib import suppress
 
 from prometheus_client import REGISTRY, Counter, Gauge, Histogram
 
-from app.core.constants import Dependency, module_of
+from app.core.constants import module_of
 
 HTTP_REQUESTS = Counter("tsg_http_requests_total", "HTTP requests", ["method", "route", "status"])
 HTTP_SECONDS = Histogram("tsg_http_request_seconds", "HTTP request duration", ["route"])
@@ -35,10 +35,7 @@ AI_OUTAGES = Counter(
 AI_TOKENS = Counter("tsg_ai_tokens_total", "AI tokens", ["task", "model", "direction"])
 #: Up to the longest AI timeout (90-120 s, app/ai/profiles.py): the default buckets stop at 10 s.
 AI_SECONDS = Histogram(
-    "tsg_ai_call_seconds",
-    "AI call duration",
-    ["task", "model"],
-    buckets=(1, 2, 5, 10, 20, 30, 60, 90, 120, 180),
+    "tsg_ai_call_seconds", "AI call duration", ["task", "model"], buckets=(1, 2, 5, 10, 20, 30, 60, 90, 120, 180)
 )
 #: Each turn of a model's request-rate limiter (AiRequestRate), 0 included; none while its limit is 0.
 AI_REQUEST_RATE_WAIT = Histogram(
@@ -48,8 +45,7 @@ AI_REQUEST_RATE_WAIT = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
 AI_RATE_LIMITED = Counter("tsg_ai_rate_limited_total", "HTTP 429 answers from the AI gateway", ["model"])
-#: Every AI usage row (app/ai/attempts.py): each attempt sent, failed and retried ones too, and each reused
-#: answer; labels from enums only ("none" when a row has no value), never an id: ids stay in tsg_ai_usage.
+#: Every AI usage row: each attempt and each reused answer; labels from enums only, never an id.
 AI_USAGE_CALLS = Counter(
     "tsg_ai_usage_calls_total",
     "AI attempts and reused answers by module, API call, part, task, model, outcome and reason",
@@ -65,8 +61,7 @@ AI_USAGE_WRITE_SECONDS = Histogram(
 )
 #: Rows MongoDB did not take, logged whole for replay instead (AiUsageNotRecorded): Loki keeps them 7 days.
 AI_USAGE_SPILLED = Counter("tsg_ai_usage_spilled_total", "AI usage rows not stored: logged for replay")
-#: When the hourly add-up last finished (AiUsageRollupBehind). Exported from the first add-up of the process
-#: that runs it (record_reaper_time), never as a 0.
+#: When the hourly add-up last finished (AiUsageRollupBehind); exported from its first add-up, never as a 0.
 AI_USAGE_ROLLUP_LAST_SUCCESS = Gauge(
     "tsg_ai_usage_rollup_last_success_timestamp_seconds",
     "When the AI usage hourly add-up last finished (Unix time)",
@@ -78,27 +73,18 @@ JOBS_NOW = Gauge(
     "Jobs now by kind and status (queued, retrying, running; failed: in the last 24 h), set by the reaper",
     ["kind", "status"],
 )
-#: Jobs whose lease renewer stopped them as hung (app/worker/lease_renewal.py): JobHung reads it.
-JOBS_HUNG = Counter("tsg_jobs_hung_total", "Jobs stopped as hung: no lease check for Lease.STALL_SECONDS")
-#: When the reaper last started a pass (ReaperNotRunning, the beat tile: beat sends it) and last finished
-#: one (ReaperFailing). Their ages, not a rise in tsg_jobs_total: a pass made before Prometheus' first scrape
-#: still counts. Exported by the one process that runs the reaper, from its first pass (record_reaper_time):
-#: never a 0 or a made-up time that would hide a dead beat or failing passes.
+#: When the reaper last started (ReaperNotRunning) and finished (ReaperFailing) a pass; exported by the reaping
+#: process from its first pass, never a 0 that would hide a dead beat.
 REAPER_LAST_START = Gauge(
-    "tsg_reaper_last_start_timestamp_seconds",
-    "When the reaper last started a pass (Unix time)",
-    registry=None,
+    "tsg_reaper_last_start_timestamp_seconds", "When the reaper last started a pass (Unix time)", registry=None
 )
 REAPER_LAST_PASS = Gauge(
-    "tsg_reaper_last_pass_timestamp_seconds",
-    "When the reaper last finished a pass (Unix time)",
-    registry=None,
+    "tsg_reaper_last_pass_timestamp_seconds", "When the reaper last finished a pass (Unix time)", registry=None
 )
 WORKERS_ONLINE = Gauge("tsg_workers_online", "Worker pods with a recent heartbeat", ["queue"])
 #: MongoDB's clock minus this process's clock (app/core/clock.py): ClockSkew fires when a pod is far off.
 CLOCK_OFFSET = Gauge("tsg_clock_offset_seconds", "MongoDB's clock minus this process's clock")
-#: Read from Redis at each scrape of a worker (AiSlots.count_calls_in_progress, current_limit): every pod
-#: reports the same numbers. One pool each: the search calls', and each module's chat calls (ChatModule).
+#: Read from Redis at each scrape of a worker: every pod reports the same numbers. One pool per ChatModule and search.
 AI_SLOTS_IN_USE = Gauge("tsg_ai_slots_in_use", "AI calls in progress across all pods", ["pool"])
 AI_SLOTS_CAP = Gauge(
     "tsg_ai_slots_cap",
@@ -116,8 +102,7 @@ JOB_OUTCOMES = ("success", "retry", "failure", "expired")
 
 
 def start_job_counters(tasks: Iterable[str]) -> None:
-    """Every task's outcome series exists at 0 from start-up. A series that first appears already at 1 shows
-    no increase to Prometheus, so the first failure after a restart would never fire JobsFailing."""
+    """Every task's outcome series exists at 0 from start-up."""
     for task in tasks:
         for outcome in JOB_OUTCOMES:
             JOBS.labels(task, module_of(task), outcome)
@@ -143,16 +128,3 @@ def record_reaper_time(gauge: Gauge) -> None:
     gauge.set_to_current_time()  # before it is exported: a scrape never reads its initial 0
     with suppress(ValueError):  # already exported
         REGISTRY.register(gauge)
-
-
-def record_http_request(method: str, route: str, status: int, seconds: float) -> None:
-    HTTP_REQUESTS.labels(method, route, str(status)).inc()
-    HTTP_SECONDS.labels(route).observe(seconds)
-
-
-def record_dependency_status(name: Dependency, up: bool) -> None:
-    DEPENDENCY_UP.labels(name).set(1 if up else 0)
-
-
-def record_workers_online(queue: str, count: int) -> None:
-    WORKERS_ONLINE.labels(queue).set(count)

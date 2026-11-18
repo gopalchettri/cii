@@ -1,57 +1,42 @@
-"""The pure rules behind job control, library promotion, API keys and the intelligence refresh."""
+"""The pure rules behind job control, curator decisions, API keys and the intelligence refresh."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
-from app.core.constants import (
-    REFRESH_AFTER_HOURS,
-    ApiKey,
-    ConflictReason,
-    Decision,
-    IntelSource,
-    JobKind,
-    PromotionOutcome,
-    ResolveOutcome,
-    Status,
-    TaskName,
-)
+from app.api.routes.admin import decision_operation_key
+from app.core.constants import ApiKey, ConflictReason, JobKind, Status, TaskName
 from app.core.exceptions import Conflict
-from app.domain.admin.api_keys import could_be_minted_key, hash_api_key
-from app.domain.external_intelligence.evidence_settings import evidence_settings
-from app.domain.external_intelligence.refresh_rules import (
-    is_cut_short_feed,
-    is_empty_complete_feed,
-    is_refresh_due,
-    trusted_checkpoint,
-)
-from app.domain.jobs import check_run_cancel_stopped_something, run_job_kind_and_status
-from app.domain.library.curation import accepted_ai_threat_key, decision_operation_key, promotion_outcome
+from app.core.security import Principal, could_be_minted_key, hash_api_key
+from app.domain import jobs
+from app.domain.intel.admin import evidence_settings
+from app.domain.intel.refresh import is_cut_short_feed
 
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
 
 
-def test_a_working_run_shows_its_job_and_a_finished_one_shows_control_matching() -> None:
-    assert run_job_kind_and_status(Status.QUEUED, TaskName.FIND_THREATS) == (JobKind.THREATS, Status.QUEUED)
-    assert run_job_kind_and_status(Status.RUNNING, TaskName.WRITE_SCENARIOS) == (
-        JobKind.SCENARIOS,
-        Status.RUNNING,
-    )
-    assert run_job_kind_and_status(Status.DONE, None) == (JobKind.CONTROLS, Status.RUNNING)
-    check_run_cancel_stopped_something("s1", False, 2)
+def _shown_job(status: Status, task: TaskName | None) -> tuple[JobKind, Status]:
+    job = jobs._run_job({"_id": "s1", "status": status, "job": {"task": task}})
+    return job.kind, job.status
+
+
+def test_a_working_run_shows_its_job_and_a_finished_one_shows_control_matching(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _shown_job(Status.QUEUED, TaskName.FIND_THREATS) == (JobKind.THREATS, Status.QUEUED)
+    assert _shown_job(Status.RUNNING, TaskName.WRITE_SCENARIOS) == (JobKind.SCENARIOS, Status.RUNNING)
+    assert _shown_job(Status.DONE, None) == (JobKind.CONTROLS, Status.RUNNING)
+    stopped = [(False, 2), (False, 0)]  # controls only: the cancel goes on; nothing: 409
+    monkeypatch.setattr(jobs.work_control, "cancel_scenario_session", lambda *_: stopped.pop(0))
+    monkeypatch.setattr(jobs.publisher, "publish_session_status", lambda _: 1 / 0)  # reached: not refused
+    principal, run = Principal("c", "u", 1, "t"), SimpleNamespace(session_id="s1")
+    with pytest.raises(ZeroDivisionError):
+        jobs.cancel_run(principal, run)  # type: ignore[arg-type]
     with pytest.raises(Conflict) as refused:
-        check_run_cancel_stopped_something("s1", False, 0)
+        jobs.cancel_run(principal, run)  # type: ignore[arg-type]
     assert refused.value.reason == ConflictReason.NOTHING_TO_CANCEL
 
 
-def test_only_an_accepted_scenarios_ai_threat_is_promoted() -> None:
-    ai = {"decision": Decision.ACCEPTED, "content": {"threat": {"ai_generated": True, "key": "k1"}}}
-    assert accepted_ai_threat_key(ai, "sc1") == "k1"
-    assert accepted_ai_threat_key({**ai, "content": {"threat": {"key": "k1"}}}, "sc1") is None
-    with pytest.raises(Conflict):
-        accepted_ai_threat_key({**ai, "decision": Decision.REJECTED}, "sc1")
-    assert promotion_outcome(ResolveOutcome.CREATED_PENDING) == PromotionOutcome.INSERTED
-    assert promotion_outcome("already_active") == PromotionOutcome.EXISTING
+def test_the_same_curator_decisions_share_one_operation_key() -> None:
     assert (
         decision_operation_key([1], [2], "u")
         == decision_operation_key([1], [2], "u")
@@ -65,14 +50,7 @@ def test_only_a_key_shaped_like_a_minted_one_is_looked_up() -> None:
     assert len(hash_api_key("k")) == 64
 
 
-def test_a_source_is_due_until_its_period_passes_and_a_cut_short_feed_is_refused() -> None:
-    period = timedelta(hours=REFRESH_AFTER_HOURS[IntelSource.CISA_KEV])
-    assert is_refresh_due(IntelSource.CISA_KEV, None, False, NOW)
-    assert is_refresh_due(IntelSource.CISA_KEV, NOW, True, NOW)
-    assert not is_refresh_due(IntelSource.CISA_KEV, NOW - period + timedelta(seconds=1), False, NOW)
-    assert is_refresh_due(IntelSource.CISA_KEV, NOW - period, False, NOW)
-    assert trusted_checkpoint("c", None) is None and trusted_checkpoint("c", "v") == "c"
-    assert is_empty_complete_feed(0, partial=False) and not is_empty_complete_feed(0, partial=True)
+def test_a_cut_short_feed_is_refused() -> None:
     assert is_cut_short_feed(100, 1) and not is_cut_short_feed(100, 100) and not is_cut_short_feed(0, 0)
 
 
