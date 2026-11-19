@@ -6,6 +6,9 @@ from typing import Any, Final
 from urllib.parse import urlparse
 
 from app.core.constants import (
+    MITRE_STIX_FIELDS,
+    MITRE_STIX_RELATIONSHIP_TYPES,
+    MITRE_STIX_TYPES,
     AssetType,
     AttackLink,
     AttackReading,
@@ -38,6 +41,26 @@ _BAD_NAME: Final = "bad_name"
 def is_live(obj: dict[str, Any]) -> bool:
     """True for an object neither revoked nor deprecated."""
     return not (obj.get("revoked") or obj.get("x_mitre_deprecated"))
+
+
+def keep_scenario_stix_objects(objects: list[Any]) -> tuple[dict[str, Any], ...]:
+    """The bundle's objects the MITRE run reads (MITRE_STIX_TYPES and the MITRE_STIX_RELATIONSHIP_TYPES links),
+    each with only its MITRE_STIX_FIELDS; revoked and deprecated ones are kept (a relationship may name them)."""
+    kept = []
+    for stix_object in objects:
+        if not isinstance(stix_object, dict) or not isinstance(stix_object.get("id"), str):
+            continue
+        stix_type, link = stix_object.get("type"), stix_object.get("relationship_type")
+        is_kept_object = isinstance(stix_type, str) and stix_type in MITRE_STIX_TYPES
+        is_kept_link = stix_type == "relationship" and isinstance(link, str) and link in MITRE_STIX_RELATIONSHIP_TYPES
+        if not (is_kept_object or is_kept_link):
+            continue
+        fields = {}
+        for name in MITRE_STIX_FIELDS:
+            if name in stix_object:
+                fields[name] = stix_object[name]
+        kept.append(fields)
+    return tuple(kept)
 
 
 def _attack_ref(obj: dict[str, Any]) -> dict[str, Any]:
@@ -316,4 +339,6 @@ class MitreAttackSource:
         graph = index.build_graph(self.source_id)  # after the techniques: each kept one is an end of its links
         rejected = [*index.rejected, *(item for item in made if isinstance(item, RejectedRecord))]
         checkpoint = f"{version}|{etag}|{AttackReading.FORMAT}"
-        return FetchResult(records, tuple(rejected[: IntelLimits.MAX_REJECTED_PER_RUN]), checkpoint, version, graph)
+        rejected_kept = tuple(rejected[: IntelLimits.MAX_REJECTED_PER_RUN])
+        raw_stix = keep_scenario_stix_objects(objects)
+        return FetchResult(records, rejected_kept, checkpoint, version, graph, raw_stix)

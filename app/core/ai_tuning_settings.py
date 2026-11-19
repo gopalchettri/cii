@@ -28,6 +28,10 @@ class AiTuningSettings(BaseSettings):
     # 12 picks of about 20 tokens each.
     answer_tokens_link_controls: int = Field(default=2048, ge=256, le=32768)
     answer_tokens_pick_controls: int = Field(default=3072, ge=256, le=32768)
+    # The MITRE run (ADR-010), no default: the POC's measured rooms; a missing line stops start-up.
+    answer_tokens_mitre_actor_selection: int = Field(ge=256, le=32768)  # one slice of actor profiles
+    answer_tokens_mitre_plan: int = Field(ge=256, le=32768)  # every planned path of one scope
+    answer_tokens_mitre_write: int = Field(ge=256, le=32768)  # one scenario: about 1,500 tokens
     # How much TSG asks at once.
     threat_questions_at_once: int = Field(default=1, ge=1, le=64)  # per threat-finding run
     threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges
@@ -47,4 +51,4 @@ class AiTuningSettings(BaseSettings):
 
 
 #: The tuning this process started with: the constants (app/core/constants) take their values from it.
-TUNING = AiTuningSettings()
+TUNING = AiTuningSettings()  # type: ignore[call-arg]  # values come from the environment / .env

@@ -621,8 +621,10 @@ def test_the_prompt_is_the_approved_text() -> None:
 
 
 def test_one_number_versions_every_prompt() -> None:
-    """Owner 2026-10-27: raising PromptVersion.NUMBER changes every stored label at once."""
-    labels = [value for name, value in vars(PromptVersion).items() if name.isupper() and name != "NUMBER"]
+    """Owner 2026-10-27: raising PromptVersion.NUMBER changes every stored label at once. MITRE_WRITER carries
+    app/mitre_prompts.toml's own version (ADR-010)."""
+    skipped = {"NUMBER", "MITRE_WRITER"}
+    labels = [value for name, value in vars(PromptVersion).items() if name.isupper() and name not in skipped]
     assert PromptVersion.NUMBER == 2 and len(labels) == 4
     assert all(label.endswith(f"-{PromptVersion.NUMBER}") for label in labels)
 

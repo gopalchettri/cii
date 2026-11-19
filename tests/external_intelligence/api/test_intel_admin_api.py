@@ -165,24 +165,20 @@ def test_a_refresh_names_a_known_source_only(client: TestClient, api: Api) -> No
     assert stored["source"] == "mitre_attack_enterprise"
 
 
-def test_a_refresh_is_refused_while_the_master_switch_is_off(
+def test_a_refresh_is_queued_while_the_master_switch_is_off(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-010: the MITRE ATT&CK import runs whatever the switch says (the MITRE run reads it)."""
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
     api.switch.env = False  # this fake reads no settings
-    assert client.post(f"{URL}/refresh", headers=ADMIN).status_code == 409
-    assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
+    assert client.post(f"{URL}/refresh", headers=ADMIN).status_code == 202
+    assert len(api.sent) == 1 and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 1
 
 
-def test_a_refresh_is_refused_while_the_runtime_switch_is_off(client: TestClient, api: Api) -> None:
-    # Queued then, the worker could only fail it: refused at once instead (owner, 2026-10-15).
+def test_a_refresh_is_queued_while_the_runtime_switch_is_off(client: TestClient, api: Api) -> None:
     api.switch.runtime = False
-    refused = client.post(f"{URL}/refresh")
-    assert (
-        refused.status_code == 409
-        and refused.json()["detail"] == "External intelligence is off: nothing was refreshed."
-    )
-    assert api.sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 0
+    assert client.post(f"{URL}/refresh").status_code == 202
+    assert len(api.sent) == 1 and get_mongodb()[Collection.ADMIN_JOBS].count_documents({}) == 1
 
 
 def test_a_job_of_another_kind_is_not_found_here(client: TestClient, api: Api) -> None:
@@ -218,12 +214,14 @@ def test_health_shows_the_evidence_settings_and_whether_they_were_calibrated(
         assert shown["threshold_calibrated_on"] is None
 
 
-def test_health_with_the_master_switch_off_reads_no_store(
+def test_health_with_the_master_switch_off_shows_the_import_but_no_evidence(
     client: TestClient, api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-010: the MITRE import runs with the switch off, and NO_MITRE_DATA tells the caller to wait here."""
     off = get_settings().model_copy(update={"external_intelligence_enabled": False})
     api.switch.env = False
     api.service = api.build(off)
     health = client.get(f"{URL}/health", headers=ADMIN).json()
-    assert health["sources"] == [] and health["snapshot_id"] is None and api.feeds.reads == 0
+    assert [source["source"] for source in health["sources"]] == ["mitre_attack_enterprise"]
+    assert health["pending_sources"] == [] and health["no_data"] is False and health["snapshot_id"] is None
     assert health["switch"]["effective"] is False

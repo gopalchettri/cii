@@ -1,7 +1,8 @@
-"""With external intelligence OFF the app is exactly what it was: no intelligence collection is created or
-written, no snapshot is built, the original writer and prompt version run, nothing intelligence-related
-is stored on a plan or a scenario, and the adapter returns before it touches any store. The suite runs
-OFF by default (tests/conftest.py), so the app's own tests are the rest of this proof."""
+"""With external intelligence OFF the app is exactly what it was, but for the MITRE ATT&CK import, which runs
+whatever the switch says (ADR-010: the MITRE run reads it): no evidence is searched, no snapshot is built,
+the original writer and prompt version run, nothing intelligence-related is stored on a plan or a scenario,
+and the adapter returns before it touches any store. The suite runs OFF by default (tests/conftest.py), so the
+app's own tests are the rest of this proof."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -21,11 +22,11 @@ from app.crud.embeddings import get_embedding_repository
 from app.crud.indexes import create_all_indexes
 from app.crud.intel import get_intel_feed_repository, get_intel_record_repository, get_intel_snapshot_repository
 from app.crud.scenarios import get_threat_scenario_repository
+from app.domain.intel import refresh as intel_refresh
 from app.domain.intel.switch import IntelligenceSwitch, get_intelligence_switch
 from app.worker import intel as worker_intel
 from app.worker import lifecycle
 from app.worker.celery_app import celery_app
-from app.worker.intel import refresh_external_intelligence
 from tests.external_intelligence.conftest import Intel
 from tests.planner_samples import planned
 from tests.test_worker import _worker_starting
@@ -113,13 +114,8 @@ def _only_the_intelligence_indexes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(admin_crud, "store", lambda _db: SimpleNamespace(create_indexes=lambda: None))
 
 
-def test_start_up_makes_no_intelligence_index_or_collection_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    _only_the_intelligence_indexes(monkeypatch)
-    create_all_indexes()
-    assert _no_intel_collection()
-
-
-def test_start_up_makes_the_indexes_and_seeds_the_sources_only_while_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_start_up_makes_the_import_indexes_and_seeds_the_sources_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-010: the MITRE ATT&CK import runs with the switch off, so its stores are made at start-up."""
     _only_the_intelligence_indexes(monkeypatch)
     done: list[str] = []
 
@@ -130,17 +126,17 @@ def test_start_up_makes_the_indexes_and_seeds_the_sources_only_while_on(monkeypa
     }
     for name, (repository, method) in made.items():
         monkeypatch.setattr(repository, method, lambda name=name: done.append(name))
-    monkeypatch.setattr(get_settings(), "external_intelligence_enabled", True)
     create_all_indexes()
     assert done == ["intel_records", "intel_snapshots", "intel_feeds"]
 
 
-def test_no_refresh_is_scheduled_and_a_stray_one_does_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert TaskName.REFRESH_EXTERNAL_INTELLIGENCE not in celery_app.conf.beat_schedule
-    assert TaskName.REFRESH_EXTERNAL_INTELLIGENCE in celery_app.conf.task_routes  # a manual send is still routed
-    monkeypatch.setattr(worker_intel.schedule, "get_intel_schedule_repository", Untouched)
-    refresh_external_intelligence()  # the switch is off, no store is read (the schedule's neither): returns
-    assert _no_intel_collection()
+def test_the_import_is_scheduled_while_off_and_its_rebuild_builds_no_evidence_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-010: the import runs off too; the evidence index it would rebuild is not touched while off."""
+    assert TaskName.REFRESH_EXTERNAL_INTELLIGENCE in celery_app.conf.beat_schedule
+    monkeypatch.setattr(intel_refresh, "get_evidence_index_keeper", Untouched)
+    assert intel_refresh._finish(()).index_rebuilt is False
 
 
 def test_the_worker_warm_up_does_nothing_while_off(monkeypatch: pytest.MonkeyPatch) -> None:

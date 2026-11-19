@@ -715,15 +715,15 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     return queue
 
 
-def test_no_preparation_starts_while_external_intelligence_is_off(
+def test_a_preparation_starts_while_external_intelligence_is_off(
     client: TestClient, sent: list[tuple[str, str]], switch: SimpleNamespace
 ) -> None:
-    """The route has no key and a preparation spends AI calls: off must stop it, as it stops an import.
-    Mutation: drop the switch check and the route answers 202."""
+    """ADR-010: the MITRE run's controls start from these links, so they are prepared with the switch off too."""
     switch.on = False
-    refused = client.post(f"{URL}/prepare")
-    assert refused.status_code == 409 and refused.json()["detail"] == ControlLinkMessage.SWITCH_OFF
-    assert sent == [] and get_mongodb()[Collection.ADMIN_JOBS].count_documents({"kind": CONTROL_LINKS_JOB_KIND}) == 0
+    assert client.post(f"{URL}/prepare").status_code == 202
+    assert (
+        len(sent) == 1 and get_mongodb()[Collection.ADMIN_JOBS].count_documents({"kind": CONTROL_LINKS_JOB_KIND}) == 1
+    )
     assert client.get(URL).status_code == 200  # the summary is still read
 
 

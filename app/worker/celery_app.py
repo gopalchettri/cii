@@ -42,6 +42,7 @@ TASK_MODULES = [
     "app.worker.admin.library_indexes",
     "app.worker.admin.ai_usage_tools",
     "app.worker.scenario.tasks",
+    "app.worker.scenario.mitre.mitre_tasks",
     "app.worker.remediation",
     "app.worker.intel",
     "app.worker.control_links",
@@ -67,17 +68,15 @@ def shared_celery_conf() -> dict[str, Any]:
 
 
 #: (task, every, expires): three intervals for the reaper, the sweep and the intelligence check (only one check
-#: wins its claim), so a clock a little ahead never drops every pass; that check only while intelligence is on.
+#: wins its claim), so a clock a little ahead never drops every pass; that check (the MITRE ATT&CK import) runs
+#: whatever the external-intelligence switch says (ADR-010).
 _BEAT = [
     (TaskName.REAP, Lease.REAPER_EVERY_SECONDS, 3 * Lease.REAPER_EVERY_SECONDS),
     (TaskName.RETRY_CONTROLS, Controls.SWEEP_EVERY_SECONDS, 3 * Controls.SWEEP_EVERY_SECONDS),
     (TaskName.BUILD_LIBRARY_INDEXES, Cache.LIBRARY_INDEXES_EVERY_SECONDS, Cache.LIBRARY_INDEXES_EVERY_SECONDS),
     (TaskName.ROLL_UP_AI_USAGE, AiUsageLimits.ROLLUP_EVERY_SECONDS, AiUsageLimits.ROLLUP_EVERY_SECONDS),
+    (TaskName.REFRESH_EXTERNAL_INTELLIGENCE, IntelLimits.CHECK_EVERY_SECONDS, 3 * IntelLimits.CHECK_EVERY_SECONDS),
 ]
-if settings.external_intelligence_enabled:
-    _BEAT.append(
-        (TaskName.REFRESH_EXTERNAL_INTELLIGENCE, IntelLimits.CHECK_EVERY_SECONDS, 3 * IntelLimits.CHECK_EVERY_SECONDS)
-    )
 
 celery_app = Celery("tsg", broker=settings.redis_celery_broker_url, include=TASK_MODULES)
 celery_app.conf.update(

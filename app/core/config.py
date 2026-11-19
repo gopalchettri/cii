@@ -165,6 +165,93 @@ class AiOutputSettings(BaseSettings):
         return _word_range("EVIDENCE_STATEMENT_WORD_LIMIT", self.evidence_statement_word_limit)
 
 
+class MitreScenarioSettings(BaseSettings):
+    """The MITRE run's sizes (ADR-010, POST /v1/mitre_create_session): none has a default in code, so a missing
+    line stops start-up."""
+
+    # Actor selection: each MITRE actor profile's description cut to this many characters; an evidence quote
+    # must be at least MITRE_MINIMUM_QUOTE_WORDS words of that actor's MITRE text.
+    actor_profile_description_characters: int = Field(ge=1, validation_alias="ACTOR_PROFILE_DESCRIPTION_CHARACTERS")
+    mitre_minimum_quote_words: int = Field(ge=1, validation_alias="MITRE_MINIMUM_QUOTE_WORDS")
+    # The relevance an actor row must have, "min-max" (the prompt's 1-5 scale).
+    mitre_relevance_range: str = Field(validation_alias="MITRE_RELEVANCE_RANGE")
+    # Planning: the most relevant actors (with their techniques) the planner sees; the techniques per path,
+    # "min-max"; a run of at most MITRE_PLANNER_SINGLE_CALL_LIMIT paths is planned in one call.
+    planner_relevant_actors: int = Field(ge=1, validation_alias="PLANNER_RELEVANT_ACTORS")
+    attack_path_techniques: str = Field(validation_alias="ATTACK_PATH_TECHNIQUES")
+    mitre_planner_single_call_limit: int = Field(ge=1, validation_alias="MITRE_PLANNER_SINGLE_CALL_LIMIT")
+    # Paths asked for beyond the run's need: per STRIDE scope when planned per scope, else in the one call.
+    mitre_extra_paths_per_scope: int = Field(ge=0, validation_alias="MITRE_EXTRA_PATHS_PER_SCOPE")
+    mitre_extra_paths_in_one_call: int = Field(ge=0, validation_alias="MITRE_EXTRA_PATHS_IN_ONE_CALL")
+    # The planner's reason for an all-OT asset's IT/OT crossing, cut to this many characters.
+    mitre_crossing_reason_characters: int = Field(ge=1, validation_alias="MITRE_CROSSING_REASON_CHARACTERS")
+    # Two paths of one STRIDE category sharing at least this share of their techniques are duplicates.
+    mitre_duplicate_technique_overlap: float = Field(gt=0, le=1, validation_alias="MITRE_DUPLICATE_TECHNIQUE_OVERLAP")
+    # The planner catalogue: each ICS technique's first sentences, cut to a number of characters; each ICS
+    # asset type's description cut too.
+    catalogue_summary_sentences: int = Field(ge=1, validation_alias="CATALOGUE_SUMMARY_SENTENCES")
+    catalogue_summary_characters: int = Field(ge=1, validation_alias="CATALOGUE_SUMMARY_CHARACTERS")
+    ics_asset_description_characters: int = Field(ge=1, validation_alias="ICS_ASSET_DESCRIPTION_CHARACTERS")
+    # Writing: candidate groups per path (never trimmed below MITRE_MINIMUM_CANDIDATES_AFTER_TRIM), groups a
+    # scenario names, and the most scenarios of a run one group may appear in (a share, 0-1).
+    candidate_groups_per_scenario: int = Field(ge=1, validation_alias="CANDIDATE_GROUPS_PER_SCENARIO")
+    mitre_minimum_candidates_after_trim: int = Field(ge=1, validation_alias="MITRE_MINIMUM_CANDIDATES_AFTER_TRIM")
+    mitre_groups_per_scenario: int = Field(ge=1, validation_alias="MITRE_GROUPS_PER_SCENARIO")
+    max_scenario_share_per_group: float = Field(gt=0, le=1, validation_alias="MAX_SCENARIO_SHARE_PER_GROUP")
+    # The writer's MITRE text: procedures per technique, and each text cut to this many characters.
+    procedures_per_technique: int = Field(ge=1, validation_alias="PROCEDURES_PER_TECHNIQUE")
+    procedure_text_characters: int = Field(ge=1, validation_alias="PROCEDURE_TEXT_CHARACTERS")
+    software_description_characters: int = Field(ge=1, validation_alias="SOFTWARE_DESCRIPTION_CHARACTERS")
+    writer_candidate_description_characters: int = Field(
+        ge=1, validation_alias="WRITER_CANDIDATE_DESCRIPTION_CHARACTERS"
+    )
+    # Words the writer is asked for, "min-max", and the words per sentence the scenario's sentence count is
+    # aimed at.
+    mitre_threat_scenario_word_limit: str = Field(validation_alias="MITRE_THREAT_SCENARIO_WORD_LIMIT")
+    mitre_risk_statement_word_limit: str = Field(validation_alias="MITRE_RISK_STATEMENT_WORD_LIMIT")
+    mitre_risk_title_word_limit: str = Field(validation_alias="MITRE_RISK_TITLE_WORD_LIMIT")
+    mitre_scenario_title_word_limit: str = Field(validation_alias="MITRE_SCENARIO_TITLE_WORD_LIMIT")
+    mitre_words_per_sentence: int = Field(ge=1, validation_alias="MITRE_WORDS_PER_SENTENCE")
+    # The fewest short sentences the scenario is asked for, and the share a word maximum may be exceeded by.
+    mitre_minimum_scenario_sentences: int = Field(ge=1, validation_alias="MITRE_MINIMUM_SCENARIO_SENTENCES")
+    mitre_word_limit_slack: float = Field(ge=0, validation_alias="MITRE_WORD_LIMIT_SLACK")
+    # Scenarios written at once, and the most tokens (prompt chars/3 + answer room) one actor-selection or
+    # planner call, and one writer call, may hold.
+    mitre_parallel_writers: int = Field(ge=1, validation_alias="MITRE_PARALLEL_WRITERS")
+    mitre_plan_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_PLAN_CALL_TOKENS_LIMIT")
+    mitre_write_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_WRITE_CALL_TOKENS_LIMIT")
+
+    @model_validator(mode="after")
+    def refuse_unreadable_mitre_ranges(self) -> "MitreScenarioSettings":
+        _ = self.attack_path_technique_range, self.mitre_scenario_words, self.mitre_risk_words
+        _ = self.mitre_risk_title_words, self.mitre_scenario_title_words, self.mitre_relevance_bounds
+        return self  # an unreadable range stops start-up
+
+    @property
+    def attack_path_technique_range(self) -> tuple[int, int]:
+        return _word_range("ATTACK_PATH_TECHNIQUES", self.attack_path_techniques)
+
+    @property
+    def mitre_relevance_bounds(self) -> tuple[int, int]:
+        return _word_range("MITRE_RELEVANCE_RANGE", self.mitre_relevance_range)
+
+    @property
+    def mitre_scenario_words(self) -> tuple[int, int]:
+        return _word_range("MITRE_THREAT_SCENARIO_WORD_LIMIT", self.mitre_threat_scenario_word_limit)
+
+    @property
+    def mitre_risk_words(self) -> tuple[int, int]:
+        return _word_range("MITRE_RISK_STATEMENT_WORD_LIMIT", self.mitre_risk_statement_word_limit)
+
+    @property
+    def mitre_risk_title_words(self) -> tuple[int, int]:
+        return _word_range("MITRE_RISK_TITLE_WORD_LIMIT", self.mitre_risk_title_word_limit)
+
+    @property
+    def mitre_scenario_title_words(self) -> tuple[int, int]:
+        return _word_range("MITRE_SCENARIO_TITLE_WORD_LIMIT", self.mitre_scenario_title_word_limit)
+
+
 def _word_range(setting: str, text: str) -> tuple[int, int]:
     found = _WORD_RANGE.fullmatch(text)
     least, most = (int(found.group(1)), int(found.group(2))) if found else (0, 0)
@@ -173,7 +260,7 @@ def _word_range(setting: str, text: str) -> tuple[int, int]:
     return least, most
 
 
-class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings):
+class Settings(ChatModelSettings, AiTuningSettings, AiOutputSettings, MitreScenarioSettings):
     model_config = SettingsConfigDict(
         env_prefix="CII_", env_file=".env", extra="ignore", env_ignore_empty=True, populate_by_name=True
     )

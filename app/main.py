@@ -13,6 +13,7 @@ from app import ai
 from app.api.errors import register_exception_handlers
 from app.api.middleware import AnswerUnexpectedErrors, RequestContextMiddleware
 from app.api.openapi_docs import API_DESCRIPTION, OPENAPI_TAGS
+from app.api.routes import mitre_scenarios
 from app.api.routes import scenarios as scenario
 from app.api.routes.admin import router as admin_router
 from app.api.routes.ai_usage import router as ai_usage_router
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(external_intelligence_router)
     app.include_router(scenario.router)
+    app.include_router(mitre_scenarios.router)
     app.include_router(scenario.review_router)
     app.include_router(remediation_router)
     app.include_router(jobs_router)

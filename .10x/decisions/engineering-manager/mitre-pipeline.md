@@ -1,0 +1,3 @@
+# engineering-manager: mitre-pipeline (19 Nov 2026)
+
+Order (plan tasks 0-14, each half a day or less): 0 ADR and notes -> 1 prompts -> 2 constants (re-pin enums, celery) -> 3 settings and env lines -> 4 STIX repository (re-pin indexes) -> 5 ingestion, always on -> 6 MITRE index -> 7-9 engine (actors, plan, write) -> 10 schemas -> 11 session -> 12 worker task -> 13 routes, guard, dashboard, openapi pin, API tests -> 14 dev timing run on real Kimi. Branch `mitre-scenario-pipeline`; nothing is committed without the owner's yes. The other pipelines' files stay unedited (only the 2-line guard in `runs._queue_write_job`). Until task 13, `tests/test_ai_usage_dashboard.py` fails on the two new `AiApi` members (no route or dashboard row yet).

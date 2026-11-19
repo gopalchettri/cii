@@ -75,20 +75,20 @@ def test_the_request_text_is_the_threats_type_and_name_only() -> None:
     assert "Grid Control Centre" not in request.text  # the asset enters through the filter, not the text
 
 
-def test_beats_check_imports_only_when_it_claims_a_due_run_and_only_while_the_switch_is_on(
+def test_beats_check_imports_only_when_it_claims_a_due_run_whatever_the_switch_says(
     intel: Intel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The saved schedule decides (tests/external_intelligence/test_import_schedule.py): a check that does not
-    win the claim imports nothing, and with the switch off the schedule is not even asked."""
-    claims = iter([False, True])
+    win the claim imports nothing; with the switch off a due run imports too (ADR-010)."""
+    claims = iter([False, True, True])
     monkeypatch.setattr(warm_up_module.schedule, "claim_due_run", lambda now: next(claims))
     refresh_external_intelligence()
     assert intel.refresher.calls == []  # not due, or another check won
     refresh_external_intelligence()
     assert intel.refresher.calls == [("due", None)]
     intel.switch.enabled = False
-    refresh_external_intelligence()  # asking the schedule again would raise StopIteration
-    assert len(intel.refresher.calls) == 1
+    refresh_external_intelligence()
+    assert len(intel.refresher.calls) == 2
 
 
 def _job(source: str | None = None) -> str:
@@ -152,14 +152,12 @@ def test_an_admin_refresh_runs_while_the_workers_cached_switch_still_reads_off(i
     assert intel.refresher.calls == [("due", None)] and _admin_jobs().get(_id=job_id)["status"] == Status.DONE
 
 
-def test_an_admin_refresh_while_the_master_switch_is_off_fails_its_job_with_the_reason(
-    intel: Intel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_admin_refresh_while_the_master_switch_is_off_imports(intel: Intel, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-010: the MITRE ATT&CK import runs whatever the switch says."""
     monkeypatch.setattr(get_settings(), "external_intelligence_enabled", False)
     job_id = _job()
     refresh_external_intelligence(job_id)
-    stored = _admin_jobs().get(_id=job_id)
-    assert stored["status"] == Status.FAILED and "off" in stored["error"]["message"] and intel.refresher.calls == []
+    assert _admin_jobs().get(_id=job_id)["status"] == Status.DONE and intel.refresher.calls == [("due", None)]
 
 
 def test_a_failed_refresh_is_recorded_without_driver_details_then_raised(

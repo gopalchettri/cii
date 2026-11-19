@@ -116,7 +116,6 @@ class IntelWorkEvent(StrEnum):
     WARM_UP_FAILED = "external_intelligence.warm_up_failed"
     WARM_UP_SKIPPED = "external_intelligence.warm_up_skipped"
     FOLLOW_FAILED = "external_intelligence.follow_failed"  # asked again next interval
-    REFRESH_SKIPPED = "external_intelligence.refresh_skipped"
     REFRESH_JOB_FAILED = "external_intelligence.refresh_job_failed"
 
 

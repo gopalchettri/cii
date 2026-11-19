@@ -30,6 +30,8 @@ class AiApi(StrEnum):
     REGENERATE = "regenerate"  # a module's regenerate call (scenarios, a plan, a mapping)
     CREATE_PLAN = "create_plan"  # POST /v1/remediation
     CREATE_MAPPING = "create_mapping"  # POST /v1/service-mapper
+    MITRE_CREATE_SESSION = "mitre_create_session"  # POST /v1/mitre_create_session
+    MITRE_NEXT_SET = "mitre_next_set"  # POST /v1/mitre_sessions/{id}/next-set
 
 
 class AiBucket(StrEnum):
@@ -72,6 +74,9 @@ CHAT_TASK_BUCKETS: Final[dict[str, AiBucket]] = {
     AiTask.SERVICE_MAPPER: AiBucket.SERVICE_MAPPER,
     AiTask.LINK_CONTROLS: AiBucket.CONTROLS,
     AiTask.PICK_CONTROLS: AiBucket.CONTROLS,
+    AiTask.MITRE_ACTOR_SELECTION: AiBucket.SCENARIO,
+    AiTask.MITRE_PLAN: AiBucket.SCENARIO,
+    AiTask.MITRE_WRITE: AiBucket.SCENARIO,
 }
 #: An embedding or rerank call's part, by the job stage that made it.
 SEARCH_STAGE_BUCKETS: Final[dict[str, AiBucket]] = {

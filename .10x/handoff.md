@@ -63,3 +63,14 @@ Known and not fixed (defects or costs, reported by their lanes):
 - `tests/goldens/scenario/controls_cards.json` and `controls_cases.json` show unstaged changes dated 06:05 on 17 Nov,
   before the fixers' work; for the lead to check against "goldens stay byte-identical".
 Waves 0-3 done and gated (17 Nov). The scenario files now belong to the create-session session ("Threat scenario generation API"), which also does the single contract re-pin. Left: live end-to-end run; nothing committed.
+
+## mitre-pipeline (19 Nov 2026)
+Plan: `C:\Users\gopal\.claude\plans\understand-the-e2e-runner-py-and-lucky-flurry.md` (ADR-010). Branch
+`mitre-scenario-pipeline`; nothing is committed. Source engine (read only): `POC/mitre-tsg-poc`.
+Done: tasks 0-4 (notes, prompts, constants, settings, STIX repository); pins `enums.json`, `celery.json`,
+`openapi.json`, `indexes.json` re-written. Next: task 5 (ingestion, always on).
+Known until task 13: `tests/test_ai_usage_dashboard.py` (2 tests) fails, the new `AiApi` members have no route,
+origin or dashboard row yet; `tests/test_worker.py` lists `tsg_write_mitre_scenarios` in `NOT_BUILT_YET` until task 12
+adds its task module (remove it then). The `.env.uat` `CII_NVD_API_KEY` failure is the old one (11 above).
+Every MITRE size is a required setting: a pod or a process without the lines does not start (the three
+`CII_ANSWER_TOKENS_MITRE_*` lines are read when `app.core.constants` is imported).

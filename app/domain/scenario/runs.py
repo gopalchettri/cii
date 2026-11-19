@@ -362,6 +362,8 @@ def _announce_decisions(
 def write_next_threat_scenario_set(principal: Principal, run: api_views.SessionStatus) -> api_views.RunActionStarted:
     """Queues the next NEXT_SET_SIZE open paths, best rank first."""
     check_session_ready_for_review(run)
+    if run.pipeline == c.RunPipeline.MITRE:  # its next sets go through POST /v1/mitre_sessions/{id}/next-set
+        raise Conflict(c.MitreMessage.USE_MITRE_ROUTES, reason=c.ConflictReason.SCENARIOS_NOT_REGENERABLE)
     record = get_threat_scenario_session_repository().get(fields="attack_paths", _id=run.session_id)
     if record is None:  # deleted since the status read
         raise NotFound(c.SessionMessage.NOT_FOUND.format(session_id=run.session_id))
@@ -403,6 +405,8 @@ def _queue_write_job(
     batch: list[dict[str, Any]],
     asked: list[str] | None = None,
 ) -> int:
+    if run.pipeline == c.RunPipeline.MITRE:  # its own routes write its sets; its scenarios are never rewritten
+        raise Conflict(c.MitreMessage.USE_MITRE_ROUTES, reason=c.ConflictReason.SCENARIOS_NOT_REGENERABLE)
     sessions = get_threat_scenario_session_repository()
     stored = sessions.get(fields="context", _id=run.session_id) if run.pipeline else None
     _refuse_without_data(run.pipeline, FrozenContext.from_record(stored["context"]) if stored else None)

@@ -58,3 +58,15 @@ Phases 0-3 complete (owner approved the plan 17 Nov 2026); 4 Implementation buil
 - [x] Live run on the code of D84 and D85 (17-18 Nov): IT 15 of 15 and OT 15 of 15 scenarios, 0 content problems, 59 of 59 operations; whole suite 3,237 passed in both orders (1 known failure: `.env.uat`'s `CII_NVD_API_KEY` line)
 - [x] 18 Nov: the answer reader takes a name written as text ("T0836: Modify Parameter"); a stronger English-only line in `[scenario.attack]`; scenario writing at temperature 0.6 (D86: stray Chinese words 0 in 192 answers, measured against today's setting at the same time)
 - [ ] Owner decisions: the points still open in handoff.md
+
+## mitre-pipeline (ADR-010, plan `understand-the-e2e-runner-py-and-lucky-flurry.md`)
+Phases 0-3 complete (owner approved the plan 19 Nov 2026); 4 Implementation in progress on branch `mitre-scenario-pipeline`. Nothing is committed.
+- [x] 0 ADR-010 and the architect, staff-engineer and engineering-manager notes
+- [x] 1 `app/mitre_prompts.toml` (POC version 22: actors, plan, writer text and repair) and `MITRE_PROMPTS`
+- [x] 2 Constants: `core/constants/mitre.py`, `RunPipeline.MITRE`, `TaskName.WRITE_MITRE_SCENARIOS`, two STIX collections, three `AiTask`s, `PromptVersion.MITRE_WRITER`, `LogEvent` members, two `AiApi`s; enums, celery and openapi pins re-written
+- [x] 3 Settings: `MitreScenarioSettings`, three answer rooms, the env files and the configmap, conftest, test_config
+- [x] 4 `crud/mitre/mitre_stix.py`, its indexes (outside the switch) and the indexes pin
+- [ ] 5 Ingestion, always on
+- [ ] 6 MITRE index; 7-9 engine; 10 schemas; 11 session; 12 worker task
+- [ ] 13 Routes, runs.py guard, dashboard JSON and the two test lists (until then `tests/test_ai_usage_dashboard.py` fails on the two new `AiApi` members)
+- [ ] 14 Dev timing run on real Kimi

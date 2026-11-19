@@ -11,6 +11,7 @@ class RunPipeline(StrEnum):
     """tsg_sessions.pipeline: how a run's scenarios are made; a run without it finds library threats first."""
 
     ATTACK = "attack"  # the AI writes them from its ATT&CK knowledge, the graph in MongoDB confirms them
+    MITRE = "mitre"  # MITRE data first: the AI selects actors and plans paths from it, code checks each ID
 
 
 class AttackRecord(StrEnum):
@@ -119,7 +120,6 @@ class ControlLinkMessage(StrEnum):
     IN_PROGRESS = "A control-links preparation is already queued or running: details.job_id names it."
     NOT_SENT = "The job queue is unreachable: the preparation was not started. Try again shortly."
     BUSY = "Another control-links preparation holds the lock: this one did nothing."
-    SWITCH_OFF = "External intelligence is off: nothing was prepared."
     MATCHES_NOT_A_LIST = "matches must be a list of objects"
     NOT_A_CANDIDATE = "{label} is not a label in CANDIDATES"
     BAD_EFFECT = "effect {effect!r} is not one of prevent, detect, contain, recover"

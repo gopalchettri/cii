@@ -18,6 +18,11 @@ API_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
     ),
     (Module.THREAT_SCENARIOS, AiApi.NEXT_SET): ("Next set", "Writes the next set of scenarios for the run"),
     (Module.THREAT_SCENARIOS, AiApi.REGENERATE): ("Regenerate scenarios", "Rewrites the chosen scenarios"),
+    (Module.THREAT_SCENARIOS, AiApi.MITRE_CREATE_SESSION): (
+        "Create MITRE session",
+        "Starts a run from MITRE data: selects actors, plans attack paths, writes the first set",
+    ),
+    (Module.THREAT_SCENARIOS, AiApi.MITRE_NEXT_SET): ("MITRE next set", "Writes the next set of a MITRE run"),
     (Module.REMEDIATION, AiApi.CREATE_PLAN): ("Create remediation plan", "Writes a treatment plan for one scenario"),
     (Module.REMEDIATION, AiApi.REGENERATE): ("Regenerate plan", "Writes a new version of the plan"),
     (Module.SERVICE_MAPPER, AiApi.CREATE_MAPPING): (

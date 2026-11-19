@@ -69,6 +69,9 @@ items:                                           # one tsg-config per project th
       CII_ANSWER_TOKENS_SERVICE_MAPPER: "3072"                        # service mapper: one mapping (10 + 10 services: at most about 2,000)
       CII_ANSWER_TOKENS_LINK_CONTROLS: "2048"                         # control links: which library controls do what one MITRE ATT&CK mitigation says (one answer per mitigation, at most 15 candidates)
       CII_ANSWER_TOKENS_PICK_CONTROLS: "3072"                         # POST /v1/create_session: the controls picked for one written set of scenarios, in one answer
+      CII_ANSWER_TOKENS_MITRE_ACTOR_SELECTION: "6000"                   # MITRE run: the actors relevant to the asset, from one slice of MITRE actor profiles
+      CII_ANSWER_TOKENS_MITRE_PLAN: "8192"                              # MITRE run: every attack path of one planner scope, in one answer
+      CII_ANSWER_TOKENS_MITRE_WRITE: "4000"                             # MITRE run: one scenario for one attack path (about 1,500 tokens)
       CII_THREAT_QUESTIONS_AT_ONCE: "16"                              # threat finding: questions sent at the same time, per run: 16 x 20 = 320 threats in one round; never above the module cap
       CII_THREATS_PER_QUESTION: "20"                                  # threat finding: most whole threats in one question, split evenly (75 threats: 4 questions of 18-19, about half the time of 40)
       CII_SCENARIOS_WRITTEN_AT_ONCE: "6"                              # scenario writing: most scenarios in one write call (3 if a write of 6 times out)
@@ -114,6 +117,37 @@ items:                                           # one tsg-config per project th
       EVIDENCE_CANDIDATES: "30"                  # intelligence records scored per threat
       EVIDENCE_KEPT_PER_THREAT: "3"              # intelligence records kept per threat
       THREAT_CONTEXT_COUNTRY: "United Arab Emirates"   # the country the assets are in (read as a fact)
+      ACTOR_PROFILE_DESCRIPTION_CHARACTERS: "1200"                      # actor selection: each MITRE actor's description cut to this (all 240 at 1200 = about 27.6k tokens) (required: no default)
+      MITRE_MINIMUM_QUOTE_WORDS: "5"                                    # actor selection: an evidence quote must be at least this many words of the actor's MITRE text (required: no default)
+      PLANNER_RELEVANT_ACTORS: "15"                                     # planning: the most relevant selected actors (with their techniques) the planner sees (required: no default)
+      ATTACK_PATH_TECHNIQUES: "3-6"                                     # planning: techniques per attack path, min-max (a longer plan is dropped) (required: no default)
+      MITRE_PLANNER_SINGLE_CALL_LIMIT: "40"                             # planning: a run of at most this many paths is planned in one call, else one call per STRIDE category (required: no default)
+      MITRE_DUPLICATE_TECHNIQUE_OVERLAP: "0.7"                          # planning: two paths of one STRIDE category sharing this share of techniques are duplicates (required: no default)
+      CATALOGUE_SUMMARY_SENTENCES: "1"                                  # planning: sentences of each ICS technique's summary in the catalogue (required: no default)
+      CATALOGUE_SUMMARY_CHARACTERS: "70"                                # planning: each catalogue summary cut to this many characters (required: no default)
+      ICS_ASSET_DESCRIPTION_CHARACTERS: "150"                           # planning: each MITRE ICS asset type's description cut to this (required: no default)
+      CANDIDATE_GROUPS_PER_SCENARIO: "15"                               # writing: candidate MITRE groups sent per path (required: no default)
+      MITRE_MINIMUM_CANDIDATES_AFTER_TRIM: "3"                          # writing: a writer input cut to its call limit keeps at least this many candidate groups (required: no default)
+      MITRE_GROUPS_PER_SCENARIO: "3"                                    # writing: most relevant groups one scenario names (required: no default)
+      MAX_SCENARIO_SHARE_PER_GROUP: "0.5"                               # writing: most share (0-1) of a run's scenarios one group may appear in (required: no default)
+      PROCEDURES_PER_TECHNIQUE: "10"                                    # writing: MITRE procedures sent per technique (required: no default)
+      PROCEDURE_TEXT_CHARACTERS: "300"                                  # writing: each procedure text cut to this (required: no default)
+      SOFTWARE_DESCRIPTION_CHARACTERS: "300"                            # writing: each software description cut to this (required: no default)
+      WRITER_CANDIDATE_DESCRIPTION_CHARACTERS: "600"                    # writing: each candidate group's description cut to this (required: no default)
+      MITRE_THREAT_SCENARIO_WORD_LIMIT: "100-150"                       # writing: words per threat scenario, min-max (required: no default)
+      MITRE_RISK_STATEMENT_WORD_LIMIT: "30-40"                          # writing: words per risk statement, min-max (required: no default)
+      MITRE_RISK_TITLE_WORD_LIMIT: "4-10"                               # writing: words per risk title, min-max (required: no default)
+      MITRE_SCENARIO_TITLE_WORD_LIMIT: "3-8"                            # writing: words per scenario title, min-max (required: no default)
+      MITRE_WORDS_PER_SENTENCE: "15"                                    # writing: the scenario's sentence count is aimed at its words / this (required: no default)
+      MITRE_RELEVANCE_RANGE: "2-5"                                      # actor selection: the relevance an actor row must have, min-max (the prompt's 1-5 scale) (required: no default)
+      MITRE_EXTRA_PATHS_PER_SCOPE: "2"                                  # planning: paths asked for beyond the run's need in each STRIDE scope's call (required: no default)
+      MITRE_EXTRA_PATHS_IN_ONE_CALL: "5"                                # planning: paths asked for beyond the run's need when planned in one call (required: no default)
+      MITRE_CROSSING_REASON_CHARACTERS: "300"                           # planning: the planner's IT/OT crossing reason for an all-OT asset cut to this (required: no default)
+      MITRE_MINIMUM_SCENARIO_SENTENCES: "3"                             # writing: the fewest short sentences the threat scenario is asked for (required: no default)
+      MITRE_WORD_LIMIT_SLACK: "0.1"                                     # writing: the share a word maximum may be exceeded by before the writer is re-asked (required: no default)
+      MITRE_PARALLEL_WRITERS: "5"                                       # writing: scenarios of one MITRE run written at once (required: no default)
+      MITRE_PLAN_CALL_TOKENS_LIMIT: "60000"                             # most tokens (prompt chars/3 + answer room) one actor-selection or planner call holds: the POC's 34,000 input tokens x 1.5 + the 8,192 planner room (required: no default)
+      MITRE_WRITE_CALL_TOKENS_LIMIT: "34000"                            # most tokens (prompt chars/3 + answer room) one writer call holds: the POC's 20,000 input tokens x 1.5 + the 4,000 writer room (required: no default)
   - apiVersion: v1                               # core API version
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place

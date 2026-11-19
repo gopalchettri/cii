@@ -5,7 +5,7 @@ from typing import Final
 
 from app.core.ai_tuning_settings import TUNING
 from app.core.constants.jobs import TaskName
-from app.core.prompts import PROMPTS
+from app.core.prompts import MITRE_PROMPTS, PROMPTS
 
 
 class Env(StrEnum):
@@ -55,6 +55,8 @@ class Collection(StrEnum):
     SQL_OPERATIONS = "tsg_sql_operations"  # one record per SQL Server write, so a lost answer is reconciled
     ATTACK = "tsg_attack"  # the MITRE ATT&CK graph: groups, techniques, mitigations and their relationships
     CONTROL_LINKS = "tsg_control_links"  # per ATT&CK mitigation: the library controls that do what it says
+    MITRE_ENTERPRISE_STIX = "tsg_mitre_enterprise_stix"  # the MITRE run's Enterprise STIX objects, one version
+    MITRE_ICS_STIX = "tsg_mitre_ics_stix"  # the same for ICS
 
 
 class SqlOperationStatus(StrEnum):
@@ -137,6 +139,9 @@ class AiTask(StrEnum):
     PICK_CONTROLS = "pick_controls"  # which shortlisted control reduces which sentence of a written set
     EMBED = "embed"
     RERANK = "rerank"
+    MITRE_ACTOR_SELECTION = "mitre_actor_selection"  # which MITRE actors fit the asset, from all of them
+    MITRE_PLAN = "mitre_plan"  # a MITRE run's attack paths over every technique
+    MITRE_WRITE = "mitre_write"  # one MITRE run scenario for one attack path
 
 
 class PromptVersion:
@@ -147,6 +152,7 @@ class PromptVersion:
     SCENARIO_WRITER_EVIDENCE: Final = f"scenario writer-evidence-{NUMBER}"  # a story's content.prompt_version
     ATTACK_WRITER: Final = f"attack writer-{NUMBER}"  # content.prompt_version of a run with pipeline "attack"
     REMEDIATION: Final = f"remediation-{NUMBER}"  # every remediation plan version
+    MITRE_WRITER: Final = f"mitre writer-{MITRE_PROMPTS['version']}"  # a MITRE run card's, app/mitre_prompts.toml
 
 
 #: Temperature per chat task: 0.0 for a repeatable answer; None = the provider's default. Scenario writing at 0.6:
@@ -160,10 +166,13 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.PICK_CONTROLS: 0.0,
     AiTask.WRITE_SCENARIO: 0.6,
     AiTask.REPAIR_SCENARIO: None,
+    AiTask.MITRE_ACTOR_SELECTION: 0.0,
+    AiTask.MITRE_PLAN: 0.1,
+    AiTask.MITRE_WRITE: 0.1,
 }
 #: The asks a run answers with an earlier run's answer to the very same conversation, within
-#: CII_THREAT_FINDING_REUSE_HOURS: threat finding's, asked at 0.0 for a repeatable answer.
-REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL})
+#: CII_THREAT_FINDING_REUSE_HOURS: threat finding's and the MITRE actor selection, asked at 0.0 for a repeatable answer.
+REUSED_ACROSS_RUNS: Final = frozenset({AiTask.RELEVANCE_GATE, AiTask.GAP_FILL, AiTask.MITRE_ACTOR_SELECTION})
 
 #: Most answer tokens per chat task (CII_ANSWER_TOKENS_<TASK>), counted against the AI service's budget while
 #: a question runs; an answer cut off at it is asked again at the model's limit, as a thinking model is (one
@@ -177,6 +186,9 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.SERVICE_MAPPER: TUNING.answer_tokens_service_mapper,
     AiTask.LINK_CONTROLS: TUNING.answer_tokens_link_controls,
     AiTask.PICK_CONTROLS: TUNING.answer_tokens_pick_controls,
+    AiTask.MITRE_ACTOR_SELECTION: TUNING.answer_tokens_mitre_actor_selection,
+    AiTask.MITRE_PLAN: TUNING.answer_tokens_mitre_plan,
+    AiTask.MITRE_WRITE: TUNING.answer_tokens_mitre_write,
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
 LITELLM_MODEL_PREFIX: Final = "litellm_proxy/"
@@ -317,6 +329,12 @@ class LogEvent(StrEnum):
     CONTROLS_PICKED = "controls.picked"  # a written set's controls picked per sentence
     CONTROLS_PICK_DROPPED = "controls.pick_dropped"  # a pick code refused, with its reason
     CONTROLS_PICK_UNUSABLE = "controls.pick_unusable"  # the answer could not be used: the search maps the set
+    MITRE_RUN_PLANNED = "mitre.run_planned"  # a MITRE run's actors selected and paths planned and stored
+    MITRE_SET_WRITTEN = "mitre.set_written"  # one set of a MITRE run: written, dropped, seconds
+    MITRE_PATH_DROPPED = "mitre.path_dropped"  # one path's scenario failed its checks or its AI answer
+    MITRE_ACTOR_SLICE_FAILED = "mitre.actor_slice_failed"  # one slice of actor profiles got no usable answer
+    MITRE_PLANNER_SCOPE_FAILED = "mitre.planner_scope_failed"  # one planner scope got no usable answer
+    MITRE_STIX_STORED = "mitre.stix_stored"  # one MITRE domain's STIX objects replaced
 
 
 class AdminJobKind(StrEnum):
@@ -359,6 +377,7 @@ class Module(StrEnum):
 JOB_MODULES: Final[dict[str, Module]] = {
     TaskName.FIND_THREATS: Module.THREAT_SCENARIOS,
     TaskName.WRITE_SCENARIOS: Module.THREAT_SCENARIOS,
+    TaskName.WRITE_MITRE_SCENARIOS: Module.THREAT_SCENARIOS,
     TaskName.MAP_CONTROLS: Module.THREAT_SCENARIOS,
     TaskName.RETRY_CONTROLS: Module.THREAT_SCENARIOS,
     TaskName.WRITE_PLAN: Module.REMEDIATION,
@@ -394,6 +413,7 @@ class AbandonReason(StrEnum):
 JOB_RECORD_COLLECTIONS: Final[dict[str, Collection]] = {
     TaskName.FIND_THREATS: Collection.SESSIONS,
     TaskName.WRITE_SCENARIOS: Collection.SESSIONS,
+    TaskName.WRITE_MITRE_SCENARIOS: Collection.SESSIONS,
     TaskName.WRITE_PLAN: Collection.REMEDIATIONS,
     TaskName.MAP_SERVICES: Collection.SERVICE_MAPPINGS,
 }

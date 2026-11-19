@@ -27,6 +27,8 @@
   "CREATE_PLAN": "create_plan",
   "CREATE_SCENARIO": "create_scenario",
   "CREATE_SESSION": "create_session",
+  "MITRE_CREATE_SESSION": "mitre_create_session",
+  "MITRE_NEXT_SET": "mitre_next_set",
   "NEXT_SET": "next_set",
   "REGENERATE": "regenerate"
  },
@@ -59,6 +61,9 @@
   "EMBED": "embed",
   "GAP_FILL": "gap_fill",
   "LINK_CONTROLS": "link_controls",
+  "MITRE_ACTOR_SELECTION": "mitre_actor_selection",
+  "MITRE_PLAN": "mitre_plan",
+  "MITRE_WRITE": "mitre_write",
   "PICK_CONTROLS": "pick_controls",
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
@@ -211,6 +216,8 @@
   "EXTERNAL_FEED_STATUS": "tsg_external_feed_status",
   "EXTERNAL_INTELLIGENCE_SNAPSHOTS": "tsg_external_intelligence_snapshots",
   "INTEL": "tsg_intel",
+  "MITRE_ENTERPRISE_STIX": "tsg_mitre_enterprise_stix",
+  "MITRE_ICS_STIX": "tsg_mitre_ics_stix",
   "QUERY_VECTORS": "tsg_query_vectors",
   "REMEDIATIONS": "tsg_remediations",
   "SCENARIOS": "tsg_scenarios",
@@ -444,7 +451,6 @@
  "IntelWorkEvent": {
   "FOLLOW_FAILED": "external_intelligence.follow_failed",
   "REFRESH_JOB_FAILED": "external_intelligence.refresh_job_failed",
-  "REFRESH_SKIPPED": "external_intelligence.refresh_skipped",
   "WARM_UP_FAILED": "external_intelligence.warm_up_failed",
   "WARM_UP_SKIPPED": "external_intelligence.warm_up_skipped"
  },
@@ -490,6 +496,41 @@
   "DONE": "done",
   "FAILED": "failed",
   "GENERATING": "generating"
+ },
+ "MitreProblem": {
+  "ANSWER_LAYOUT": "the reply must be {{\"{key}\": [...]}}",
+  "CROSSING_JUDGED_BY_PLANNER": "judged relevant by the planner",
+  "CROSSING_MIXED_TYPES": "the asset and its supporting systems mix IT and OT",
+  "CROSSING_TECHNIQUES_DROPPED": "The plan crosses between IT and OT: keep both its Enterprise and ICS techniques",
+  "DUPLICATE_PATH": "duplicate of a higher-ranked path",
+  "GROUP_LISTED_TWICE": "relevant group {name} is listed twice",
+  "GROUP_NOT_A_CANDIDATE": "relevant group {name} ({mitre_id}) must be one of the supplied candidate_actors",
+  "GROUP_NOT_DOCUMENTED": "MITRE does not document {name} for any technique of this scenario",
+  "INVENTED_ID": "Invented MITRE ID {mitre_id}",
+  "INVENTED_ID_IN_REASON": "invented MITRE ID in the reason",
+  "NOT_AN_OBJECT": "not an object",
+  "NO_DOCUMENTED_GROUP": "no MITRE group documented for these techniques",
+  "NO_ICS_TECHNIQUE": "no ICS technique although OT is in scope",
+  "NO_REASON": "no reason",
+  "NO_STRIDE_CATEGORY": "no STRIDE category",
+  "QUOTE_NOT_IN_DESCRIPTION": "quote not in the actor's MITRE description",
+  "QUOTE_TOO_SHORT": "quote shorter than {words} words",
+  "RELEVANCE_OUT_OF_RANGE": "relevance not {least}-{most}",
+  "SCHEMA_FAILED": "Schema validation failed: {location}: {error_type}",
+  "SYSTEM_NOT_THE_ASSETS": "supporting system {name} is not one of the asset supporting systems",
+  "TECHNIQUE_NOT_PLANNED": "attack technique {mitre_id} is not one of the planned techniques (stix_id and mitre_id must match)",
+  "TOO_FEW_TECHNIQUES": "fewer than {count} techniques",
+  "TOO_MANY_GROUPS": "list at most {count} relevant_groups",
+  "TOO_MANY_TECHNIQUES": "more than {count} techniques",
+  "UNKNOWN_ACTOR": "unknown actor id",
+  "WORD_LIMIT": "{field} exceeds the word limit: {words} words, the maximum is {maximum}; shorten it"
+ },
+ "MitreStage": {
+  "COMPLETE": "complete",
+  "PLANNING": "planning",
+  "QUEUED": "queued",
+  "SELECTING_ACTORS": "selecting_actors",
+  "WRITING": "writing"
  },
  "Module": {
   "EXTERNAL_INTELLIGENCE": "external_intelligence",
@@ -631,7 +672,8 @@
   "PENDING": "pending"
  },
  "RunPipeline": {
-  "ATTACK": "attack"
+  "ATTACK": "attack",
+  "MITRE": "mitre"
  },
  "ScenarioOutcome": {
   "ABANDONED": "abandoned",
@@ -735,6 +777,7 @@
   "REFRESH_EXTERNAL_INTELLIGENCE": "tsg_refresh_external_intelligence",
   "RETRY_CONTROLS": "tsg_retry_controls",
   "ROLL_UP_AI_USAGE": "tsg_roll_up_ai_usage",
+  "WRITE_MITRE_SCENARIOS": "tsg_write_mitre_scenarios",
   "WRITE_PLAN": "tsg_write_plan",
   "WRITE_SCENARIOS": "tsg_write_scenarios"
  },

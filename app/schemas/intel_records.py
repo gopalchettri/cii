@@ -127,6 +127,7 @@ class FetchResult:
     checkpoint: str  # the source's own version marker: the ATT&CK release
     source_version: str
     graph: tuple[dict[str, Any], ...] = ()  # the ATT&CK objects and relationships, as tsg_attack stores them
+    raw_stix: tuple[dict[str, Any], ...] = ()  # the STIX objects the MITRE run reads (tsg_mitre_*_stix)
 
 
 @dataclass(frozen=True)
