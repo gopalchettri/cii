@@ -311,6 +311,25 @@ def test_a_path_that_failed_its_checks_is_never_written_again(flow: MitreFlow) -
     assert _run(session_id)["counts"]["remaining"] == 0
 
 
+def test_a_next_set_whose_paths_all_fail_ends_partial_and_keeps_the_runs_cards(flow: MitreFlow) -> None:
+    """The first set writes P0 and P1; the next set's P2 and P3 both fail their checks, so it writes nothing. The
+    run keeps its 2 cards and its result: the set ends partial (delivered 0), as the shared next set does.
+    Mutation: fail the run for any set that wrote nothing and the session reads failed with no result."""
+    flow.chat.failing = ("P2", "P3")
+    session_id = flow.start()
+    flow.work()
+    flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 202)
+    flow.work()
+    board = flow.call("GET", f"/v1/sessions/{session_id}")
+    assert board["session_status"] == "completed" and board["progress"]["scenarios"] == "COMPLETE"
+    summary = board["progress"]["last_next_set"]
+    assert (summary["outcome"], summary["delivered"], summary["remaining"]) == ("partial", 0, 0)
+    assert len(flow.mitre_details(session_id)["result"]["scenarios"]) == 2
+    assert _run(session_id)["mitre"]["failed_path_ids"] == ["mitre-3", "mitre-4"]
+    refused = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 409)
+    assert refused["reason"] == ConflictReason.NOTHING_LEFT
+
+
 def test_the_run_stops_at_total_scenario_count_and_a_spare_path_stands_in_for_a_dropped_one(
     flow: MitreFlow, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -62,9 +62,8 @@ def build_writer_arguments(mitre: dict[str, Any], index: MitreIndex, settings: S
 
 
 def write_mitre_scenario_set(lease: JobLease) -> None:
-    """Plan the run when it has no paths yet, then write the set's open paths together, saving each card. An
-    incomplete "all paths" plan left with fewer open paths than a next set asks its further round once the set's
-    cards are saved and their controls queued, so the board always shows what is really left."""
+    """Plan the run when it has no paths yet, then write the set's open paths together, saving each card. A plan
+    running low asks its further round once the cards are saved, so the board shows what is really left."""
     started, settings = time.perf_counter(), get_settings()
     chat, index, run = get_scenario_chat_model(), get_current_mitre_index(), lease.record
     mitre, timings = run["mitre"], {}  # the board's times, as the shared pipeline's plan_progress names them
@@ -96,10 +95,11 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
     written += progress["written_this_set"]  # an earlier try's saved cards count too
     if written:  # the controls are picked while the planner looks for more
         send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
-    if written or not goal:  # a set that wrote nothing fails the run: no round for it
+    run_failed = bool(goal) and not written and not progress["written"]  # no card in the whole run
+    if not run_failed:  # a run left with no card fails: no round for it
         mitre, remaining = plan_more_when_running_low(lease, chat, index, settings, mitre, remaining)
     finish_mitre_set(
-        lease, mitre, written, failed_path_ids, goal, remaining, outcome["groups_removed_over_share"], timings
+        lease, mitre, written, failed_path_ids, run_failed, remaining, outcome["groups_removed_over_share"], timings
     )
 
 
@@ -218,13 +218,15 @@ def finish_mitre_set(
     mitre: dict[str, Any],
     written: int,
     failed_path_ids: list[str],
-    goal: int,
+    run_failed: bool,
     remaining: int,
     groups_removed_over_share: int,
     timings: dict[str, float],
 ) -> None:
-    """Count the run's cards and end the job; a set that wrote nothing fails the run. `written`: its cards, those
-    an earlier try saved included; `timings`: the set's planning and writing seconds for the board."""
+    """Count the run's cards and end the job. `run_failed`: the set wrote nothing and the run has no card, so the
+    run fails; a later set that writes nothing ends partial, as the shared next set does, and keeps the run's
+    cards. `written`: its cards, those an earlier try saved included; `timings`: the set's planning and writing
+    seconds for the board."""
     get_threat_scenario_session_repository().update_scenario_session_counts(lease.record_id)
     changes = {
         "mitre.failed_path_ids": [*(mitre.get("failed_path_ids") or []), *failed_path_ids],
@@ -233,7 +235,7 @@ def finish_mitre_set(
         **timings,
     }
     operators: dict[str, dict[str, Any]] = {"$inc": {"mitre.groups_removed_over_share": groups_removed_over_share}}
-    if goal and not written:  # its failed paths are stored first: never written again
+    if run_failed:  # its failed paths are stored first: never written again
         lease.update_job(changes, operators=operators)
         raise JobFailed(c.ErrorCode.GENERATION_FAILED, c.MitreMessage.NO_SCENARIO)
     outcome = c.RunActionOutcome.PARTIAL if failed_path_ids else c.RunActionOutcome.COMPLETE
