@@ -43,6 +43,11 @@ _GROUPS: dict[ApiTag, str] = {
         "start: `POST /v1/sessions` finds the threats in the threat library first; `POST /v1/create_session` "
         "has the AI write the scenarios from MITRE ATT&CK, confirmed against the ATT&CK data of group 4."
     ),
+    ApiTag.MITRE: (
+        "A run written from the full MITRE ATT&CK Enterprise and ICS data, with its own calls: start it, follow "
+        "it, accept, reject or regenerate its scenarios, write its next set, or propose its threat to the "
+        "library. The answers are the same as group 5's and group 6's."
+    ),
     ApiTag.REVIEW: (
         "Accept, reject or regenerate a run's scenarios, ask for the next set, or propose an AI-written "
         "threat to the library."

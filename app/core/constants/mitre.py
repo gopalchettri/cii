@@ -19,8 +19,8 @@ class MitreMessage(StrEnum):
     """What a MITRE run tells the caller and the logs."""
 
     USE_MITRE_ROUTES = (
-        "This run was started by POST /v1/mitre_create_session: write its next set with its own "
-        "POST /v1/mitre_sessions/.../next-set; its scenarios cannot be regenerated."
+        "This run was started by POST /v1/mitre_create_session: regenerate its scenarios or write its next set "
+        "with its own calls, POST /v1/mitre_sessions/.../regenerate/scenarios and .../scenarios/next-set."
     )
     NO_MITRE_DATA = (
         "The MITRE ATT&CK {domains} data is not imported yet, so no scenario can be grounded. Import it: POST "
@@ -43,10 +43,12 @@ class MitreProblem(StrEnum):
     INVENTED_ID_IN_REASON = "invented MITRE ID in the reason"
     TOO_FEW_TECHNIQUES = "fewer than {count} techniques"
     TOO_MANY_TECHNIQUES = "more than {count} techniques"
-    NO_ICS_TECHNIQUE = "no ICS technique although OT is in scope"
+    NO_ICS_TECHNIQUE = "no ICS technique although the path attacks OT"
     NO_STRIDE_CATEGORY = "no STRIDE category"
     NO_DOCUMENTED_GROUP = "no MITRE group documented for these techniques"
     DUPLICATE_PATH = "duplicate of a higher-ranked path"
+    SAME_SCENARIO = "the same target and result as a higher-ranked path"
+    DUPLICATE_OF_UNKNOWN = "{id}: duplicate_of {duplicate_of} must be a planned id or a new id listed before it"
     CROSSING_MIXED_TYPES = "the asset and its supporting systems mix IT and OT"
     CROSSING_JUDGED_BY_PLANNER = "judged relevant by the planner"
     ANSWER_LAYOUT = 'the reply must be {{"{key}": [...]}}'
@@ -60,8 +62,10 @@ class MitreProblem(StrEnum):
     GROUP_LISTED_TWICE = "relevant group {name} is listed twice"
     GROUP_NOT_DOCUMENTED = "MITRE does not document {name} for any technique of this scenario"
     SYSTEM_NOT_THE_ASSETS = "supporting system {name} is not one of the asset supporting systems"
+    THREAT_TYPE_NOT_LISTED = "threat_type must be one of threat_types, copied exactly"
     CROSSING_TECHNIQUES_DROPPED = "The plan crosses between IT and OT: keep both its Enterprise and ICS techniques"
     INVENTED_ID = "Invented MITRE ID {mitre_id}"
+    NO_SCENARIO_FOR_PATH = "no scenario was returned for this path (slot)"
 
 
 #: The STIX objects one MITRE STIX collection keeps (tsg_mitre_enterprise_stix, tsg_mitre_ics_stix): every

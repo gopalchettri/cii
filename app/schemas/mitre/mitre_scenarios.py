@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.scenarios import RunBoard
+
 #: A MITRE run's status as its routes show it (the POC's words).
 MitreRunStatus = Literal["queued", "running", "complete", "failed", "cancelled"]
 
@@ -36,22 +38,13 @@ class Scenario(BaseModel):
     attack_techniques: list[Technique] = Field(min_length=1)
     supporting_systems: list[str]
     assumptions: list[str]
+    threat_type: str = ""  # copied from the library's threat_types; checked by code (none when it has none)
 
 
-class MitreSessionStarted(BaseModel):
-    """POST /v1/mitre_create_session's and .../next-set's answer: the run and where to follow it."""
+class MitreRunDetails(BaseModel):
+    """The `mitre` block of GET /v1/mitre_sessions/{session_id}: the MITRE stage, its counts, the scenarios so
+    far (`partial_scenarios`) and once complete `result` (`scenarios` with their CII library controls, `metadata`)."""
 
-    session_id: str
-    status: MitreRunStatus
-    status_url: str
-
-
-class MitreSessionStatus(BaseModel):
-    """GET /v1/mitre_sessions/{session_id}: the run's stage, its scenarios so far, and the result once done.
-    Each scenario is the MITRE scenario with the CII library controls mapped to it."""
-
-    session_id: str
-    status: MitreRunStatus
     stage: str | None
     elapsed_seconds: float
     written: int
@@ -59,6 +52,11 @@ class MitreSessionStatus(BaseModel):
     scenarios_left: int
     partial_scenarios: list[dict[str, Any]] | None
     result: dict[str, Any] | None
-    error: dict[str, str] | None
     status_url: str
     next_set_url: str
+
+
+class MitreSessionStatus(RunBoard):
+    """GET /v1/mitre_sessions/{session_id}: the same board as GET /v1/sessions/{session_id}, plus `mitre`."""
+
+    mitre: MitreRunDetails

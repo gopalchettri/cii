@@ -545,8 +545,9 @@ calls'. The UAT column is the UAT server's `.env.uat` and OpenShift's `deploy/co
   `observability/prometheus/rules.yml`; Grafana's "TSG — is everything working?" and "TSG — AI usage".
   `GET /v1/admin/jobs` (admin key) lists every job, its status, error and worker, and each queue's backlog.
 - **The admin page:** the API serves it at `/ui/` (the files in `app/ui`, plain HTML, CSS and JavaScript; no build
-  step, no extra pod). Nine pages: Data ingestion, Schedule, Control links, Jobs, Search vectors, API keys, Library
-  curation, AI usage, System. It calls only the API's own routes. Jobs, Search vectors, API keys and Library curation
+  step, no extra pod). Ten pages: Data ingestion, Schedule, Control links, Service mapper, Jobs, Search vectors, API
+  keys, Library curation, AI usage, System. It calls only the API's own routes. Service mapper calls them with the
+  client key and identity headers typed on that page instead. Jobs, Search vectors, API keys and Library curation
   need the admin key, typed in the page and kept in that browser tab's memory only (gone on reload, never stored).
   It has no login of its own: whoever can reach the API can open it. Every answer carries `Cache-Control: no-store`,
   a `Content-Security-Policy` that allows only the page's own files, `X-Content-Type-Options: nosniff` and

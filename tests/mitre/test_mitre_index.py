@@ -67,6 +67,17 @@ def test_index_keeps_active_objects_and_builds_the_lookups() -> None:
     assert "T1001" not in index["known_mitre_ids"]  # a revoked ID counts as invented
 
 
+def test_a_group_whose_name_looks_like_an_id_is_never_called_invented() -> None:
+    """MITRE names group G1018 "TA2541": the ID check read it as an invented tactic ID and dropped 10 of 22 AOCC
+    paths (run 01d26d0c). Its names and aliases count as known; an ID nobody has stays invented."""
+    stix = documents()
+    for stix_object in stix["enterprise"]:
+        if stix_object["id"] == ZETA:
+            stix_object["name"], stix_object["aliases"] = "TA2541", ["TA2541", "TA1234"]
+    index = mitre_index.build_mitre_index(stix, settings())
+    assert {"TA2541", "TA1234"} <= index["known_mitre_ids"] and "TA2542" not in index["known_mitre_ids"]
+
+
 def test_index_has_one_actor_profile_per_group_and_campaign() -> None:
     index = sample_index()
     profiles = {}

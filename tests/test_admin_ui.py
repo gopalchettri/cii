@@ -17,7 +17,18 @@ from app.core.constants import ApiTag
 from app.main import create_app
 from tests.checkout import REPO
 
-PAGE_IDS = ["ingestion", "schedule", "control_links", "jobs", "vectors", "api_keys", "curation", "ai_usage", "system"]
+PAGE_IDS = [
+    "ingestion",
+    "schedule",
+    "control_links",
+    "service_mapper",
+    "jobs",
+    "vectors",
+    "api_keys",
+    "curation",
+    "ai_usage",
+    "system",
+]
 #: What no file of the UI may hold: markup parsed from text, code built from text, anything kept in the browser.
 FORBIDDEN_WORDS = (
     "innerHTML",
@@ -237,7 +248,7 @@ def test_the_path_guard_reads_literals_and_templates() -> None:
     assert _find_unknown_paths(script, routes) == ["/v1/admin/job", "/v1/admin/jobs/${job.id}/stop", "/v2/anything"]
 
 
-def test_the_page_table_names_the_nine_pages_each_with_its_file() -> None:
+def test_the_page_table_names_the_ten_pages_each_with_its_file() -> None:
     table = re.findall(
         r'\{ id: "(\w+)", title: "[^"]+", needs_admin_key: (?:true|false), load: [^}]*?pages/(\w+)\.js', _text("app.js")
     )

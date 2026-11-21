@@ -31,7 +31,8 @@ class AiTuningSettings(BaseSettings):
     # The MITRE run (ADR-010), no default: the POC's measured rooms; a missing line stops start-up.
     answer_tokens_mitre_actor_selection: int = Field(ge=256, le=32768)  # one slice of actor profiles
     answer_tokens_mitre_plan: int = Field(ge=256, le=32768)  # every planned path of one scope
-    answer_tokens_mitre_write: int = Field(ge=256, le=32768)  # one scenario: about 1,500 tokens
+    answer_tokens_mitre_duplicate_check: int = Field(ge=256, le=32768)  # one verdict a new path: about 20 tokens
+    answer_tokens_mitre_write: int = Field(ge=256, le=32768)  # one set's scenarios: about 900 tokens each
     # How much TSG asks at once.
     threat_questions_at_once: int = Field(default=1, ge=1, le=64)  # per threat-finding run
     threats_per_question: int = Field(default=40, ge=1, le=50)  # whole threats one relevance question judges

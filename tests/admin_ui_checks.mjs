@@ -101,6 +101,23 @@ for (const [status, detail] of [[401, "The admin key is missing or wrong."], [40
   stop_watching();
 }
 
+// a client's own headers: sent instead of the admin key; their 401 or 403 leaves the admin key set
+api.set_admin_key("secret");
+const client = { "X-API-Key": "ciip_x", "X-User-Id": "gopal", "X-Entity-Id": "125", "X-Tenant-Id": "69" };
+for (const status of [401, 403]) {
+  answers = [{ status, body: { detail: "The API key is missing or wrong." } }];
+  await api.request("GET", "/v1/service-mapper", undefined, client).catch(() => null);
+  const sent_headers = calls.at(-1).headers;
+  assert.deepEqual([sent_headers["X-API-Key"], sent_headers["X-User-Id"], sent_headers["X-Entity-Id"]], ["ciip_x", "gopal", "125"]);
+  assert.equal("X-Admin-Key" in sent_headers, false);
+  assert.equal(api.has_admin_key(), true);
+}
+const calls_before = calls.length;
+const blank = await api.request("GET", "/v1/service-mapper", undefined, { ...client, "X-API-Key": " " }).catch((error) => error);
+assert.deepEqual([blank instanceof api.ApiError, blank.message], [true, "Fill in X-API-Key (plain characters, no line breaks)."]);
+assert.equal(calls.length, calls_before); // nothing sent
+api.clear_admin_key();
+
 // never another origin: no call is made ("/\host" and a "/" before a tab are read by a browser as "//host")
 const sent = calls.length;
 for (const path of ["https://example.org/v1", "//example.org/v1", "/\\example.org/v1", "/\t/example.org/v1", "\\\\example.org/v1", "v1/x"]) {

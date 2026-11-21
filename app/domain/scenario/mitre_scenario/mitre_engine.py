@@ -6,12 +6,11 @@ The asset context is the engine's own shape: asset_name, asset_description, asse
 subsector, service_name, service_description, data_handled and supporting_systems ([{name, description, type
 ("IT" or "OT"), technology_used, accessibility_channel, interface_description, ...}]), never a contact name."""
 
-import contextvars
+import itertools
 import json
 import math
 import re
-from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any
 
@@ -21,9 +20,16 @@ from pydantic import ValidationError
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core import constants as c
 from app.core.config import Settings
-from app.core.exceptions import TEMPORARY_ERRORS, JobFailed, LeaseLost
+from app.core.exceptions import JobFailed
 from app.core.prompts import MITRE_PROMPTS
-from app.domain.shared.ask_ai import ChatPrompt, ask_ai_and_check, call_tokens
+from app.domain.shared.ask_ai import (
+    ChatPrompt,
+    answers_for_asked_slots,
+    ask_ai_and_check,
+    call_tokens,
+    within_call_limit,
+)
+from app.domain.shared.names import threat_name_key
 from app.domain.shared.parallel import run_in_parallel
 from app.schemas.mitre.mitre_scenarios import Scenario
 from app.search.mitre.mitre_index import MitreIndex, clean_mitre_text, get_mitre_id, shorten_at_word_boundary
@@ -395,8 +401,8 @@ def plan_paths_in_rounds(
     asset_types: set[str],
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]], int]:
     """(paths, invalid_paths, answers, planner calls). One call over all STRIDE categories, or one per category
-    for a run above MITRE_PLANNER_SINGLE_CALL_LIMIT; "all paths" (TOTAL_SCENARIO_COUNT=0) adds the per-category
-    round when one call already returned that many. An empty round is asked again once, afresh."""
+    for a run above MITRE_PLANNER_SINGLE_CALL_LIMIT; "all paths" (TOTAL_SCENARIO_COUNT=0) is one call with no
+    number, then later sets' further rounds (plan_further_paths). An empty round is asked again once."""
     wanted, single_call_limit = settings.total_scenario_count, settings.mitre_planner_single_call_limit
     rounds = [list(c.StrideCategory)] if wanted > single_call_limit else [[ALL_STRIDE_CATEGORIES]]
     prompt, it_only = planner_prompt(settings), asset_types == {"IT"}
@@ -413,14 +419,62 @@ def plan_paths_in_rounds(
         round_answers = run_in_parallel(ask_scope, planner_inputs, len(planner_inputs), "mitre-plan")
         planner_calls += len(planner_inputs)
         answers.extend(round_answers)
-        keep_valid_planned_paths(round_answers, asset_context, index, settings, it_only, paths, invalid_paths)
+        keep_valid_unique_paths(chat, round_answers, asset_context, index, settings, it_only, paths, invalid_paths)
         if not paths and not retried_empty_round:
             retried_empty_round = True
             continue
-        if wanted == 0 and len(rounds) == 1 and len(scopes) == 1 and len(paths) >= single_call_limit:
-            rounds.append(list(c.StrideCategory))
         round_number += 1
     return paths, invalid_paths, answers, planner_calls
+
+
+def plan_further_paths(
+    chat: ChatModel,
+    asset_context: dict[str, Any],
+    index: MitreIndex,
+    settings: Settings,
+    actor_selection: dict[str, Any],
+    planned: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int], bool]:
+    """One "any others?" round of an "all paths" run: the planner gets every path planned so far (planned_already)
+    and lists only further relevant ones, never a number; (new valid paths, rejected plans by reason, whether
+    the answer was read: a lost one, unreadable or cut off, is not "none left")."""
+    asset_types = asset_and_system_types(asset_context)
+    it_only, prompt = asset_types == {"IT"}, planner_prompt(settings)
+    actor_lines = planner_actor_lines(actor_selection, index, settings, it_only)
+    crossing, already = crossing_instruction(asset_types), planned_already_lines(planned, index)
+    planner_inputs, _ = fit_planner_inputs_to_call_limit(
+        chat, prompt, [ALL_STRIDE_CATEGORIES], asset_context, index, settings, actor_lines, crossing, already
+    )
+    answer = ask_one_planner_scope(chat, prompt, True, planner_inputs[0])
+    paths = list(planned)  # every planned path, written or failed too: no near copy of one
+    invalid_paths: dict[str, int] = {}
+    keep_valid_unique_paths(chat, [answer], asset_context, index, settings, it_only, paths, invalid_paths)
+    return paths[len(planned) :], invalid_paths, bool(answer)  # {} only when the answer was lost
+
+
+def planned_already_lines(planned: list[dict[str, Any]], index: MitreIndex) -> list[str]:
+    """One short line per planned path, "id | category | title | systems attacked | technique IDs" (no scenario
+    text: about 30 tokens)."""
+    lines = []
+    for position, path in enumerate(planned, start=1):
+        mitre_ids = []
+        for technique_id in path["technique_stix_ids"]:
+            mitre_ids.append(str(get_mitre_id(index["objects"][technique_id])))
+        systems = ", ".join(path["supporting_systems"]) or "the asset"
+        title = path["title"] or path["objective"]
+        lines.append(f"P{position} | {path['category']} | {title} | {systems} | {', '.join(mitre_ids)}")
+    return lines
+
+
+def planner_paths_requested(scope_count: int, settings: Settings) -> str:
+    """How many paths each planner call is asked for: TOTAL_SCENARIO_COUNT plus spares, or for 0 "all" with no
+    number (a number makes the model pad the list; further rounds find the rest)."""
+    wanted = settings.total_scenario_count
+    if wanted == 0:
+        return "all"
+    if scope_count > 1:
+        return f"at least {math.ceil(wanted / scope_count) + settings.mitre_extra_paths_per_scope}"
+    return f"at least {wanted + settings.mitre_extra_paths_in_one_call}"
 
 
 def fit_planner_inputs_to_call_limit(
@@ -432,16 +486,11 @@ def fit_planner_inputs_to_call_limit(
     settings: Settings,
     actor_lines: list[str],
     crossing: str,
+    planned_already: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """One planner input per scope, the lowest-ranked actor lines dropped until every call fits
-    MITRE_PLAN_CALL_TOKENS_LIMIT; with the actor lines kept."""
-    wanted = settings.total_scenario_count
-    if wanted == 0:
-        paths_requested = "all distinct realistic objectives"
-    elif len(scopes) > 1:
-        paths_requested = f"at least {math.ceil(wanted / len(scopes)) + settings.mitre_extra_paths_per_scope}"
-    else:
-        paths_requested = f"at least {wanted + settings.mitre_extra_paths_in_one_call}"
+    MITRE_PLAN_CALL_TOKENS_LIMIT (planned_already, a further round's, is never cut); with the actor lines kept."""
+    paths_requested = "all further" if planned_already else planner_paths_requested(len(scopes), settings)
     while True:
         planner_inputs, largest_call_tokens = [], 0
         for scope in scopes:
@@ -456,6 +505,8 @@ def fit_planner_inputs_to_call_limit(
             }
             if asset_and_system_types(asset_context) != {"IT"}:
                 planner_input["ics_assets"] = "\n".join(index["ics_assets"])
+            if planned_already:
+                planner_input["planned_already"] = planned_already
             planner_inputs.append(planner_input)
             scope_tokens = call_tokens((prompt, to_user_prompt(planner_input)), chat, c.AiTask.MITRE_PLAN)
             largest_call_tokens = max(largest_call_tokens, scope_tokens)
@@ -485,6 +536,87 @@ def ask_one_planner_scope(
     return answer
 
 
+def keep_valid_unique_paths(
+    chat: ChatModel,
+    round_answers: list[dict[str, Any]],
+    asset_context: dict[str, Any],
+    index: MitreIndex,
+    settings: Settings,
+    it_only: bool,
+    paths: list[dict[str, Any]],
+    invalid_paths: dict[str, int],
+) -> None:
+    """keep_valid_planned_paths, then the round's new paths the AI judges a repeat in meaning are dropped."""
+    before = len(paths)
+    keep_valid_planned_paths(round_answers, asset_context, index, settings, it_only, paths, invalid_paths)
+    kept, dropped = drop_paths_repeating_others(chat, paths[:before], paths[before:])
+    paths[before:] = kept
+    if dropped:
+        invalid_paths[c.MitreProblem.SAME_SCENARIO] = invalid_paths.get(c.MitreProblem.SAME_SCENARIO, 0) + dropped
+
+
+def drop_paths_repeating_others(
+    chat: ChatModel, planned: list[dict[str, Any]], new_paths: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """The new paths without those the AI judges the same scenario as a planned or a higher-ranked new one: the
+    same target and the same result, whatever the way in. (kept, dropped); a lost answer keeps them all."""
+    if not new_paths:
+        return [], 0
+    prompt = str(MITRE_PROMPTS["duplicates"]["text"])
+    asked = {"planned": numbered_path_lines("P", planned), "new": numbered_path_lines("N", new_paths)}
+    read = partial(read_duplicate_answer, len(planned), len(new_paths))
+    try:
+        repeated: set[str] = ask_ai_and_check(
+            chat, c.AiTask.MITRE_DUPLICATE_CHECK, (prompt, to_user_prompt(asked)), read, reuse_earlier_answer=True
+        )
+    except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
+        log.warning(c.LogEvent.MITRE_DUPLICATE_CHECK_FAILED, error_type=type(exc).__name__)
+        return list(new_paths), 0
+    kept = []
+    for position, path in enumerate(new_paths, start=1):
+        if f"N{position}" not in repeated:
+            kept.append(path)
+    return kept, len(new_paths) - len(kept)
+
+
+def numbered_path_lines(prefix: str, paths: list[dict[str, Any]]) -> list[str]:
+    """One line a path for the duplicate check: "id | category | title | objective | systems attacked"."""
+    lines = []
+    for position, path in enumerate(paths, start=1):
+        systems = ", ".join(path["supporting_systems"]) or "the asset"
+        lines.append(f"{prefix}{position} | {path['category']} | {path['title']} | {path['objective']} | {systems}")
+    return lines
+
+
+def read_duplicate_answer(planned_count: int, new_count: int, answer: dict[str, Any]) -> tuple[set[str], list[str]]:
+    """The new ids judged a repeat, and each verdict naming no planned id or earlier new id (re-asked once)."""
+    verdicts = answer.get("new")
+    if not isinstance(verdicts, list):
+        return set(), [c.MitreProblem.ANSWER_LAYOUT.format(key="new")]
+    repeated, problems = set(), []
+    for verdict in verdicts:
+        new_id = str(verdict.get("id") or "") if isinstance(verdict, dict) else ""
+        position = path_position(new_id, "N", new_count)
+        duplicate_of = verdict.get("duplicate_of") if position else None
+        if not duplicate_of:
+            continue  # not a new path, or a scenario of its own
+        earlier_new = path_position(str(duplicate_of), "N", new_count)
+        if path_position(str(duplicate_of), "P", planned_count) or 0 < earlier_new < position:
+            repeated.add(new_id)
+        else:
+            problems.append(c.MitreProblem.DUPLICATE_OF_UNKNOWN.format(id=new_id, duplicate_of=duplicate_of))
+    return repeated, problems
+
+
+def path_position(path_id: str, prefix: str, count: int) -> int:
+    """The 1-based position an id like "N3" names in a list of `count` paths, else 0."""
+    normalized = path_id.strip().upper()
+    number = normalized.removeprefix(prefix)
+    if not normalized.startswith(prefix) or not number.isdigit():
+        return 0
+    return int(number) if 1 <= int(number) <= count else 0
+
+
 def keep_valid_planned_paths(
     round_answers: list[dict[str, Any]],
     asset_context: dict[str, Any],
@@ -507,7 +639,9 @@ def keep_valid_planned_paths(
     for _, _, plan in ranked_plans:
         technique_ids = resolve_planned_techniques(plan, index, it_only)
         category = STRIDE_BY_LOWERCASE.get(str(plan.get("category") or "").strip().casefold())
-        reason = planned_path_rejection(technique_ids, category, paths, index, settings, it_only)
+        supporting_systems = planned_supporting_systems(plan, system_names)
+        reaches_ot = path_reaches_ot(asset_context, supporting_systems)
+        reason = planned_path_rejection(technique_ids, category, paths, index, settings, reaches_ot)
         if reason is not None:
             invalid_paths[reason] = invalid_paths.get(reason, 0) + 1
             continue
@@ -517,7 +651,7 @@ def keep_valid_planned_paths(
                 "objective": str(plan.get("objective") or ""),
                 "category": category,
                 "technique_stix_ids": technique_ids,
-                "supporting_systems": planned_supporting_systems(plan, system_names),
+                "supporting_systems": supporting_systems,
                 "has_it_and_ot": path_has_both_it_and_ot_techniques(technique_ids, index),
             }
         )
@@ -553,15 +687,25 @@ def planned_supporting_systems(plan: dict[str, Any], system_names: dict[str, str
     return planned_systems
 
 
+def path_reaches_ot(asset_context: dict[str, Any], planned_systems: list[str]) -> bool:
+    """True when the path attacks OT: the asset is OT, or a supporting system the plan names is OT."""
+    if asset_context["asset_type"] == "OT":
+        return True
+    for supporting_system in asset_context["supporting_systems"]:
+        if supporting_system["name"] in planned_systems and supporting_system["type"] == "OT":
+            return True
+    return False
+
+
 def planned_path_rejection(
     technique_ids: list[str],
     category: str | None,
     paths: list[dict[str, Any]],
     index: MitreIndex,
     settings: Settings,
-    it_only: bool,
+    reaches_ot: bool,
 ) -> str | None:
-    """Why a plan is rejected, or None for a valid one."""
+    """Why a plan is rejected, or None for a valid one. Only a path that attacks OT needs an ICS technique."""
     fewest_techniques, most_techniques = settings.attack_path_technique_range
     has_ics_technique = False
     for technique_id in technique_ids:
@@ -571,7 +715,7 @@ def planned_path_rejection(
         return c.MitreProblem.TOO_FEW_TECHNIQUES.format(count=fewest_techniques)
     if len(technique_ids) > most_techniques:
         return c.MitreProblem.TOO_MANY_TECHNIQUES.format(count=most_techniques)
-    if not it_only and not has_ics_technique:
+    if reaches_ot and not has_ics_technique:
         return c.MitreProblem.NO_ICS_TECHNIQUE
     if not category:
         return c.MitreProblem.NO_STRIDE_CATEGORY
@@ -585,7 +729,7 @@ def planned_path_rejection(
     for accepted_path in paths:
         accepted_ids = set(accepted_path["technique_stix_ids"])
         overlap = len(accepted_ids & set(technique_ids)) / len(accepted_ids | set(technique_ids))
-        if accepted_path["category"] == category and overlap >= settings.mitre_duplicate_technique_overlap:
+        if overlap >= settings.mitre_duplicate_technique_overlap:  # in any STRIDE category: the same attack retold
             return c.MitreProblem.DUPLICATE_PATH
     return None
 
@@ -759,10 +903,9 @@ def build_writer_input_within_call_limit(
     index: MitreIndex,
     settings: Settings,
     selected_actors: dict[str, Any],
+    threat_types: list[tuple[int, str]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]] | None:
-    """(writer input, its procedures, its candidate ids) within MITRE_WRITE_CALL_TOKENS_LIMIT: procedures per
-    technique halved down to 1 first, then candidates halved down to MITRE_MINIMUM_CANDIDATES_AFTER_TRIM;
-    None when even that does not fit (the run backfills the path)."""
+    """(writer input, procedures, candidates) within MITRE_WRITE_CALL_TOKENS_LIMIT, trimmed by halving; or None."""
     technique_ids = planned_path["technique_stix_ids"]
     techniques = writer_techniques(technique_ids, index)
     procedures_limit, candidates_limit = settings.procedures_per_technique, len(ranked_candidate_ids)
@@ -779,6 +922,7 @@ def build_writer_input_within_call_limit(
             "candidate_actors": writer_candidates(candidate_ids, technique_ids, index, selected_actors, settings),
             "groups_used_in_other_scenarios": groups_used_in_other_scenarios,
             "software": software_used_in_procedures(procedures, index),
+            "threat_types": [name for _, name in threat_types],
         }
         input_tokens = call_tokens((prompt, to_user_prompt(writer_input)), chat, c.AiTask.MITRE_WRITE)
         if input_tokens <= settings.mitre_write_call_tokens_limit:
@@ -901,6 +1045,8 @@ def check_written_scenario(
     system_names, verified_systems = system_name_by_folded_name(asset_context), []
     for system_name in scenario.supporting_systems:
         input_system_name = system_names.get(fold_name(system_name))
+        if fold_name(system_name) == fold_name(asset_context["asset_name"]):
+            continue  # the asset itself, listed with its systems: not an invented system
         if input_system_name is None:
             problems.append(c.MitreProblem.SYSTEM_NOT_THE_ASSETS.format(name=system_name))
         elif input_system_name not in verified_systems:
@@ -922,14 +1068,42 @@ def read_written_scenario(
     index: MitreIndex,
     settings: Settings,
     candidate_ids: list[str],
-    answer: dict[str, Any],
+    threat_types: list[tuple[int, str]],
+    written: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """The writer's {"scenarios": [one]} answer, checked, with the path's category and the prompt version."""
-    written = answer.get("scenarios")
-    if not isinstance(written, list) or not written or not isinstance(written[0], dict):
-        return None, [c.MitreProblem.ANSWER_LAYOUT.format(key="scenarios")]
-    scenario = {**written[0], "category": planned_path["category"], "prompt_version": c.PromptVersion.MITRE_WRITER}
-    return check_written_scenario(scenario, planned_path, asset_context, index, settings, candidate_ids)
+    """One written scenario of the writer's answer, checked, with the path's category, the prompt version and the
+    library threat type it copied (threat_type, threat_type_id; none to copy when the library has no types)."""
+    scenario = {**written, "category": planned_path["category"], "prompt_version": c.PromptVersion.MITRE_WRITER}
+    scenario.pop("slot", None)
+    scenario["supporting_systems"] = system_names_as_written(scenario.get("supporting_systems"))
+    checked, problems = check_written_scenario(scenario, planned_path, asset_context, index, settings, candidate_ids)
+    threat_type = find_listed_threat_type(scenario.get("threat_type"), threat_types)
+    if threat_types and threat_type is None:
+        problems = [*problems, c.MitreProblem.THREAT_TYPE_NOT_LISTED]
+    if problems or checked is None:
+        return None, problems
+    type_id, type_name = threat_type or (None, "")
+    return {**checked, "threat_type": type_name, "threat_type_id": type_id}, []
+
+
+def system_names_as_written(systems: object) -> object:
+    """The writer's supporting systems with a system written as {"name": ...} read as its name (not re-asked);
+    anything else as given, for the schema check to judge."""
+    if not isinstance(systems, list):
+        return systems
+    names = []
+    for system in systems:
+        names.append(system["name"] if isinstance(system, dict) and isinstance(system.get("name"), str) else system)
+    return names
+
+
+def find_listed_threat_type(given: object, threat_types: list[tuple[int, str]]) -> tuple[int, str] | None:
+    """The library's (type_id, name) the writer copied, matched as the ATT&CK writer's is; None when not listed."""
+    key = threat_name_key(given) if isinstance(given, str) else ""
+    for type_id, name in threat_types:
+        if key and threat_name_key(name) == key:
+            return type_id, name
+    return None
 
 
 def systems_targeted(
@@ -981,56 +1155,165 @@ def add_mitre_evidence_to_scenario(
     return {**scenario, "systems_targeted": targeted, "procedures": procedures, "mitigations": mitigations}
 
 
-def write_one_scenario_for_attack_path(
+#: The writer input fields of one path; the rest (SHARED_INPUT_FIELDS) is sent once a call.
+PATH_INPUT_FIELDS = ("plan", "techniques", "procedures", "candidate_actors", "software")
+SHARED_INPUT_FIELDS = ("asset_context", "groups_used_in_other_scenarios", "threat_types")
+
+
+def build_path_brief(
     chat: ChatModel,
-    planned_path: dict[str, Any],
-    ranked_candidate_ids: list[str],
-    groups_used_in_other_scenarios: list[dict[str, str]],
-    *,
-    asset_context: dict[str, Any],
-    index: MitreIndex,
-    settings: Settings,
-    actor_selection: dict[str, Any],
-    system_mitre_assets: dict[str, list[str]],
+    prompt: str,
+    taken: tuple[int, dict[str, Any], list[str]],
+    groups_used: list[dict[str, str]],
+    writing: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """One path as one checked scenario (one writer call, re-asked once with its problems), or None (backfilled)."""
-    prompt = writer_prompt(settings)
+    """One taken path's part of a writer call, trimmed so that a call with it alone fits
+    MITRE_WRITE_CALL_TOKENS_LIMIT: {slot, position, path, input, shared, procedures, candidate_ids}; None when it
+    never fits."""
+    position, planned_path, ranked_candidate_ids = taken
     built = build_writer_input_within_call_limit(
         chat,
         prompt,
         planned_path,
         ranked_candidate_ids,
-        groups_used_in_other_scenarios,
-        asset_context,
-        index,
-        settings,
-        actor_selection["actors"],
+        groups_used,
+        writing["asset_context"],
+        writing["index"],
+        writing["settings"],
+        writing["actor_selection"]["actors"],
+        writing["threat_types"],
     )
     if built is None:
         log.warning(c.LogEvent.MITRE_PATH_DROPPED, reason="writer_input_over_call_limit")
         return None
     writer_input, procedures, candidate_ids = built
-    read_answer = partial(read_written_scenario, planned_path, asset_context, index, settings, candidate_ids)
+    slot = f"path-{position + 1}"
+    path_input = {"slot": slot, **fields_of(writer_input, PATH_INPUT_FIELDS)}
+    brief = {"slot": slot, "position": position, "path": planned_path, "input": path_input}
+    shared = fields_of(writer_input, SHARED_INPUT_FIELDS)
+    return brief | {"shared": shared, "procedures": procedures, "candidate_ids": candidate_ids}
+
+
+def fields_of(data: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """The named fields of `data`, in that order."""
+    picked = {}
+    for field in fields:
+        picked[field] = data[field]
+    return picked
+
+
+def writer_call_prompt(prompt: str, briefs: Sequence[dict[str, Any]]) -> ChatPrompt:
+    """One writer call: the shared input once, then each path's own part under "paths"."""
+    paths = []
+    for brief in briefs:
+        paths.append(brief["input"])
+    return prompt, to_user_prompt({**briefs[0]["shared"], "paths": paths})
+
+
+def read_written_slots(asked: set[str], answer: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The answer's scenarios by slot. Only a reply not shaped {"scenarios": [...]} is asked again here; a slot
+    left out or failing its checks is re-asked with the set's other failures."""
+    if not isinstance(answer.get("scenarios"), list):
+        return {}, [c.MitreProblem.ANSWER_LAYOUT.format(key="scenarios")]
+    items, _ = answers_for_asked_slots(answer, "scenarios", asked)
+    by_slot = {}
+    for item in items:
+        by_slot[str(item["slot"])] = item
+    return by_slot, []
+
+
+def ask_writer_for_part(chat: ChatModel, prompt: str, part: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """One writer call's scenarios by slot; {} when the AI gave no usable answer (the part's paths fail)."""
+    asked = set()
+    for brief in part:
+        asked.add(brief["slot"])
+    read_answer = partial(read_written_slots, asked)
     try:
-        scenario: dict[str, Any] = ask_ai_and_check(
-            chat, c.AiTask.MITRE_WRITE, (prompt, to_user_prompt(writer_input)), read_answer, reuse_earlier_answer=True
+        written: dict[str, dict[str, Any]] = ask_ai_and_check(
+            chat, c.AiTask.MITRE_WRITE, writer_call_prompt(prompt, part), read_answer, reuse_earlier_answer=True
         )
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(c.LogEvent.MITRE_PATH_DROPPED, error_type=type(exc).__name__, problems=str(exc))
-        return None
-    return add_mitre_evidence_to_scenario(
-        scenario, planned_path, procedures, index, actor_selection, system_mitre_assets
+        log.warning(c.LogEvent.MITRE_PATH_DROPPED, error_type=type(exc).__name__, paths=len(part))
+        return {}
+    return written
+
+
+def ask_writer_for_briefs(
+    chat: ChatModel, prompt: str, briefs: list[dict[str, Any]], settings: Settings
+) -> dict[str, dict[str, Any]]:
+    """Every brief's written scenario by slot: at most one set's paths a call (CII_ANSWER_TOKENS_MITRE_WRITE is
+    sized for one set's answer: a regenerate may ask for many more), each call split again only above
+    MITRE_WRITE_CALL_TOKENS_LIMIT; at most MITRE_PARALLEL_WRITERS calls at once."""
+    limit, per_call = settings.mitre_write_call_tokens_limit, max(settings.initial_set_size, settings.next_set_size)
+    parts: list[Sequence[dict[str, Any]]] = []
+    for chunk in itertools.batched(briefs, per_call):
+        parts.extend(within_call_limit(chunk, partial(writer_call_prompt, prompt), chat, c.AiTask.MITRE_WRITE, limit))
+    ask_part = partial(ask_writer_for_part, chat, prompt)
+    written: dict[str, dict[str, Any]] = {}
+    for answer in run_in_parallel(ask_part, parts, settings.mitre_parallel_writers, "mitre-writer"):
+        written |= answer
+    return written
+
+
+def check_brief_answer(
+    brief: dict[str, Any], written: dict[str, Any] | None, writing: dict[str, Any]
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """The brief's written scenario checked and given its MITRE evidence, or (None, the problems to fix)."""
+    if written is None:
+        return None, [c.MitreProblem.NO_SCENARIO_FOR_PATH]
+    scenario, problems = read_written_scenario(
+        brief["path"],
+        writing["asset_context"],
+        writing["index"],
+        writing["settings"],
+        brief["candidate_ids"],
+        writing["threat_types"],
+        written,
     )
+    if scenario is None:
+        return None, problems
+    with_evidence = add_mitre_evidence_to_scenario(
+        scenario,
+        brief["path"],
+        brief["procedures"],
+        writing["index"],
+        writing["actor_selection"],
+        writing["system_mitre_assets"],
+    )
+    return with_evidence, []
 
 
-# ----------------------------------------------------------------------------- writing in parallel
+def write_briefs(
+    chat: ChatModel, prompt: str, briefs: list[dict[str, Any]], writing: dict[str, Any]
+) -> dict[str, dict[str, Any] | None]:
+    """Each brief's checked scenario by slot, None when it never passes: written together, then every failed one
+    re-asked together once with its draft and its problems."""
+    answers = ask_writer_for_briefs(chat, prompt, briefs, writing["settings"])
+    checked: dict[str, dict[str, Any] | None] = {}
+    to_fix = []
+    for brief in briefs:
+        scenario, problems = check_brief_answer(brief, answers.get(brief["slot"]), writing)
+        checked[brief["slot"]] = scenario
+        if scenario is None:
+            fix: dict[str, Any] = {"problems_to_fix": problems[: c.AiLimits.REASK_MAX_PROBLEMS]}
+            if brief["slot"] in answers:
+                fix["previous_draft"] = answers[brief["slot"]]
+            to_fix.append(brief | {"input": brief["input"] | fix})
+    if to_fix:
+        fixed = ask_writer_for_briefs(chat, prompt, to_fix, writing["settings"])
+        for brief in to_fix:
+            checked[brief["slot"]], _ = check_brief_answer(brief, fixed.get(brief["slot"]), writing)
+    return checked
+
+
+# ----------------------------------------------------------------------------- writing a set
 
 
 def start_schedule(
     group_usage: dict[str, int], index: MitreIndex, settings: Settings, run_target: int
 ) -> dict[str, Any]:
-    """The scheduler's state, read and changed only by its coordinating thread. group_usage: the scenarios
-    already written in this run that name each group, by MITRE group ID."""
+    """The set's writing state. group_usage: the scenarios already written in this run that name each group, by
+    MITRE group ID."""
     accepted_group_count: dict[str, int] = {}
     groups_used_in_other_scenarios = []
     for mitre_id, count in group_usage.items():
@@ -1043,7 +1326,7 @@ def start_schedule(
         "running": {},
         "written": [],
         "failed_positions": [],
-        "group_use_count": dict(accepted_group_count),  # accepted + running writers' top candidates
+        "group_use_count": dict(accepted_group_count),  # accepted + taken paths' first candidate
         "accepted_group_count": accepted_group_count,  # accepted only: the share cap after writing
         "groups_used_in_other_scenarios": groups_used_in_other_scenarios,
         "groups_removed_over_share": 0,
@@ -1166,12 +1449,10 @@ def next_waiting_position(
     paths: list[dict[str, Any]],
     crossing_required: bool,
 ) -> int:
-    """0, or, while a crossing path is required and none is running or written, the first waiting crossing path."""
+    """0, or, while a crossing path is required and none is taken or written, the first waiting crossing path."""
     if not crossing_required:
         return 0
-    positions_taken = []
-    for running_writer in schedule["running"].values():
-        positions_taken.append(running_writer["position"])
+    positions_taken = list(schedule["running"])  # the taken paths, by position
     for position, _ in schedule["written"]:
         positions_taken.append(position)
     for position in positions_taken:
@@ -1183,35 +1464,43 @@ def next_waiting_position(
     return 0
 
 
-def accept_finished_writer(
+def take_next_path(
     schedule: dict[str, Any],
-    future: Future[dict[str, Any] | None],
+    waiting: list[tuple[int, dict[str, Any]]],
     paths: list[dict[str, Any]],
-    index: MitreIndex,
-    selected_actors: dict[str, Any],
+    writing: dict[str, Any],
+    crossing_required: bool,
+) -> tuple[int, dict[str, Any], list[str]]:
+    """The next waiting path with its candidate groups ranked now; its first candidate (the group the writer names
+    first) counts as used until it is written, so the set's other paths prefer other groups."""
+    index, settings, selected_actors = writing["index"], writing["settings"], writing["actor_selection"]["actors"]
+    position, planned_path = waiting.pop(next_waiting_position(waiting, schedule, paths, crossing_required))
+    ranked_candidate_ids = rank_candidate_groups(planned_path, index, selected_actors, schedule, settings)
+    expected_groups = ranked_candidate_ids[:1]
+    for group_id in expected_groups:
+        schedule["group_use_count"][group_id] = schedule["group_use_count"].get(group_id, 0) + 1
+    taken = {"expected_groups": expected_groups, "candidate_ids": ranked_candidate_ids}
+    schedule["running"][position] = taken
+    return position, planned_path, ranked_candidate_ids
+
+
+def accept_written_path(
+    schedule: dict[str, Any],
+    position: int,
+    scenario: dict[str, Any] | None,
+    paths: list[dict[str, Any]],
+    writing: dict[str, Any],
     save_card: Callable[[dict[str, Any], dict[str, Any]], None],
 ) -> None:
-    """One finished writer: a dropped path is counted, a scenario is capped by group share, saved and counted.
-    A lost lease or an outage stops the run (it is retried, with the answers it already has)."""
-    running_writer = schedule["running"].pop(future)
-    position = running_writer["position"]
-    for group_id in running_writer["expected_groups"]:  # the expectation is replaced by what was really named
+    """One written path: a dropped one is counted, a scenario is capped by group share, saved and counted."""
+    index, selected_actors = writing["index"], writing["actor_selection"]["actors"]
+    taken = schedule["running"].pop(position)
+    for group_id in taken["expected_groups"]:  # the expectation is replaced by what was really named
         schedule["group_use_count"][group_id] -= 1
-    try:
-        scenario = future.result()
-    except LeaseLost:
-        raise
-    except TEMPORARY_ERRORS:
-        raise
-    except Exception:  # noqa: BLE001 - one path's bug never ends the run: the path is dropped and backfilled
-        log.exception(c.LogEvent.MITRE_PATH_DROPPED, reason="writer_failed")
-        scenario = None
     if scenario is None:
         schedule["failed_positions"].append(position)
         return
-    scenario = enforce_group_share_after_writing(
-        scenario, running_writer["candidate_ids"], schedule, index, selected_actors
-    )
+    scenario = enforce_group_share_after_writing(scenario, taken["candidate_ids"], schedule, index, selected_actors)
     save_card(paths[position], scenario)
     schedule["written"].append((position, scenario))
     for group in scenario["relevant_groups"]:
@@ -1223,98 +1512,60 @@ def accept_finished_writer(
             schedule["groups_used_in_other_scenarios"].append(named_group)
 
 
-def hand_next_path_to_a_writer(
+def write_next_paths_together(
+    chat: ChatModel,
     schedule: dict[str, Any],
     waiting: list[tuple[int, dict[str, Any]]],
-    pool: ThreadPoolExecutor,
-    write_path: Callable[..., dict[str, Any] | None],
     paths: list[dict[str, Any]],
-    index: MitreIndex,
-    selected_actors: dict[str, Any],
-    settings: Settings,
+    goal: int,
+    save_card: Callable[[dict[str, Any], dict[str, Any]], None],
+    writing: dict[str, Any],
     crossing_required: bool,
 ) -> None:
-    """Starts the next waiting path with its candidate groups ranked now, counting its top candidates as used
-    while it runs."""
-    position, planned_path = waiting.pop(next_waiting_position(waiting, schedule, paths, crossing_required))
-    ranked_candidate_ids = rank_candidate_groups(planned_path, index, selected_actors, schedule, settings)
-    expected_groups = ranked_candidate_ids[: settings.mitre_groups_per_scenario]
-    for group_id in expected_groups:
-        schedule["group_use_count"][group_id] = schedule["group_use_count"].get(group_id, 0) + 1
-    groups_used = list(schedule["groups_used_in_other_scenarios"])  # a copy: writers never share mutable state
-    # one context copy per writer: a Context cannot be entered by two threads at once
-    future = pool.submit(contextvars.copy_context().run, write_path, planned_path, ranked_candidate_ids, groups_used)
-    writer = {"position": position, "expected_groups": expected_groups, "candidate_ids": ranked_candidate_ids}
-    schedule["running"][future] = writer
+    """The next waiting paths still needed for goal, written together and each accepted."""
+    taken_paths: list[tuple[int, dict[str, Any], list[str]]] = []
+    while waiting and len(taken_paths) < goal - len(schedule["written"]):
+        taken_paths.append(take_next_path(schedule, waiting, paths, writing, crossing_required))
+    prompt, groups_used = writer_prompt(writing["settings"]), list(schedule["groups_used_in_other_scenarios"])
+    briefs = []
+    for taken in taken_paths:
+        brief = build_path_brief(chat, prompt, taken, groups_used, writing)
+        if brief is None:
+            accept_written_path(schedule, taken[0], None, paths, writing, save_card)
+        else:
+            briefs.append(brief)
+    checked = write_briefs(chat, prompt, briefs, writing) if briefs else {}
+    for brief in briefs:
+        accept_written_path(schedule, brief["position"], checked[brief["slot"]], paths, writing, save_card)
 
 
-def write_scenarios_in_parallel(
+def write_scenario_set(
     chat: ChatModel,
     paths: list[dict[str, Any]],
     goal: int,
     group_usage: dict[str, int],
     save_card: Callable[[dict[str, Any], dict[str, Any]], None],
     *,
-    asset_context: dict[str, Any],
-    index: MitreIndex,
-    settings: Settings,
-    actor_selection: dict[str, Any],
-    system_mitre_assets: dict[str, list[str]],
     run_target: int,
     crossing_required: bool,
+    **writing: Any,
 ) -> dict[str, Any]:
-    """Keeps MITRE_PARALLEL_WRITERS writers busy until goal scenarios pass or no path is left; a dropped path is
-    backfilled by the next-ranked one, and a required crossing path goes first while none is running or written.
-    Groups are ranked and capped (MAX_SCENARIO_SHARE_PER_GROUP of run_target, the run's count after this set) in
-    the calling thread only; save_card(path, scenario) is called there for each scenario kept, as each finishes.
-    Returns {written: [(position in paths, scenario)] in path order, failed_positions, groups_removed_over_share}."""
-    schedule = start_schedule(group_usage, index, settings, run_target)
-    write_path = partial(
-        write_one_scenario_for_attack_path,
-        chat,
-        asset_context=asset_context,
-        index=index,
-        settings=settings,
-        actor_selection=actor_selection,
-        system_mitre_assets=system_mitre_assets,
-    )
-    run_writer_pool(
-        schedule, write_path, paths, goal, index, actor_selection["actors"], settings, crossing_required, save_card
-    )
+    """The set written as the shared pipeline writes one: its goal paths in one writer call (more only above
+    MITRE_WRITE_CALL_TOKENS_LIMIT), the failed ones re-asked together once; while fewer than goal pass, the next
+    waiting paths are written the same way (a required crossing path first). `writing`: asset_context, index,
+    settings, actor_selection, system_mitre_assets, threat_types. Groups capped at MAX_SCENARIO_SHARE_PER_GROUP
+    of run_target; save_card(path, scenario) per kept one. {written: [(position, scenario)] in path order,
+    failed_positions, groups_removed_over_share}."""
+    schedule = start_schedule(group_usage, writing["index"], writing["settings"], run_target)
+    waiting = list(enumerate(paths))
+    while waiting and len(schedule["written"]) < goal:
+        write_next_paths_together(chat, schedule, waiting, paths, goal, save_card, writing, crossing_required)
     schedule["written"].sort(key=written_position)
-    removed = schedule["groups_removed_over_share"]
     return {
         "written": schedule["written"],
         "failed_positions": schedule["failed_positions"],
-        "groups_removed_over_share": removed,
+        "groups_removed_over_share": schedule["groups_removed_over_share"],
     }
-
-
-def run_writer_pool(
-    schedule: dict[str, Any],
-    write_path: Callable[..., dict[str, Any] | None],
-    paths: list[dict[str, Any]],
-    goal: int,
-    index: MitreIndex,
-    selected_actors: dict[str, Any],
-    settings: Settings,
-    crossing_required: bool,
-    save_card: Callable[[dict[str, Any], dict[str, Any]], None],
-) -> None:
-    """The FIRST_COMPLETED loop: hand paths to free writers, then take whichever writers finished first."""
-    waiting, writers = list(enumerate(paths)), settings.mitre_parallel_writers
-    with ThreadPoolExecutor(writers, thread_name_prefix="mitre-writer") as pool:
-        while True:
-            running = schedule["running"]
-            while waiting and len(running) < writers and len(schedule["written"]) + len(running) < goal:
-                hand_next_path_to_a_writer(
-                    schedule, waiting, pool, write_path, paths, index, selected_actors, settings, crossing_required
-                )
-            if not running:
-                return
-            finished, _ = wait(running, return_when=FIRST_COMPLETED)
-            for future in finished:
-                accept_finished_writer(schedule, future, paths, index, selected_actors, save_card)
 
 
 def written_position(written: tuple[int, dict[str, Any]]) -> int:

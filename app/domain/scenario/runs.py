@@ -440,7 +440,7 @@ def promote_threat_scenario_to_library(
     principal: Principal, run: api_views.SessionStatus, scenario_id: str
 ) -> api_views.PromotionResult:
     """Proposes the accepted scenario's AI threat to the curators."""
-    scenario, threat = _accepted_ai_threat(run.session_id, scenario_id)
+    scenario, threat = _accepted_ai_threat(run.session_id, scenario_id, run.pipeline == c.RunPipeline.MITRE)
     actors = (scenario.get("content") or {}).get("actors") or []
     actor_ids = tuple(actor["id"] for actor in actors if actor.get("id"))
     result = _propose_threat(scenario_id, threat, actor_ids, principal)
@@ -460,8 +460,11 @@ def promote_threat_scenario_to_library(
     return api_views.PromotionResult(scenario_id=scenario_id, results=[result])
 
 
-def _accepted_ai_threat(session_id: str, scenario_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The accepted scenario and its AI-written threat: 404 unknown, 409 not accepted or nothing to promote."""
+def _accepted_ai_threat(
+    session_id: str, scenario_id: str, card_holds_threat: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The accepted scenario and its AI-written threat: 404 unknown, 409 not accepted or nothing to promote.
+    `card_holds_threat`: a MITRE run's card holds its whole threat (no plan to read it from)."""
     scenario = get_threat_scenario_repository().get(fields="shown", _id=scenario_id, session_id=session_id, served=True)
     if scenario is None:
         message = c.SessionMessage.SCENARIO_NOT_FOUND.format(scenario_id=scenario_id, session_id=session_id)
@@ -471,7 +474,9 @@ def _accepted_ai_threat(session_id: str, scenario_id: str) -> tuple[dict[str, An
         raise Conflict(message, reason=c.ConflictReason.SCENARIO_NOT_ACCEPTED)
     reference = (scenario.get("content") or {}).get("threat") or {}
     threat = None
-    if reference.get("ai_generated") and (key := reference.get("key")):  # a library threat has nothing to promote
+    if card_holds_threat and reference.get("ai_generated") and reference.get("type"):  # a type to propose it under
+        threat = {"name": reference["name"], "type": {"name": reference["type"]}, "category": reference["category"]}
+    elif reference.get("ai_generated") and (key := reference.get("key")):  # a library threat has nothing to promote
         where = {"_id": session_id, "plan.threats.key": key}
         found = get_threat_scenario_session_repository().get(fields="plan_threat", **where)
         threat = (((found or {}).get("plan") or {}).get("threats") or [None])[0]

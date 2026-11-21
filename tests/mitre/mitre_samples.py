@@ -5,7 +5,9 @@ import json
 from typing import Any
 
 from app.core.config import Settings, get_settings
+from app.core.constants import AiTask
 from app.search.mitre.mitre_index import MitreIndex, build_mitre_index
+from tests.fakes import FakeChatModel
 
 PHISHING, CONTROL_LOGIC, VALID_ACCOUNTS, DENIAL_OF_CONTROL, LOSS_OF_AVAILABILITY = (
     "attack-pattern--phishing",
@@ -170,6 +172,7 @@ TEST_SETTINGS: dict[str, Any] = {
     "candidate_groups_per_scenario": 15,
     "max_scenario_share_per_group": 0.5,
     "mitre_planner_single_call_limit": 40,
+    "mitre_planner_max_further_rounds": 5,
 }
 # Quotes of at least five words from each actor's MITRE description, by MITRE ID.
 QUOTES = {
@@ -292,7 +295,12 @@ def writer_answer(
         "attack_techniques": attack_techniques,
         "supporting_systems": ["SCADA"],
         "assumptions": ["Operators can reach the controller."],
+        "threat_type": "Unauthorised access",
     }
+
+
+#: The library's threat types the writer copies one of: (type_id, name), as list_threat_choices gives them.
+THREAT_TYPES: list[tuple[int, str]] = [(85, "Malware/Ransomware"), (2, "Unauthorised access")]
 
 
 def selection_of(*actor_ids_and_relevance: tuple[str, int]) -> dict[str, Any]:
@@ -325,3 +333,39 @@ def planned_path_techniques(planned_path: dict[str, Any]) -> list[dict[str, str]
     for technique_id in planned_path["technique_stix_ids"]:
         techniques.append({"stix_id": technique_id})
     return techniques
+
+
+def no_repeat_found(_user_prompt: str) -> dict[str, Any]:
+    """The duplicate judge's answer when a test does not give one: no path repeats another."""
+    return {"new": []}
+
+
+class MitreChat(FakeChatModel):
+    """The fake AI of the MITRE tests: the duplicate judge finds no repeat unless a test answers it. A writer call
+    is answered path by path: each entry of its "paths" is asked as its own block (the shared input with that
+    path's own part, recorded as one asked prompt), so a test reads and answers one path at a time; the answer's
+    first scenario gets the path's slot. writer_prompts keeps each real writer call's user prompt, writer_calls
+    counts them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writer_prompts: list[str] = []
+        self.responders[AiTask.MITRE_DUPLICATE_CHECK] = no_repeat_found
+
+    @property
+    def writer_calls(self) -> int:
+        return len(self.writer_prompts)
+
+    def _answer(self, task: AiTask, user_prompt: str) -> dict[str, Any]:
+        if task is not AiTask.MITRE_WRITE:
+            return super()._answer(task, user_prompt)
+        self.writer_prompts.append(user_prompt)
+        data = json.loads(user_prompt)
+        shared = dict(data)
+        del shared["paths"]
+        scenarios = []
+        for path in data["paths"]:
+            answered = super()._answer(task, json.dumps({**shared, **path}))
+            for item in (answered.get("scenarios") or [])[:1]:
+                scenarios.append({**item, "slot": path["slot"]} if isinstance(item, dict) else item)
+        return {"scenarios": scenarios}

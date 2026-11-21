@@ -1631,6 +1631,7 @@ A page for operators, served by the API itself at `https://<tsg-host>/ui/` (same
 | Data ingestion | the switch; each source's state; import now (all or one source), followed until done | no |
 | Schedule | the form of 7.4, with the next and the last run | no |
 | Control links | linked, without a control, not prepared, last prepared; prepare now, followed with `judged`, `unchanged`, `failed` | no |
+| Service mapper | describe a service and generate its mapping, followed until done; upstream and downstream services; accept, reject, regenerate; recent mappings. Sends the client `X-API-Key`, `X-User-Id`, `X-Entity-Id` and `X-Tenant-Id` typed on the page | no (a client key instead) |
 | Jobs | every job, queue and worker (7.2); cancel an import or a build | yes |
 | Search vectors | build the library's search vectors now | yes |
 | API keys | list, mint (the key is shown once), revoke | yes |

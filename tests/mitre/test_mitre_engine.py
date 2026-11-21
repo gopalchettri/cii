@@ -28,8 +28,10 @@ from tests.mitre.mitre_samples import (
     MIXED_ASSET,
     PHISHING,
     QUOTES,
+    THREAT_TYPES,
     VALID_ACCOUNTS,
     ZETA,
+    MitreChat,
     actor_row,
     asset_context,
     documents,
@@ -68,7 +70,7 @@ def chat_with(
     plan: dict[str, Any] | None = None,
     scenario: dict[str, Any] | None = None,
 ) -> FakeChatModel:
-    chat = FakeChatModel()
+    chat = MitreChat()
     chat.responders[AiTask.MITRE_ACTOR_SELECTION] = answering({"relevant_actors": actor_rows or []})
     chat.responders[AiTask.MITRE_PLAN] = answering(plan or planner_answer(TAMPERING_PATH))
     chat.responders[AiTask.MITRE_WRITE] = answering({"scenarios": [scenario or writer_answer()]})
@@ -86,7 +88,7 @@ def select_actors(
     index: MitreIndex, rows_for_slice: Any, **setting_changes: Any
 ) -> tuple[dict[str, Any], FakeChatModel]:
     """The actor selection with rows_for_slice(slice input) answering (or raising for) each slice."""
-    chat = FakeChatModel()
+    chat = MitreChat()
 
     def respond(user_prompt: str) -> dict[str, Any]:
         return {"relevant_actors": rows_for_slice(json.loads(user_prompt))}
@@ -109,7 +111,7 @@ def one_profile_per_slice_limit(index: MitreIndex) -> int:
     largest_line = 0
     for profile in index["actor_profiles"]:
         largest_line = max(largest_line, profile["tokens"])
-    return call_tokens(prompt, FakeChatModel(), AiTask.MITRE_ACTOR_SELECTION) + largest_line + 5
+    return call_tokens(prompt, MitreChat(), AiTask.MITRE_ACTOR_SELECTION) + largest_line + 5
 
 
 def plan(chat: FakeChatModel, index: MitreIndex, asset: dict[str, Any] | None = None, **changes: Any) -> dict[str, Any]:
@@ -135,17 +137,19 @@ def write_scenario(
     system_mitre_assets: dict[str, list[str]] | None = None,
     **changes: Any,
 ) -> dict[str, Any] | None:
-    return engine.write_one_scenario_for_attack_path(
-        chat,
-        planned_path,
-        list(ranked),
-        list(used or []),
-        asset_context=asset_context(asset),
-        index=index,
-        settings=settings(**changes),
-        actor_selection=selection or selection_of((ZETA, 5)),
-        system_mitre_assets=system_mitre_assets or {},
-    )
+    writing = {
+        "asset_context": asset_context(asset),
+        "index": index,
+        "settings": settings(**changes),
+        "actor_selection": selection or selection_of((ZETA, 5)),
+        "system_mitre_assets": system_mitre_assets or {},
+        "threat_types": THREAT_TYPES,
+    }
+    prompt = engine.writer_prompt(writing["settings"])
+    brief = engine.build_path_brief(chat, prompt, (0, planned_path, list(ranked)), list(used or []), writing)
+    if brief is None:
+        return None
+    return engine.write_briefs(chat, prompt, [brief], writing)[brief["slot"]]
 
 
 # ----------------------------------------------------------------------------- actor selection
@@ -348,12 +352,88 @@ def test_planner_keeps_valid_paths_and_counts_each_rejection(index: MitreIndex) 
     assert [path["technique_stix_ids"] for path in planned["paths"]] == [[PHISHING, CONTROL_LOGIC]]
     assert planned["paths"][0]["category"] == "Tampering" and planned["paths"][0]["has_it_and_ot"]
     assert planned["invalid_paths"] == {
-        "no ICS technique although OT is in scope": 1,
+        "no ICS technique although the path attacks OT": 1,
         "fewer than 2 techniques": 1,
         "no STRIDE category": 1,
         "no MITRE group documented for these techniques": 1,
         "duplicate of a higher-ranked path": 1,
     }
+
+
+def test_only_a_path_that_attacks_an_ot_system_needs_an_ics_technique(index: MitreIndex) -> None:
+    it_asset_with_ot_system = {**MIXED_ASSET, "asset_type": "IT"}  # session 24f6dd71: 14 of 20 IT paths were lost
+    answer = planner_answer((["T1566", "T1078"], "Tampering"), (["T1566", "T1078"], "Spoofing"))
+    answer["plans"][0]["supporting_systems"] = ["Portal"]  # IT only: Enterprise techniques are enough
+    answer["plans"][1]["supporting_systems"] = ["SCADA"]  # attacks the OT system without an ICS technique
+    planned = plan(chat_with(plan=answer), index, it_asset_with_ot_system)
+    assert [path["supporting_systems"] for path in planned["paths"]] == [["Portal"]]
+    assert planned["invalid_paths"] == {"no ICS technique although the path attacks OT": 1}
+
+
+def test_a_path_the_ai_judges_the_same_target_and_result_is_dropped(index: MitreIndex) -> None:
+    """Different techniques, one scenario in meaning (the user's rule: same target and result, any way in): the
+    judge names N1 for N3; a bad reference is asked again. Mutation: keep every path the techniques allow."""
+    answer = planner_answer(TAMPERING_PATH, (["T1078", "T0813"], "Spoofing"), (["T1566", "T0826"], "Tampering"))
+    chat = chat_with(plan=answer)
+    chat.queue(
+        AiTask.MITRE_DUPLICATE_CHECK,
+        {"new": [{"id": "N3", "duplicate_of": "N9"}]},  # names no listed path: asked again
+        {"new": [{"id": "N1", "duplicate_of": None}, {"id": "N3", "duplicate_of": "N1"}]},
+    )
+    planned = plan(chat, index)
+    assert [path["title"] for path in planned["paths"]] == ["P0", "P1"]
+    assert planned["invalid_paths"] == {"the same target and result as a higher-ranked path": 1}
+    asked = inputs_of(chat, AiTask.MITRE_DUPLICATE_CHECK)
+    assert (
+        len(asked) == 2
+        and asked[0]["planned"] == []
+        and asked[0]["new"][2] == ("N3 | Tampering | P2 | Disrupt pumping | SCADA")
+    )
+    assert (
+        "Work through each STRIDE category" in MITRE_PROMPTS["plan"]["text"]
+        and "repeats" not in MITRE_PROMPTS["plan"]["text"]
+    )
+
+
+def test_a_further_path_repeating_a_planned_one_in_meaning_is_dropped_and_a_lost_verdict_keeps_all(
+    index: MitreIndex,
+) -> None:
+    planned = plan(chat_with(), index)["paths"]
+    chat = chat_with(plan=planner_answer((["T1078", "T0813"], "Spoofing")))
+    chat.responders[AiTask.MITRE_DUPLICATE_CHECK] = answering({"new": [{"id": "N1", "duplicate_of": "P1"}]})
+    selection = selection_of((ZETA, 5))
+    found, invalid_paths, answer_read = engine.plan_further_paths(
+        chat, asset_context(), index, settings(), selection, planned
+    )
+    assert (found, answer_read) == ([], True) and invalid_paths == {
+        "the same target and result as a higher-ranked path": 1
+    }
+    assert inputs_of(chat, AiTask.MITRE_DUPLICATE_CHECK)[0]["planned"] == [
+        "P1 | Tampering | P0 | Disrupt pumping | SCADA"
+    ]
+    lost = chat_with(plan=planner_answer((["T1078", "T0813"], "Spoofing")))
+    lost.responders[AiTask.MITRE_DUPLICATE_CHECK] = answering({"no": "verdicts"})
+    assert len(engine.plan_further_paths(lost, asset_context(), index, settings(), selection, planned)[0]) == 1
+
+
+def test_a_system_written_as_an_object_is_read_as_its_name(index: MitreIndex) -> None:
+    """The writer gave {"name": "SCADA"} for a system (live AOCC run): read, never re-asked."""
+    written = writer_answer()
+    written["supporting_systems"] = [{"name": "SCADA"}]
+    chat = chat_with(scenario=written)
+    scenario = write_scenario(chat, first_planned_path(index), index)
+    assert scenario is not None and scenario["supporting_systems"] == ["SCADA"] and chat.writer_calls == 1
+
+
+def test_the_same_attack_under_another_stride_category_is_a_duplicate(index: MitreIndex) -> None:
+    """AOCC run 7db2e785: one attack (the same techniques) filed as Tampering and as Information Disclosure.
+    Mutation: compare paths of one category only and both are kept."""
+    answer = planner_answer(
+        TAMPERING_PATH, (["T1566", "T0831"], "Information Disclosure"), (["T1078", "T0831"], "Spoofing")
+    )
+    planned = plan(chat_with(plan=answer), index)
+    assert [path["category"] for path in planned["paths"]] == ["Tampering", "Spoofing"]
+    assert planned["invalid_paths"] == {"duplicate of a higher-ranked path": 1}
 
 
 def test_planner_rejects_paths_outside_the_env_technique_range(index: MitreIndex) -> None:
@@ -414,14 +494,40 @@ def test_large_requests_plan_one_call_per_stride_category(index: MitreIndex) -> 
     assert inputs_of(chat, AiTask.MITRE_PLAN)[0]["stride_scope"] == "all STRIDE categories"
 
 
-def test_all_paths_on_a_large_asset_adds_one_call_per_stride_category(index: MitreIndex) -> None:
+def test_all_paths_asks_one_call_with_no_number_however_many_it_finds(index: MitreIndex) -> None:
     chat = chat_with()
-    assert plan(chat, index, mitre_planner_single_call_limit=1)["planner_calls"] == 7  # 1 call, then 6 scopes
-    assert inputs_of(chat, AiTask.MITRE_PLAN)[0]["stride_scope"] == "all STRIDE categories"
+    assert plan(chat, index, mitre_planner_single_call_limit=1)["planner_calls"] == 1  # never a per-category round
+    (asked,) = inputs_of(chat, AiTask.MITRE_PLAN)
+    assert (asked["stride_scope"], asked["paths_requested"]) == ("all STRIDE categories", "all")  # never a floor
+    assert "planned_already" not in asked
+
+
+def test_a_further_round_sends_the_planned_paths_and_keeps_only_new_unique_ones(index: MitreIndex) -> None:
+    planned = plan(chat_with(), index)["paths"]  # one Tampering path: T1566, T0831
+    further = planner_answer(TAMPERING_PATH, (["T1078", "T0831"], "Spoofing"))  # a copy, then a new one
+    chat = chat_with(plan=further)
+    new_paths, invalid_paths, answer_read = engine.plan_further_paths(
+        chat, asset_context(), index, settings(), selection_of((ZETA, 5)), planned
+    )
+    (asked,) = inputs_of(chat, AiTask.MITRE_PLAN)
+    assert asked["paths_requested"] == "all further"
+    assert asked["planned_already"] == ["P1 | Tampering | P0 | SCADA | T1566, T0831"]
+    assert [(path["category"], path["title"]) for path in new_paths] == [("Spoofing", "P1")] and answer_read
+    assert invalid_paths == {"duplicate of a higher-ranked path": 1} and len(planned) == 1  # planned is not changed
+    none_left = chat_with(plan=planner_answer())
+    selection = selection_of((ZETA, 5))
+    assert engine.plan_further_paths(none_left, asset_context(), index, settings(), selection, planned) == (
+        [],
+        {},
+        True,
+    )
+    lost = MitreChat()  # an answer that is never readable: lost, not "none left"
+    lost.responders[AiTask.MITRE_PLAN] = answering({"no": "plans"})
+    assert engine.plan_further_paths(lost, asset_context(), index, settings(), selection, planned) == ([], {}, False)
 
 
 def test_a_failed_planner_scope_or_odd_plan_does_not_fail_the_run(index: MitreIndex) -> None:
-    chat = FakeChatModel()
+    chat = MitreChat()
 
     def answer_for(user_prompt: str) -> dict[str, Any]:
         if json.loads(user_prompt)["stride_scope"] == "Spoofing":
@@ -436,7 +542,7 @@ def test_a_failed_planner_scope_or_odd_plan_does_not_fail_the_run(index: MitreIn
 
 
 def test_no_valid_path_fails_the_run_after_one_fresh_round(index: MitreIndex) -> None:
-    chat = FakeChatModel()
+    chat = MitreChat()
 
     def unreadable(user_prompt: str) -> dict[str, Any]:
         raise UnreadableAiAnswer("filtered")
@@ -549,7 +655,7 @@ def test_writer_trims_procedures_then_candidates_to_fit_the_call_limit(
         {"scenarios": [writer_answer(groups=(("Alpha", "G0102"),))]},
     )
     # Phishing has 4 procedures, Modify Control Logic 1: a limit of 4 gives 5 procedures, 2 gives 3, 1 gives 2.
-    chat = FakeChatModel()
+    chat = MitreChat()
     chat.queue(AiTask.MITRE_WRITE, zeta_answer)
     scenario = write_scenario(
         chat, planned_path, index, ranked, procedures_per_technique=4, mitre_write_call_tokens_limit=240
@@ -559,7 +665,7 @@ def test_writer_trims_procedures_then_candidates_to_fit_the_call_limit(
     )
 
     sizes.clear()
-    chat = FakeChatModel()
+    chat = MitreChat()
     chat.queue(AiTask.MITRE_WRITE, zeta_answer, alpha_answer)
     used = [{"mitre_id": "G0104", "name": "Gamma"}]
     scenario = write_scenario(
@@ -575,7 +681,7 @@ def test_writer_trims_procedures_then_candidates_to_fit_the_call_limit(
         assert [candidate["name"] for candidate in writer_input["candidate_actors"]] == ["Alpha", "Gamma", "Beta"]
         assert writer_input["groups_used_in_other_scenarios"] == used
 
-    chat = FakeChatModel()
+    chat = MitreChat()
     assert (
         write_scenario(chat, planned_path, index, ranked, procedures_per_technique=4, mitre_write_call_tokens_limit=229)
         is None
@@ -602,7 +708,7 @@ def test_writer_is_asked_again_when_an_answer_fails_the_mitre_checks(
         bad_answer, planned_path, asset_context(), index, settings(), [ZETA, ALPHA, GAMMA]
     )
     assert problems
-    chat = FakeChatModel()
+    chat = MitreChat()
     chat.queue(AiTask.MITRE_WRITE, {"scenarios": [bad_answer]}, {"scenarios": [writer_answer()]})
     scenario = write_scenario(chat, planned_path, index)
     assert (
@@ -699,12 +805,24 @@ def test_writer_names_are_resolved_by_mitre_id_and_systems_ignore_case(index: Mi
     answer = writer_answer()
     answer["attack_techniques"][0]["name"] = "Phishing (initial access)"  # cosmetic: no re-ask needed
     answer["relevant_groups"][0]["name"] = "ZETA group"
-    answer["supporting_systems"] = ["  scada "]
+    answer["supporting_systems"] = ["  scada ", "pump controller"]  # the asset itself: left out, not a re-ask
     chat = chat_with(scenario=answer)
     scenario = write_scenario(chat, first_planned_path(index), index)
     assert len(chat.asked(AiTask.MITRE_WRITE)) == 1 and scenario is not None
     assert scenario["attack_techniques"][0]["name"] == "Phishing" and scenario["relevant_groups"][0]["name"] == "Zeta"
     assert scenario["supporting_systems"] == ["SCADA"]
+
+
+def test_the_writer_copies_a_library_threat_type_or_is_asked_again(index: MitreIndex) -> None:
+    """A listed type (any case) is kept with its library id; one not listed is re-asked once, then the path drops."""
+    answer = writer_answer() | {"threat_type": "unauthorised ACCESS"}
+    chat = chat_with(scenario=answer)
+    scenario = write_scenario(chat, first_planned_path(index), index)
+    assert scenario is not None and (scenario["threat_type"], scenario["threat_type_id"]) == ("Unauthorised access", 2)
+    assert inputs_of(chat, AiTask.MITRE_WRITE)[0]["threat_types"] == ["Malware/Ransomware", "Unauthorised access"]
+    chat = chat_with(scenario=writer_answer() | {"threat_type": "Invented type"})
+    assert write_scenario(chat, first_planned_path(index), index) is None
+    assert len(chat.asked(AiTask.MITRE_WRITE)) == 2  # the one re-ask, then dropped
 
 
 # ----------------------------------------------------------------------------- writing in parallel
@@ -721,14 +839,14 @@ def run_writers(
     run_target: int | None = None,
     **changes: Any,
 ) -> tuple[dict[str, Any], list[str]]:
-    """write_scenarios_in_parallel, with the titles of the paths saved in the order they were saved."""
+    """write_scenario_set, with the titles of the paths saved in the order they were saved."""
     saved = []
 
     def save_card(planned_path: dict[str, Any], scenario: dict[str, Any]) -> None:
         saved.append(planned_path["title"])
 
-    result = engine.write_scenarios_in_parallel(
-        chat or FakeChatModel(),
+    result = engine.write_scenario_set(
+        chat or MitreChat(),
         paths,
         goal,
         group_usage or {},
@@ -740,6 +858,7 @@ def run_writers(
         system_mitre_assets={},
         run_target=goal if run_target is None else run_target,
         crossing_required=crossing_required,
+        threat_types=THREAT_TYPES,
     )
     return result, saved
 
@@ -749,6 +868,22 @@ def written_titles(result: dict[str, Any], paths: list[dict[str, Any]]) -> list[
     for position, _ in result["written"]:
         titles.append(paths[position]["title"])
     return titles
+
+
+def patch_writer(monkeypatch: pytest.MonkeyPatch, fake_writer: Any) -> None:
+    """The set's writer replaced, one path at a time, by fake_writer(chat, planned path, ranked candidate ids,
+    groups used in other scenarios, **writing) giving the path's scenario or None."""
+
+    def write_briefs(
+        chat: Any, prompt: str, briefs: list[dict[str, Any]], writing: dict[str, Any]
+    ) -> dict[str, dict[str, Any] | None]:
+        written = {}
+        for brief in briefs:
+            used = brief["shared"]["groups_used_in_other_scenarios"]
+            written[brief["slot"]] = fake_writer(chat, brief["path"], brief["candidate_ids"], used, **writing)
+        return written
+
+    monkeypatch.setattr(engine, "write_briefs", write_briefs)
 
 
 def capture_scheduled_candidates(monkeypatch: pytest.MonkeyPatch, failing_titles: tuple[str, ...] = ()) -> list[Any]:
@@ -765,7 +900,7 @@ def capture_scheduled_candidates(monkeypatch: pytest.MonkeyPatch, failing_titles
         named = [{"mitre_id": get_mitre_id(first_group), "name": first_group["name"]}]
         return {"attack_techniques": planned_path_techniques(planned_path), "relevant_groups": named}
 
-    monkeypatch.setattr(engine, "write_one_scenario_for_attack_path", fake_writer)
+    patch_writer(monkeypatch, fake_writer)
     return captured
 
 
@@ -790,7 +925,8 @@ def test_paths_sharing_a_top_group_get_different_first_candidates(
     selection = selection_of((ZETA, 5), (GAMMA, 4))
     run_writers(index, fake_paths(2), 2, selection, mitre_parallel_writers=1, max_scenario_share_per_group=1.0)
     assert captured[0] == ([ZETA, GAMMA, ALPHA], [])
-    assert captured[1][0][0] == GAMMA and captured[1][1] == [{"mitre_id": "G0101", "name": "Zeta"}]
+    # one call writes the set: P1 is ranked with P0's first candidate counted as used (both are in the request)
+    assert captured[1][0][0] == GAMMA and captured[1][1] == []
 
     captured = capture_scheduled_candidates(monkeypatch, failing_titles=("P0",))
     run_writers(index, fake_paths(2), 1, selection, mitre_parallel_writers=1)
@@ -813,7 +949,7 @@ def test_a_group_at_its_share_of_scenarios_is_no_longer_offered(monkeypatch: pyt
         captured.append(ranked)
         return zeta_writer(chat, planned_path, ranked, used, **options)
 
-    monkeypatch.setattr(engine, "write_one_scenario_for_attack_path", recording_writer)
+    patch_writer(monkeypatch, recording_writer)
     run_writers(four_group_index, fake_paths(4), 4, mitre_parallel_writers=1)
     assert ZETA in captured[0] and ZETA in captured[1]  # named in 2 of 4 scenarios: its 0.5 share
     assert ZETA not in captured[2] and ZETA not in captured[3] and len(captured[2]) == 3
@@ -833,7 +969,7 @@ def test_the_share_cap_is_strict_even_when_few_groups_are_documented(
         captured.append(ranked)
         return zeta_writer(chat, planned_path, ranked, used, **options)
 
-    monkeypatch.setattr(engine, "write_one_scenario_for_attack_path", recording_writer)
+    patch_writer(monkeypatch, recording_writer)
     zeta_and_gamma = {
         **fake_paths(1)[0],
         "title": "P2",
@@ -845,16 +981,10 @@ def test_the_share_cap_is_strict_even_when_few_groups_are_documented(
     assert captured[2] == [GAMMA] and captured[3] == [ZETA]
 
 
-def test_the_share_cap_holds_for_writers_running_at_the_same_time(
-    index: MitreIndex, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_share_cap_holds_for_paths_written_in_one_call(index: MitreIndex, monkeypatch: pytest.MonkeyPatch) -> None:
     # Four writers at once all name Zeta first: with a 0.5 share of 4 scenarios only two keep Zeta; the others keep
     # their other verified group, and a scenario naming only Zeta gets the best verified alternative instead.
-    monkeypatch.setattr(
-        engine,
-        "write_one_scenario_for_attack_path",
-        always_naming(("Zeta", "G0101"), ("Gamma", "G0104"), only_zeta_title="P3"),
-    )
+    patch_writer(monkeypatch, always_naming(("Zeta", "G0101"), ("Gamma", "G0104"), only_zeta_title="P3"))
     paths = fake_paths(4)
     result, saved = run_writers(index, paths, 4, mitre_parallel_writers=4)
     zeta_count = 0
@@ -870,7 +1000,7 @@ def test_the_share_cap_holds_for_writers_running_at_the_same_time(
 def test_a_sole_group_over_its_share_is_replaced_by_a_verified_candidate(
     index: MitreIndex, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(engine, "write_one_scenario_for_attack_path", always_naming(("Zeta", "G0101")))
+    patch_writer(monkeypatch, always_naming(("Zeta", "G0101")))
     result, _ = run_writers(index, fake_paths(2), 2, selection_of((ZETA, 5), (GAMMA, 3)), mitre_parallel_writers=1)
     second_group = result["written"][1][1]["relevant_groups"][0]
     assert second_group["name"] == "Gamma" and second_group["relevance"].startswith(
@@ -907,7 +1037,7 @@ def test_a_crossing_path_is_written_first_while_the_rule_is_unmet(
     assert written_titles(result, paths) == ["P1", "P3"]  # P3 (a crossing) backfills P0, not P2
 
 
-def test_a_required_crossing_works_with_several_writers_running(
+def test_a_required_crossing_works_when_the_set_is_split_into_calls(
     index: MitreIndex, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     capture_scheduled_candidates(monkeypatch)
@@ -917,8 +1047,8 @@ def test_a_required_crossing_works_with_several_writers_running(
     assert len(result["written"]) == 3
 
 
-def test_parallel_writers_with_the_real_writer_and_one_failing_path(index: MitreIndex) -> None:
-    chat = FakeChatModel()
+def test_a_set_written_together_with_the_real_writer_and_one_failing_path(index: MitreIndex) -> None:
+    chat = MitreChat()
 
     def answer_for(user_prompt: str) -> dict[str, Any]:
         title = json.loads(user_prompt)["plan"]["title"]
@@ -933,3 +1063,46 @@ def test_parallel_writers_with_the_real_writer_and_one_failing_path(index: Mitre
     for _, scenario in result["written"]:
         assert scenario["relevant_groups"][0]["name"] == "Zeta" and scenario["mitigations"]
     assert sorted(saved) == ["P0", "P2", "P3"] and ASSET["asset_name"] in chat.asked(AiTask.MITRE_WRITE)[0]
+    assert chat.writer_calls == 3  # P0-P2 together, P1 re-asked once, then P3 backfills it
+
+
+def test_a_set_is_one_writer_call_and_its_failed_paths_are_re_asked_together(index: MitreIndex) -> None:
+    """The set's 3 paths go in one call with the shared input once; the 2 that fail their checks are re-asked
+    together in one more call, each with its draft and problems. Mutation: a call per path, or a re-ask per path."""
+    chat, first_answers = MitreChat(), {"P0", "P1"}
+
+    def answer_for(user_prompt: str) -> dict[str, Any]:
+        title = json.loads(user_prompt)["plan"]["title"]
+        if title in first_answers:  # wrong once: a group MITRE does not document for the path
+            first_answers.discard(title)
+            return {"scenarios": [writer_answer(title=title, groups=(("Beta", "G0103"),))]}
+        return {"scenarios": [writer_answer(title=title)]}
+
+    chat.responders[AiTask.MITRE_WRITE] = answer_for
+    paths = fake_paths(3)
+    result, saved = run_writers(index, paths, 3, chat=chat, max_scenario_share_per_group=1.0)
+    assert written_titles(result, paths) == ["P0", "P1", "P2"] and chat.writer_calls == 2
+    first_call, re_ask = json.loads(chat.writer_prompts[0]), json.loads(chat.writer_prompts[-1])
+    assert [path["slot"] for path in first_call["paths"]] == ["path-1", "path-2", "path-3"]
+    assert "asset_context" in first_call and "asset_context" not in first_call["paths"][0]
+    assert [path["slot"] for path in re_ask["paths"]] == ["path-1", "path-2"]
+    assert re_ask["paths"][0]["problems_to_fix"] and re_ask["paths"][0]["previous_draft"]["slot"] == "path-1"
+
+
+def test_a_regenerate_of_many_paths_is_written_one_set_a_call(index: MitreIndex) -> None:
+    """CII_ANSWER_TOKENS_MITRE_WRITE fits one set's answer: 7 paths with sets of 3 go in calls of 3, 3 and 1.
+    Mutation: split only by MITRE_WRITE_CALL_TOKENS_LIMIT and all 7 go in one call, whose answer is cut off."""
+    chat = MitreChat()
+
+    def answer_for(user_prompt: str) -> dict[str, Any]:
+        return {"scenarios": [writer_answer(title=json.loads(user_prompt)["plan"]["title"])]}
+
+    chat.responders[AiTask.MITRE_WRITE] = answer_for
+    paths = fake_paths(7)
+    result, saved = run_writers(
+        index, paths, 7, chat=chat, initial_set_size=3, next_set_size=3, max_scenario_share_per_group=1.0
+    )
+    sizes = []
+    for prompt in chat.writer_prompts:
+        sizes.append(len(json.loads(prompt)["paths"]))
+    assert sizes == [3, 3, 1] and len(saved) == 7 and not result["failed_positions"]

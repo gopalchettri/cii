@@ -369,13 +369,15 @@ def _add_procedures_and_mitigations(index: MitreIndex, settings: Settings) -> No
 
 
 def _add_lookups_by_mitre_id(index: MitreIndex, settings: Settings) -> None:
-    """technique_by_mitre_id, group_by_mitre_id, known_mitre_ids (retired IDs count as invented),
-    software_descriptions and dataset_snapshot (the collection versions of each domain)."""
+    """technique_by_mitre_id, group_by_mitre_id, known_mitre_ids (retired IDs count as invented; the names and
+    aliases count too, as a group named TA2541 (G1018) looks like an ID), software_descriptions and
+    dataset_snapshot (the collection versions of each domain)."""
     group_by_mitre_id, software_descriptions, known_mitre_ids = {}, {}, set()
     for stix_object in index["active_objects"]:
         mitre_id = get_mitre_id(stix_object)
         if mitre_id:
             known_mitre_ids.add(mitre_id)
+        known_mitre_ids.update([stix_object.get("name") or "", *(stix_object.get("aliases") or [])])
         if stix_object["type"] == "intrusion-set" and mitre_id:
             group_by_mitre_id[mitre_id] = stix_object["id"]
         if stix_object["type"] in SOFTWARE_TYPES:

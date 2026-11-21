@@ -141,7 +141,8 @@ class AiTask(StrEnum):
     RERANK = "rerank"
     MITRE_ACTOR_SELECTION = "mitre_actor_selection"  # which MITRE actors fit the asset, from all of them
     MITRE_PLAN = "mitre_plan"  # a MITRE run's attack paths over every technique
-    MITRE_WRITE = "mitre_write"  # one MITRE run scenario for one attack path
+    MITRE_DUPLICATE_CHECK = "mitre_duplicate_check"  # which new MITRE paths repeat a planned one in meaning
+    MITRE_WRITE = "mitre_write"  # one MITRE set's scenarios, one per attack path
 
 
 class PromptVersion:
@@ -168,6 +169,7 @@ CHAT_TEMPERATURES: Final[dict[AiTask, float | None]] = {
     AiTask.REPAIR_SCENARIO: None,
     AiTask.MITRE_ACTOR_SELECTION: 0.0,
     AiTask.MITRE_PLAN: 0.1,
+    AiTask.MITRE_DUPLICATE_CHECK: 0.0,
     AiTask.MITRE_WRITE: 0.1,
 }
 #: The asks a run answers with an earlier run's answer to the very same conversation, within
@@ -188,6 +190,7 @@ CHAT_MAX_OUTPUT_TOKENS: Final[dict[AiTask, int]] = {
     AiTask.PICK_CONTROLS: TUNING.answer_tokens_pick_controls,
     AiTask.MITRE_ACTOR_SELECTION: TUNING.answer_tokens_mitre_actor_selection,
     AiTask.MITRE_PLAN: TUNING.answer_tokens_mitre_plan,
+    AiTask.MITRE_DUPLICATE_CHECK: TUNING.answer_tokens_mitre_duplicate_check,
     AiTask.MITRE_WRITE: TUNING.answer_tokens_mitre_write,
 }
 #: A model served by the LiteLLM gateway; only those hosts skip the proxy when CII_AI_BYPASS_PROXY=true.
@@ -330,10 +333,12 @@ class LogEvent(StrEnum):
     CONTROLS_PICK_DROPPED = "controls.pick_dropped"  # a pick code refused, with its reason
     CONTROLS_PICK_UNUSABLE = "controls.pick_unusable"  # the answer could not be used: the search maps the set
     MITRE_RUN_PLANNED = "mitre.run_planned"  # a MITRE run's actors selected and paths planned and stored
+    MITRE_FURTHER_PATHS_PLANNED = "mitre.further_paths_planned"  # an "all paths" run's "any others?" round
     MITRE_SET_WRITTEN = "mitre.set_written"  # one set of a MITRE run: written, dropped, seconds
     MITRE_PATH_DROPPED = "mitre.path_dropped"  # one path's scenario failed its checks or its AI answer
     MITRE_ACTOR_SLICE_FAILED = "mitre.actor_slice_failed"  # one slice of actor profiles got no usable answer
     MITRE_PLANNER_SCOPE_FAILED = "mitre.planner_scope_failed"  # one planner scope got no usable answer
+    MITRE_DUPLICATE_CHECK_FAILED = "mitre.duplicate_check_failed"  # no usable verdict: the round's paths kept
     MITRE_STIX_STORED = "mitre.stix_stored"  # one MITRE domain's STIX objects replaced
 
 

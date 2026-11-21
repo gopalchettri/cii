@@ -180,12 +180,14 @@ class MitreScenarioSettings(BaseSettings):
     planner_relevant_actors: int = Field(ge=1, validation_alias="PLANNER_RELEVANT_ACTORS")
     attack_path_techniques: str = Field(validation_alias="ATTACK_PATH_TECHNIQUES")
     mitre_planner_single_call_limit: int = Field(ge=1, validation_alias="MITRE_PLANNER_SINGLE_CALL_LIMIT")
+    # TOTAL_SCENARIO_COUNT=0: the most "any others?" planner rounds a run asks (a cost guard, never a target).
+    mitre_planner_max_further_rounds: int = Field(ge=0, validation_alias="MITRE_PLANNER_MAX_FURTHER_ROUNDS")
     # Paths asked for beyond the run's need: per STRIDE scope when planned per scope, else in the one call.
     mitre_extra_paths_per_scope: int = Field(ge=0, validation_alias="MITRE_EXTRA_PATHS_PER_SCOPE")
     mitre_extra_paths_in_one_call: int = Field(ge=0, validation_alias="MITRE_EXTRA_PATHS_IN_ONE_CALL")
     # The planner's reason for an all-OT asset's IT/OT crossing, cut to this many characters.
     mitre_crossing_reason_characters: int = Field(ge=1, validation_alias="MITRE_CROSSING_REASON_CHARACTERS")
-    # Two paths of one STRIDE category sharing at least this share of their techniques are duplicates.
+    # Two paths sharing at least this share of their techniques are duplicates, in any STRIDE category.
     mitre_duplicate_technique_overlap: float = Field(gt=0, le=1, validation_alias="MITRE_DUPLICATE_TECHNIQUE_OVERLAP")
     # The planner catalogue: each ICS technique's first sentences, cut to a number of characters; each ICS
     # asset type's description cut too.

@@ -423,7 +423,8 @@
      "create_plan",
      "create_mapping",
      "mitre_create_session",
-     "mitre_next_set"
+     "mitre_next_set",
+     "mitre_regenerate"
     ],
     "title": "AiApi",
     "type": "string"
@@ -468,6 +469,7 @@
      "rerank",
      "mitre_actor_selection",
      "mitre_plan",
+     "mitre_duplicate_check",
      "mitre_write"
     ],
     "title": "AiTask",
@@ -3049,57 +3051,12 @@
     "title": "MintedApiClient",
     "type": "object"
    },
-   "MitreSessionStarted": {
-    "description": "POST /v1/mitre_create_session's and .../next-set's answer: the run and where to follow it.",
-    "properties": {
-     "session_id": {
-      "title": "Session Id",
-      "type": "string"
-     },
-     "status": {
-      "enum": [
-       "queued",
-       "running",
-       "complete",
-       "failed",
-       "cancelled"
-      ],
-      "title": "Status",
-      "type": "string"
-     },
-     "status_url": {
-      "title": "Status Url",
-      "type": "string"
-     }
-    },
-    "required": [
-     "session_id",
-     "status",
-     "status_url"
-    ],
-    "title": "MitreSessionStarted",
-    "type": "object"
-   },
-   "MitreSessionStatus": {
-    "description": "GET /v1/mitre_sessions/{session_id}: the run's stage, its scenarios so far, and the result once done.\nEach scenario is the MITRE scenario with the CII library controls mapped to it.",
+   "MitreRunDetails": {
+    "description": "The `mitre` block of GET /v1/mitre_sessions/{session_id}: the MITRE stage, its counts, the scenarios so\nfar (`partial_scenarios`) and once complete `result` (`scenarios` with their CII library controls, `metadata`).",
     "properties": {
      "elapsed_seconds": {
       "title": "Elapsed Seconds",
       "type": "number"
-     },
-     "error": {
-      "anyOf": [
-       {
-        "additionalProperties": {
-         "type": "string"
-        },
-        "type": "object"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Error"
      },
      "next_set_url": {
       "title": "Next Set Url",
@@ -3140,10 +3097,6 @@
       "title": "Scenarios Left",
       "type": "integer"
      },
-     "session_id": {
-      "title": "Session Id",
-      "type": "string"
-     },
      "stage": {
       "anyOf": [
        {
@@ -3155,17 +3108,6 @@
       ],
       "title": "Stage"
      },
-     "status": {
-      "enum": [
-       "queued",
-       "running",
-       "complete",
-       "failed",
-       "cancelled"
-      ],
-      "title": "Status",
-      "type": "string"
-     },
      "status_url": {
       "title": "Status Url",
       "type": "string"
@@ -3176,8 +3118,6 @@
      }
     },
     "required": [
-     "session_id",
-     "status",
      "stage",
      "elapsed_seconds",
      "written",
@@ -3185,9 +3125,84 @@
      "scenarios_left",
      "partial_scenarios",
      "result",
-     "error",
      "status_url",
      "next_set_url"
+    ],
+    "title": "MitreRunDetails",
+    "type": "object"
+   },
+   "MitreSessionStatus": {
+    "description": "GET /v1/mitre_sessions/{session_id}: the same board as GET /v1/sessions/{session_id}, plus `mitre`.",
+    "properties": {
+     "asset_id": {
+      "title": "Asset Id",
+      "type": "integer"
+     },
+     "asset_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Asset Name"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RunError"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "mitre": {
+      "$ref": "#/components/schemas/MitreRunDetails"
+     },
+     "progress": {
+      "$ref": "#/components/schemas/app__models__scenario__views__Progress"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "session_status": {
+      "$ref": "#/components/schemas/SessionState"
+     },
+     "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+     },
+     "user_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Id"
+     }
+    },
+    "required": [
+     "session_id",
+     "entity_id",
+     "asset_id",
+     "asset_name",
+     "user_id",
+     "session_status",
+     "progress",
+     "updated_at",
+     "mitre"
     ],
     "title": "MitreSessionStatus",
     "type": "object"
@@ -9781,7 +9796,7 @@
            "errors": [
             {
              "field": "query.api",
-             "message": "Input should be 'create_scenario', 'create_session', 'next_set', 'regenerate', 'create_plan', 'create_mapping', 'mitre_create_session' or 'mitre_next_set'"
+             "message": "Input should be 'create_scenario', 'create_session', 'next_set', 'regenerate', 'create_plan', 'create_mapping', 'mitre_create_session', 'mitre_next_set' or 'mitre_regenerate'"
             }
            ],
            "request_id": "56589d66a1a742c5b6860e4a4259001f",
@@ -10937,7 +10952,7 @@
   },
   "/v1/mitre_create_session": {
    "post": {
-    "description": "The same body and `Idempotency-Key` rules as `POST /v1/sessions`. The AI selects the MITRE actors that fit\nthe asset, plans attack paths over every MITRE Enterprise and ICS technique and writes the first set; code\nchecks every quote, technique and group against MITRE. 202 with `status_url`: poll it. 409 `intel_no_data`:\nMITRE ATT&CK is not imported yet (group 4).",
+    "description": "The same body and `Idempotency-Key` rules as `POST /v1/sessions`. The AI selects the MITRE actors that fit\nthe asset, plans attack paths over every MITRE Enterprise and ICS technique and writes the first set; code\nchecks every quote, technique and group against MITRE. 202 with the same board as `POST /v1/sessions`, plus\n`mitre` (its `status_url`: poll it). 409 `intel_no_data`:\nMITRE ATT&CK is not imported yet (group 4).",
     "operationId": "mitre_create_session_v1_mitre_create_session_post",
     "parameters": [
      {
@@ -11041,7 +11056,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/MitreSessionStarted"
+         "$ref": "#/components/schemas/MitreSessionStatus"
         }
        }
       },
@@ -11058,15 +11073,15 @@
       "description": "Validation Error"
      }
     },
-    "summary": "1c. Start a run from the MITRE data",
+    "summary": "1. Start a run from the MITRE data",
     "tags": [
-     "5. Threat scenarios: runs"
+     "5b. MITRE threat scenarios"
     ]
    }
   },
   "/v1/mitre_sessions/{session_id}": {
    "get": {
-    "description": "The run's `status` and `stage`, its scenarios so far (`partial_scenarios`), and once complete `result`\n(`scenarios` with their CII library controls, and `metadata`). 404 for a run not started as a MITRE run.",
+    "description": "The same board as `GET /v1/sessions/{session_id}`, plus `mitre`: its stage, its scenarios so far\n(`partial_scenarios`), and once complete `result` (`scenarios` with their CII library controls, `metadata`).",
     "operationId": "get_mitre_session_v1_mitre_sessions__session_id__get",
     "parameters": [
      {
@@ -11170,16 +11185,307 @@
       "description": "Validation Error"
      }
     },
-    "summary": "2c. A MITRE run's progress",
+    "summary": "2. A MITRE run's progress",
     "tags": [
-     "5. Threat scenarios: runs"
+     "5b. MITRE threat scenarios"
     ]
    }
   },
-  "/v1/mitre_sessions/{session_id}/next-set": {
+  "/v1/mitre_sessions/{session_id}/accept": {
+   "post": {
+    "description": "The same body and answer as `POST /v1/sessions/{session_id}/accept`.",
+    "operationId": "accept_mitre_scenarios_v1_mitre_sessions__session_id__accept_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "examples": {
+        "v1_all": {
+         "summary": "Accept all (v1)",
+         "value": {
+          "mode": "all"
+         }
+        },
+        "v1_none": {
+         "summary": "Accept nothing (v1)",
+         "value": {
+          "mode": "none"
+         }
+        },
+        "v1_replace": {
+         "summary": "Accept a newer version in place of the accepted one (v1)",
+         "value": {
+          "mode": "subset",
+          "replace_accepted": true,
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v1_subset": {
+         "summary": "Accept some (v1)",
+         "value": {
+          "mode": "subset",
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        },
+        "v2_all": {
+         "summary": "Accept all (v2, also accepted)",
+         "value": {
+          "scenario_ids": "all"
+         }
+        },
+        "v2_subset": {
+         "summary": "Accept some (v2, also accepted)",
+         "value": {
+          "scenario_ids": [
+           "0c5dc06d-267d-5bb3-b9d3-1e027e1828e3"
+          ]
+         }
+        }
+       },
+       "schema": {
+        "$ref": "#/components/schemas/AcceptRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AcceptResult"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "3. Accept scenarios",
+    "tags": [
+     "5b. MITRE threat scenarios"
+    ]
+   }
+  },
+  "/v1/mitre_sessions/{session_id}/regenerate/scenarios": {
+   "post": {
+    "description": "Send `{\"scenario_ids\": [\"...\"]}`: each is written again from its MITRE attack path in the background (202);\nfollow it with `GET /v1/mitre_sessions/{session_id}`. The earlier version stays readable under the new one; a\nrewrite that fails the MITRE checks keeps the earlier version and shows `regenerate_error`.",
+    "operationId": "regenerate_mitre_scenarios_v1_mitre_sessions__session_id__regenerate_scenarios_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ScenarioIdsRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RunActionStarted"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "5. Rewrite scenarios",
+    "tags": [
+     "5b. MITRE threat scenarios"
+    ]
+   }
+  },
+  "/v1/mitre_sessions/{session_id}/scenarios/next-set": {
    "post": {
     "description": "Writes the next scenarios from the planned paths not written yet (202). 409 `nothing_left` when every\npath is written or failed its checks.",
-    "operationId": "write_mitre_next_set_v1_mitre_sessions__session_id__next_set_post",
+    "operationId": "write_mitre_next_set_v1_mitre_sessions__session_id__scenarios_next_set_post",
     "parameters": [
      {
       "in": "path",
@@ -11265,7 +11571,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/MitreSessionStarted"
+         "$ref": "#/components/schemas/RunActionStarted"
         }
        }
       },
@@ -11282,9 +11588,253 @@
       "description": "Validation Error"
      }
     },
-    "summary": "3c. Write a MITRE run's next set",
+    "summary": "6. Write the next set",
     "tags": [
-     "5. Threat scenarios: runs"
+     "5b. MITRE threat scenarios"
+    ]
+   }
+  },
+  "/v1/mitre_sessions/{session_id}/scenarios/reject": {
+   "post": {
+    "description": "The same body and answer as `POST /v1/sessions/{session_id}/scenarios/reject`.",
+    "operationId": "reject_mitre_scenarios_v1_mitre_sessions__session_id__scenarios_reject_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ScenarioIdsRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RejectResult"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "4. Reject scenarios",
+    "tags": [
+     "5b. MITRE threat scenarios"
+    ]
+   }
+  },
+  "/v1/mitre_sessions/{session_id}/scenarios/{scenario_id}/promote-to-library": {
+   "post": {
+    "description": "For an accepted scenario: its threat (the risk title, of the library type the writer picked) goes to the\ncurators as pending (group 10), never straight into the library.",
+    "operationId": "promote_mitre_scenario_to_library_v1_mitre_sessions__session_id__scenarios__scenario_id__promote_to_library_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "scenario_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Scenario Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PromotionResult"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "7. Propose a MITRE scenario's threat to the library",
+    "tags": [
+     "5b. MITRE threat scenarios"
     ]
    }
   },
@@ -15670,6 +16220,10 @@
    "name": "5. Threat scenarios: runs"
   },
   {
+   "description": "A run written from the full MITRE ATT&CK Enterprise and ICS data, with its own calls: start it, follow it, accept, reject or regenerate its scenarios, write its next set, or propose its threat to the library. The answers are the same as group 5's and group 6's.",
+   "name": "5b. MITRE threat scenarios"
+  },
+  {
    "description": "Accept, reject or regenerate a run's scenarios, ask for the next set, or propose an AI-written threat to the library.",
    "name": "6. Threat scenarios: review"
   },
@@ -15694,7 +16248,7 @@
    "name": "11. Service mapper"
   },
   {
-   "description": "How many AI calls each module, API call, session and request made, per part of the work\nand per model, successful and failed, with each activity's name and description. Counts only, never a prompt\nor an answer. No key.\n\n| You want to know | Use |\n|---|---|\n| AI calls over a time range, per module and API call (or per day, model, part \u2026) | 1. `GET /v1/ai-usage` |\n| One session's API calls (a run and its plans, or a mapping) | 2. `GET /v1/ai-usage/requests` |\n| What one API call asked the AI to do, and on which models | 3. `GET /v1/ai-usage/requests/{request_id}` |\n| Every AI attempt of an API call or a session, and why one failed | 4. `GET /v1/ai-usage/calls` |\n\n**Modules and their API calls.** Pick them from the `module` and `api` lists; there is nothing to type.\n\n| module | api | name | what it starts |\n|---|---|---|---|\n| `threat_scenarios` | `create_scenario` | Create scenario | Starts a run: finds threats, writes the first set, picks controls |\n| `threat_scenarios` | `create_session` | Create session | Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it |\n| `threat_scenarios` | `next_set` | Next set | Writes the next set of scenarios for the run |\n| `threat_scenarios` | `regenerate` | Regenerate scenarios | Rewrites the chosen scenarios |\n| `threat_scenarios` | `mitre_create_session` | Create MITRE session | Starts a run from MITRE data: selects actors, plans attack paths, writes the first set |\n| `threat_scenarios` | `mitre_next_set` | MITRE next set | Writes the next set of a MITRE run |\n| `remediation` | `create_plan` | Create remediation plan | Writes a treatment plan for one scenario |\n| `remediation` | `regenerate` | Regenerate plan | Writes a new version of the plan |\n| `service_mapper` | `create_mapping` | Map services | Finds upstream and downstream services for a service |\n| `service_mapper` | `regenerate` | Regenerate mapping | Runs the mapping again to add new services |\n\n`external_intelligence`, `library_embeddings`, `maintenance` are background jobs with no API call. AI calls no request asked for (library and\nevidence indexing) are counted in the part `shared`.\n\n**Each module's parts of the work** (`bucket`; a report lists every part of the module, 0 when none):\n\n| module | its parts of the work (`bucket`), in report order |\n|---|---|\n| `threat_scenarios` | `threats` (Finding threats), `scenario` (Writing scenarios), `controls` (Picking controls) |\n| `remediation` | `remediation` (Writing the plan), `controls` (Picking controls) |\n| `service_mapper` | `service_mapper` (Mapping services) |\n",
+   "description": "How many AI calls each module, API call, session and request made, per part of the work\nand per model, successful and failed, with each activity's name and description. Counts only, never a prompt\nor an answer. No key.\n\n| You want to know | Use |\n|---|---|\n| AI calls over a time range, per module and API call (or per day, model, part \u2026) | 1. `GET /v1/ai-usage` |\n| One session's API calls (a run and its plans, or a mapping) | 2. `GET /v1/ai-usage/requests` |\n| What one API call asked the AI to do, and on which models | 3. `GET /v1/ai-usage/requests/{request_id}` |\n| Every AI attempt of an API call or a session, and why one failed | 4. `GET /v1/ai-usage/calls` |\n\n**Modules and their API calls.** Pick them from the `module` and `api` lists; there is nothing to type.\n\n| module | api | name | what it starts |\n|---|---|---|---|\n| `threat_scenarios` | `create_scenario` | Create scenario | Starts a run: finds threats, writes the first set, picks controls |\n| `threat_scenarios` | `create_session` | Create session | Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it |\n| `threat_scenarios` | `next_set` | Next set | Writes the next set of scenarios for the run |\n| `threat_scenarios` | `regenerate` | Regenerate scenarios | Rewrites the chosen scenarios |\n| `threat_scenarios` | `mitre_create_session` | Create MITRE session | Starts a run from MITRE data: selects actors, plans attack paths, writes the first set |\n| `threat_scenarios` | `mitre_next_set` | MITRE next set | Writes the next set of a MITRE run |\n| `threat_scenarios` | `mitre_regenerate` | MITRE regenerate | Writes chosen scenarios of a MITRE run again |\n| `remediation` | `create_plan` | Create remediation plan | Writes a treatment plan for one scenario |\n| `remediation` | `regenerate` | Regenerate plan | Writes a new version of the plan |\n| `service_mapper` | `create_mapping` | Map services | Finds upstream and downstream services for a service |\n| `service_mapper` | `regenerate` | Regenerate mapping | Runs the mapping again to add new services |\n\n`external_intelligence`, `library_embeddings`, `maintenance` are background jobs with no API call. AI calls no request asked for (library and\nevidence indexing) are counted in the part `shared`.\n\n**Each module's parts of the work** (`bucket`; a report lists every part of the module, 0 when none):\n\n| module | its parts of the work (`bucket`), in report order |\n|---|---|\n| `threat_scenarios` | `threats` (Finding threats), `scenario` (Writing scenarios), `controls` (Picking controls) |\n| `remediation` | `remediation` (Writing the plan), `controls` (Picking controls) |\n| `service_mapper` | `service_mapper` (Mapping services) |\n",
    "name": "12. AI usage"
   }
  ]
