@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, Response
 
-from app.api.deps import Caller, CallersRun, IdempotencyKey, ScenarioId, SessionId
+from app.api.deps import Caller, CallersRun, IdempotencyKey, Limit, Offset, ScenarioId, SessionId
 from app.core import constants as c
 from app.domain.scenario import runs
 from app.domain.scenario.mitre_scenario import mitre_session
@@ -43,6 +43,18 @@ def get_mitre_session(session_id: SessionId, principal: Caller) -> MitreSessionS
     """The same board as `GET /v1/sessions/{session_id}`, plus `mitre`: its stage, its scenarios so far
     (`partial_scenarios`), and once complete `result` (`scenarios` with their CII library controls, `metadata`)."""
     return mitre_session.read_mitre_session_status(session_id, principal.entity_id)
+
+
+@router.get(
+    "/v1/mitre_sessions/{session_id}/results", response_model=views.RunResults, summary="2b. A MITRE run's scenarios"
+)
+def list_mitre_run_scenarios(
+    run: CallersRun, include_replaced: bool = True, offset: Offset = 0, limit: Limit = c.Limits.PAGE_SIZE_DEFAULT
+) -> views.RunResults:
+    """The same page as `GET /v1/sessions/{session_id}/results` (each card's `actors` are its MITRE groups and
+    `attack_techniques` its techniques, each with its attack.mitre.org `url`); 404 for a run that is not a MITRE
+    run."""
+    return mitre_session.list_mitre_run_results(run, include_replaced, offset, limit)
 
 
 @router.post("/v1/mitre_sessions/{session_id}/accept", response_model=views.AcceptResult, summary="3. Accept scenarios")

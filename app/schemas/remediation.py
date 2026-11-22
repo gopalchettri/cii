@@ -37,7 +37,8 @@ from app.core.constants import (
     YesNo,
 )
 from app.schemas.jobs import RetryNotice, retry_notice_of
-from app.schemas.scenarios import SqlId, StartRunRequest
+from app.schemas.scenario_internal import control_view
+from app.schemas.scenarios import SqlId, StartRunRequest, actor_views
 
 Doc = dict[str, Any]  # a stored record or snapshot
 _CODE_SHAPE = re.compile(r"[A-Za-z0-9]+(?:[-_./][A-Za-z0-9]+)+")
@@ -673,8 +674,8 @@ class RemediationResult(RemediationStatus):
             summary = ScenarioSummary(
                 scenario_id=scenario["_id"],
                 **{key: content.get(key) for key in ("title", "statement", "risk_statement", "category", "threat")},
-                actors=[{key: actor.get(key) for key in ("name", "role")} for actor in content.get("actors") or []],
-                controls=(scenario.get("controls") or {}).get("items") or [],
+                actors=summary_actors(content),
+                controls=summary_controls(scenario),
             )
         return cls(
             **RemediationStatus.from_record(record, scenario_accepted).model_dump(),
@@ -685,6 +686,24 @@ class RemediationResult(RemediationStatus):
             register_data=record.get("register") or {},
             versions=versions,
         )
+
+
+def summary_actors(content: dict[str, Any]) -> list[dict[str, Any]]:
+    """The scenario's actors as /results shows them (a MITRE card's every group), each keeping its old name and
+    role keys."""
+    actors = []
+    for view in actor_views(content):
+        actors.append({"name": view.actor_name, "role": view.role, **view.model_dump()})
+    return actors
+
+
+def summary_controls(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    """The scenario's library controls with their stored keys (code, name, rank, rationale ...) and the same
+    control as /results shows it (control_code, control_name, map_rank, match_reason ...)."""
+    controls = []
+    for item in (scenario.get("controls") or {}).get("items") or []:
+        controls.append({**item, **control_view(item).model_dump()})
+    return controls
 
 
 def shown_item(record: dict[str, Any]) -> dict[str, Any] | None:

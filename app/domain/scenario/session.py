@@ -583,7 +583,8 @@ def build_scenario_view(
         scenario_id=record["_id"],
         scenario=None if failed else _build_scenario_text(content),
         threat=_build_threat_block(content),
-        actors=[_build_actor_view(actor) for actor in content.get("actors") or []],
+        actors=views.actor_views(content),
+        attack_techniques=(content.get("mitre") or {}).get("attack_techniques") or [],
         controls=[control_view(item) for item in controls.get("items") or []],
         replaces_accepted_version=accepted_elsewhere,
         scenario_source=record["source"],
@@ -762,17 +763,6 @@ def _build_threat_block(content: dict[str, Any]) -> views.ThreatBlock:
         grounding_score=confidence,
         score=confidence,
         scope_rank=threat.get("rank"),
-    )
-
-
-def _build_actor_view(actor: dict[str, Any]) -> views.ActorView:
-    return views.ActorView(
-        actor_id=actor.get("id"),
-        actor_name=actor.get("name"),
-        role=actor.get("role"),
-        closest_match=bool(actor.get("closest")),
-        selection=actor.get("selection"),
-        selection_reason=actor.get("reason"),
     )
 
 

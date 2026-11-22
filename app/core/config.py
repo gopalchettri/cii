@@ -207,6 +207,9 @@ class MitreScenarioSettings(BaseSettings):
     writer_candidate_description_characters: int = Field(
         ge=1, validation_alias="WRITER_CANDIDATE_DESCRIPTION_CHARACTERS"
     )
+    writer_technique_description_characters: int = Field(
+        ge=1, validation_alias="WRITER_TECHNIQUE_DESCRIPTION_CHARACTERS"
+    )
     # Words the writer is asked for, "min-max", and the words per sentence the scenario's sentence count is
     # aimed at.
     mitre_threat_scenario_word_limit: str = Field(validation_alias="MITRE_THREAT_SCENARIO_WORD_LIMIT")
@@ -217,9 +220,10 @@ class MitreScenarioSettings(BaseSettings):
     # The fewest short sentences the scenario is asked for, and the share a word maximum may be exceeded by.
     mitre_minimum_scenario_sentences: int = Field(ge=1, validation_alias="MITRE_MINIMUM_SCENARIO_SENTENCES")
     mitre_word_limit_slack: float = Field(ge=0, validation_alias="MITRE_WORD_LIMIT_SLACK")
-    # Scenarios written at once, and the most tokens (prompt chars/3 + answer room) one actor-selection or
-    # planner call, and one writer call, may hold.
+    # Scenarios written at once, and the most tokens (prompt chars/3 + answer room) one actor-selection slice,
+    # one planner call and one writer call may hold.
     mitre_parallel_writers: int = Field(ge=1, validation_alias="MITRE_PARALLEL_WRITERS")
+    mitre_actor_slice_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_ACTOR_SLICE_TOKENS_LIMIT")
     mitre_plan_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_PLAN_CALL_TOKENS_LIMIT")
     mitre_write_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_WRITE_CALL_TOKENS_LIMIT")
 

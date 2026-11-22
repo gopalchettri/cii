@@ -393,7 +393,7 @@ Headers: identity headers.
 | `threat.is_threat_ai_generated` | bool or null | |
 | `threat.grounding_score` / `.score` | number or null | 0-100 |
 | `threat.scope_rank` | int or null | 1 = most relevant: the highest risk (impact x likelihood), then impact and confidence |
-| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` (`selection` is `chosen` on new runs: only an attacker from the threat's own list acts) |
+| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` (`selection` is `chosen` on new runs: only an attacker from the threat's own list acts). On a MITRE run's card: every MITRE group, the lead first, each `acting`, with `mitre_id`, `url` (its attack.mitre.org page), `relevance` (in MITRE's own words) and `documented_techniques[]` (`mitre_id`, `name`, `domain`, `url`, `via_software`); null or empty on other runs' actors |
 | `controls[]` | object[] | `control_id`, `control_code`, `itot`, `domain`, `control_name`, `control_description`, `map_rank`, `score`, `mapping_relevance`, `match_type` (`EXACT`/`NEAREST`/`GIVEN`), `match_reason`, `tier` |
 | `accepted` | bool | |
 | `replaces_accepted_version` | string or null | another accepted version of this path; accepting this one needs `replace_accepted` |
@@ -425,6 +425,7 @@ Headers: identity headers.
 | `evidence_mode` | string or null | |
 | `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations`. `applicability` and `published` are always `null` now (the fields stay for the response shape); on a `POST /v1/create_session` scenario `modified` and `fetched_at` are `null` too |
 | `evidence_search` | object or null | |
+| `attack_techniques` | object[] | a MITRE run's techniques: `mitre_id`, `name`, `domain` (`enterprise` or `ics`), `url`; `[]` on other runs |
 
 There is no AI reviewer: `validation_errors` never holds "The plan check could not be made …", and
 `validation_notes` holds no reviewer notes.
@@ -481,6 +482,11 @@ There is no AI reviewer: `validation_errors` never holds "The plan check could n
 | --- | --- | --- |
 | 404 / 403 | — | as 3.2 |
 | 422 | — | `offset` / `limit` out of range |
+
+### 3.4b `GET /v1/mitre_sessions/{session_id}/results`
+
+The same page, parameters and fields as 3.4 (a MITRE card's `actors` are its MITRE groups and `attack_techniques` its
+techniques, each with its attack.mitre.org `url`). `404` for a run that is not a MITRE run.
 
 ### 3.5 `POST /v1/sessions/{session_id}/accept`
 
@@ -920,8 +926,8 @@ Headers: identity headers.
 | `plan.prompt_version` | string | the prompt that wrote the version, e.g. `remediation-1` |
 | `plan.control_assessment[]` | object[] | `control_id`, `control_code`, `control_name`, `domain`, `match`, `implementation_status`, `recommended`, `protected_systems[]`, `required_systems[]`, `validation` (`retained`/`replaced`/`flagged_for_review`), `validation_reason`, `replaced_by`, `replaces[]` |
 | `plan.unresolved_gaps[]` | object[] | `kind` (`flagged_control`/`no_validated_control`/`uncovered_risk`), `control_code`, `detail` |
-| `warnings` | string[] | checks on the shown version; never a block |
-| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[{name, role}]`, `controls[]` |
+| `warnings` | string[] | checks on the shown version; never a block. An existing control the request names that is a library control but none of this scenario's controls or their alternatives is named here: the plan does not count it against this risk |
+| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[]`, `controls[]`. Each actor has `name`, `role` and the 3.4 actor fields (`actor_name`; on a MITRE card every group, with `mitre_id`, `url`, `relevance`, `documented_techniques`); each control has its stored keys (`code`, `name`, `rank`, `rationale`, ...) and the 3.4 control fields (`control_code`, `control_name`, `map_rank`, `match_reason`, ...), all from the library control `control_id` |
 | `register_data` | object | the register fields as sent in 4.1 (ratings as strings; each system list with each id once, `[]` when not sent) |
 | `versions` | array or null | only with `include_history=true`: `version`, `status`, `decision`, `decided_by`, `decided_at`, `review_comment`, `requested_by`, `requested_at`, `completed_at`, `error`, `plan`, `warnings` |
 

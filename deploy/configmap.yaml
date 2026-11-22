@@ -69,7 +69,7 @@ items:                                           # one tsg-config per project th
       CII_ANSWER_TOKENS_SERVICE_MAPPER: "3072"                        # service mapper: one mapping (10 + 10 services: at most about 2,000)
       CII_ANSWER_TOKENS_LINK_CONTROLS: "2048"                         # control links: which library controls do what one MITRE ATT&CK mitigation says (one answer per mitigation, at most 15 candidates)
       CII_ANSWER_TOKENS_PICK_CONTROLS: "3072"                         # POST /v1/create_session: the controls picked for one written set of scenarios, in one answer
-      CII_ANSWER_TOKENS_MITRE_ACTOR_SELECTION: "6000"                   # MITRE run: the actors relevant to the asset, from one slice of MITRE actor profiles
+      CII_ANSWER_TOKENS_MITRE_ACTOR_SELECTION: "8192"                   # MITRE run: the actors relevant to the asset, from one slice of MITRE actor profiles
       CII_ANSWER_TOKENS_MITRE_PLAN: "8192"                              # MITRE run: every attack path of one planner scope, in one answer
       CII_ANSWER_TOKENS_MITRE_DUPLICATE_CHECK: "2048"                   # MITRE run: which new planned paths repeat a planned one in meaning
       CII_ANSWER_TOKENS_MITRE_WRITE: "8000"                             # MITRE run: one set's scenarios, one per attack path (about 900 tokens each)
@@ -136,6 +136,7 @@ items:                                           # one tsg-config per project th
       PROCEDURE_TEXT_CHARACTERS: "300"                                  # writing: each procedure text cut to this (required: no default)
       SOFTWARE_DESCRIPTION_CHARACTERS: "300"                            # writing: each software description cut to this (required: no default)
       WRITER_CANDIDATE_DESCRIPTION_CHARACTERS: "300"                    # writing: each candidate group's description cut to this (required: no default)
+      WRITER_TECHNIQUE_DESCRIPTION_CHARACTERS: "400"                    # writing: each technique description cut to its opening sentences within this (required: no default)
       MITRE_THREAT_SCENARIO_WORD_LIMIT: "100-150"                       # writing: words per threat scenario, min-max (required: no default)
       MITRE_RISK_STATEMENT_WORD_LIMIT: "30-40"                          # writing: words per risk statement, min-max (required: no default)
       MITRE_RISK_TITLE_WORD_LIMIT: "4-10"                               # writing: words per risk title, min-max (required: no default)
@@ -148,7 +149,8 @@ items:                                           # one tsg-config per project th
       MITRE_MINIMUM_SCENARIO_SENTENCES: "3"                             # writing: the fewest short sentences the threat scenario is asked for (required: no default)
       MITRE_WORD_LIMIT_SLACK: "0.25"                                    # writing: the share a word maximum may be exceeded by before the writer is re-asked (required: no default)
       MITRE_PARALLEL_WRITERS: "5"                                       # writing: writer calls of one MITRE set run at once (required: no default)
-      MITRE_PLAN_CALL_TOKENS_LIMIT: "60000"                             # most tokens (prompt chars/3 + answer room) one actor-selection or planner call holds: the POC's 34,000 input tokens x 1.5 + the 8,192 planner room (required: no default)
+      MITRE_PLAN_CALL_TOKENS_LIMIT: "60000"                             # most tokens (prompt chars/3 + answer room) one planner call holds: the POC's 34,000 input tokens x 1.5 + the 8,192 planner room (required: no default)
+      MITRE_ACTOR_SLICE_TOKENS_LIMIT: "34000"                           # most tokens (prompt chars/3 + answer room) one actor-selection slice holds: two slices asked in parallel, each answer within its 8,192 room (required: no default)
       MITRE_WRITE_CALL_TOKENS_LIMIT: "60000"                            # most tokens (prompt chars/3 + answer room) one writer call holds: a set's paths are written together up to it (required: no default)
   - apiVersion: v1                               # core API version
     kind: ConfigMap                              # plain, non-secret settings

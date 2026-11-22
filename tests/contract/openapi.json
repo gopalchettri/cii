@@ -260,6 +260,35 @@
       "title": "Closest Match",
       "type": "boolean"
      },
+     "documented_techniques": {
+      "items": {
+       "$ref": "#/components/schemas/TechniqueLinkView"
+      },
+      "title": "Documented Techniques",
+      "type": "array"
+     },
+     "mitre_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Mitre Id"
+     },
+     "relevance": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Relevance"
+     },
      "role": {
       "anyOf": [
        {
@@ -292,6 +321,17 @@
        }
       ],
       "title": "Selection Reason"
+     },
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url"
      }
     },
     "required": [
@@ -6139,6 +6179,13 @@
       "title": "Actors",
       "type": "array"
      },
+     "attack_techniques": {
+      "items": {
+       "$ref": "#/components/schemas/TechniqueLinkView"
+      },
+      "title": "Attack Techniques",
+      "type": "array"
+     },
      "control_match_status": {
       "anyOf": [
        {
@@ -6993,6 +7040,58 @@
      "reason"
     ],
     "title": "TargetSkipped",
+    "type": "object"
+   },
+   "TechniqueLinkView": {
+    "description": "A MITRE ATT&CK technique with its attack.mitre.org page.",
+    "properties": {
+     "domain": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Domain"
+     },
+     "mitre_id": {
+      "title": "Mitre Id",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url"
+     },
+     "via_software": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Via Software"
+     }
+    },
+    "required": [
+     "mitre_id",
+     "name"
+    ],
+    "title": "TechniqueLinkView",
     "type": "object"
    },
    "ThreatBlock": {
@@ -11477,6 +11576,152 @@
      }
     },
     "summary": "5. Rewrite scenarios",
+    "tags": [
+     "5b. MITRE threat scenarios"
+    ]
+   }
+  },
+  "/v1/mitre_sessions/{session_id}/results": {
+   "get": {
+    "description": "The same page as `GET /v1/sessions/{session_id}/results` (each card's `actors` are its MITRE groups and\n`attack_techniques` its techniques, each with its attack.mitre.org `url`); 404 for a run that is not a MITRE\nrun.",
+    "operationId": "list_mitre_run_scenarios_v1_mitre_sessions__session_id__results_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "maxLength": 64,
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "include_replaced",
+      "required": false,
+      "schema": {
+       "default": true,
+       "title": "Include Replaced",
+       "type": "boolean"
+      }
+     },
+     {
+      "in": "query",
+      "name": "offset",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "maximum": 2147483647,
+       "minimum": 0,
+       "title": "Offset",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "maximum": 500,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-API-Key",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Api-Key"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-User-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-User-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Entity-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "maximum": 2147483647,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Entity-Id"
+      }
+     },
+     {
+      "in": "header",
+      "name": "X-Tenant-Id",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 256,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Tenant-Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RunResults"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "2b. A MITRE run's scenarios",
     "tags": [
      "5b. MITRE threat scenarios"
     ]

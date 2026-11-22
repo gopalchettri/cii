@@ -37,6 +37,7 @@ from app.search.mitre.mitre_index import (
     clean_mitre_text,
     get_mitre_id,
     get_mitre_url,
+    opening_sentences,
     shorten_at_word_boundary,
 )
 
@@ -130,7 +131,7 @@ def select_relevant_actors_from_all_mitre_actors(
 ) -> dict[str, Any]:
     """The actors the AI chose from every MITRE group and campaign as relevant to this asset.
 
-    The profile lines are sent in slices that fit MITRE_PLAN_CALL_TOKENS_LIMIT, all at once. An actor is kept
+    The profile lines are sent in slices that fit MITRE_ACTOR_SLICE_TOKENS_LIMIT, all at once. An actor is kept
     only when its quote really is in its MITRE description; a relevant campaign lifts the groups it is
     attributed to. Returns {actors: {actor_id: {relevance, evidence_quote, reason, matched_fields}},
     ranked_actor_ids, status: complete | empty | partial (n of m slices) | failed, rejected_rows: {reason: n}}."""
@@ -169,7 +170,7 @@ def pack_actor_profiles_into_slices(
 ) -> list[list[dict[str, Any]]]:
     """Profile lines packed by their counted tokens, then every slice re-checked with the real prompt: one still
     over the limit moves its last line on to the next slice, so no actor is ever lost."""
-    limit, task = settings.mitre_plan_call_tokens_limit, c.AiTask.MITRE_ACTOR_SELECTION
+    limit, task = settings.mitre_actor_slice_tokens_limit, c.AiTask.MITRE_ACTOR_SELECTION
     empty_slice_tokens = call_tokens(actor_slice_prompt(prompt, asset_context, []), chat, task)
     slices: list[list[dict[str, Any]]] = []
     current_slice: list[dict[str, Any]] = []
@@ -805,8 +806,9 @@ def writer_prompt(settings: Settings) -> str:
     return prompt.replace("<scenario_title_words>", f"{scenario_title_low} to {scenario_title_high} words")
 
 
-def writer_techniques(technique_ids: list[str], index: MitreIndex) -> list[dict[str, Any]]:
-    """The path's MITRE technique pages, with the domain attack_techniques must use and the ICS assets targeted."""
+def writer_techniques(technique_ids: list[str], index: MitreIndex, settings: Settings) -> list[dict[str, Any]]:
+    """The path's MITRE technique pages (each description's opening sentences, within
+    WRITER_TECHNIQUE_DESCRIPTION_CHARACTERS), with the domain attack_techniques must use and the ICS assets targeted."""
     techniques = []
     for technique_id in technique_ids:
         technique = index["objects"][technique_id]
@@ -818,7 +820,9 @@ def writer_techniques(technique_ids: list[str], index: MitreIndex) -> list[dict[
                 "stix_id": technique_id,
                 "mitre_id": get_mitre_id(technique),
                 "name": technique["name"],
-                "description": technique.get("description") or "",
+                "description": opening_sentences(
+                    technique.get("description") or "", settings.writer_technique_description_characters
+                ),
                 "domain": "ics" if "ics" in index["domains"][technique_id] else "enterprise",
                 "tactics": tactics,
                 "platforms": technique.get("x_mitre_platforms"),
@@ -879,7 +883,6 @@ def writer_candidates(
                 "name": actor["name"],
                 "description": shorten_at_word_boundary(actor.get("description") or "", description_limit),
                 "targeting": choice.get("evidence_quote"),
-                "relevance_reason": choice.get("reason"),
                 "matched_fields": choice.get("matched_fields"),
                 "documented_for": documented_for,
             }
@@ -913,7 +916,7 @@ def build_writer_input_within_call_limit(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]] | None:
     """(writer input, procedures, candidates) within MITRE_WRITE_CALL_TOKENS_LIMIT, trimmed by halving; or None."""
     technique_ids = planned_path["technique_stix_ids"]
-    techniques = writer_techniques(technique_ids, index)
+    techniques = writer_techniques(technique_ids, index, settings)
     procedures_limit, candidates_limit = settings.procedures_per_technique, len(ranked_candidate_ids)
     while True:
         candidate_ids = ranked_candidate_ids[:candidates_limit]
@@ -968,53 +971,58 @@ def schema_problems(error: ValidationError) -> list[str]:
 
 
 def check_written_techniques(
-    scenario: Scenario, planned_path: dict[str, Any], index: MitreIndex
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """The scenario's techniques must be the path's own, identified by stix_id and mitre_id together; name and
-    domain are then taken from MITRE."""
-    verified_techniques, problems = [], []
+    scenario: Scenario, planned_path: dict[str, Any], index: MitreIndex, settings: Settings
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
+    """(the path's own techniques, the ones left out, problems). A technique is kept when its stix_id and mitre_id
+    are one of the planned techniques, its name and domain then taken from MITRE; any other is left out (code
+    only removes, never adds). Re-asked only when fewer than ATTACK_PATH_TECHNIQUES' minimum are left."""
+    verified_techniques, dropped, problems = [], [], []
     for technique in scenario.attack_techniques:
         known_technique = index["techniques"].get(technique.stix_id)
         is_planned = technique.stix_id in planned_path["technique_stix_ids"]
+        known_name = known_technique["name"] if known_technique is not None else technique.name
         if (
             known_technique is None
             or not is_planned
             or get_mitre_id(known_technique) != technique.mitre_id.strip().upper()
         ):
+            dropped.append({"mitre_id": technique.mitre_id, "name": known_name})
             problems.append(c.MitreProblem.TECHNIQUE_NOT_PLANNED.format(mitre_id=technique.mitre_id))
             continue
         domain = "ics" if "ics" in index["domains"][technique.stix_id] else "enterprise"
-        verified = {
-            **technique.model_dump(),
-            "mitre_id": get_mitre_id(known_technique),
-            "name": known_technique["name"],
-        }
+        verified = {**technique.model_dump(), "mitre_id": get_mitre_id(known_technique), "name": known_name}
         verified_techniques.append({**verified, "domain": domain})
-    return verified_techniques, problems
+    fewest_techniques, _ = settings.attack_path_technique_range
+    if len(verified_techniques) >= fewest_techniques:
+        problems = []  # ponytail: the unplanned ones are simply left out
+    return verified_techniques, dropped, problems
 
 
 def check_written_groups(
     scenario: Scenario, technique_ids: list[str], index: MitreIndex, settings: Settings, candidate_ids: list[str]
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Every group must be a different supplied candidate, documented in MITRE for a scenario technique (an
-    Enterprise step counts for an OT asset as well as an ICS step); the name is taken from MITRE."""
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
+    """(the verified groups, the ones left out, problems). A group is kept when it is a supplied candidate
+    documented in MITRE for a kept technique (an Enterprise step counts for an OT asset as well as an ICS step),
+    its name taken from MITRE; the first MITRE_GROUPS_PER_SCENARIO are kept, a repeat is skipped and any other
+    is left out. Re-asked only when no group is left."""
     verified_groups: list[dict[str, Any]] = []
-    problems, seen_group_ids = [], set()
-    if len(scenario.relevant_groups) > settings.mitre_groups_per_scenario:
-        problems.append(c.MitreProblem.TOO_MANY_GROUPS.format(count=settings.mitre_groups_per_scenario))
+    dropped, problems, seen_group_ids = [], [], set()
     for group in scenario.relevant_groups:
         group_id = index["group_by_mitre_id"].get(group.mitre_id.strip().upper())
+        if group_id in seen_group_ids:
+            continue
         if group_id is None or group_id not in candidate_ids:
+            dropped.append({"mitre_id": group.mitre_id, "name": group.name})
             problems.append(c.MitreProblem.GROUP_NOT_A_CANDIDATE.format(name=group.name, mitre_id=group.mitre_id))
             continue
-        if group_id in seen_group_ids:
-            problems.append(c.MitreProblem.GROUP_LISTED_TWICE.format(name=group.name))
-            continue
-        seen_group_ids.add(group_id)
         documented_techniques = documented_techniques_of_group(group_id, technique_ids, index)
         if not documented_techniques:
+            dropped.append({"mitre_id": group.mitre_id, "name": group.name})
             problems.append(c.MitreProblem.GROUP_NOT_DOCUMENTED.format(name=group.name))
             continue
+        if len(verified_groups) == settings.mitre_groups_per_scenario:
+            break  # ponytail: the first N kept; a later valid group is MITRE-documented, so its text stays true
+        seen_group_ids.add(group_id)
         group_object = index["objects"][group_id]
         verified_groups.append(
             {
@@ -1025,7 +1033,23 @@ def check_written_groups(
                 "documented_techniques": documented_techniques,
             }
         )
-    return verified_groups, problems
+    return verified_groups, dropped, [] if verified_groups else problems
+
+
+def text_naming_dropped_items(answer: dict[str, Any], dropped: list[dict[str, str]]) -> list[str]:
+    """A problem for each left-out technique or group the scenario's text still names (its MITRE ID or name):
+    the text must never tell of what the card no longer lists, so that answer is re-asked instead."""
+    text_parts = []
+    for field in ("scenario_title", "threat_scenario_description", "threat_scenario", "risk_statement"):
+        text_parts.append(str(answer.get(field, "")))
+    text = " ".join(text_parts).casefold()
+    problems = []
+    for item in dropped:
+        for word in (item["mitre_id"].strip(), item["name"].strip()):
+            if word and word.casefold() in text:
+                problems.append(c.MitreProblem.DROPPED_ITEM_IN_TEXT.format(name=word))
+                break
+    return problems
 
 
 def check_written_scenario(
@@ -1042,12 +1066,13 @@ def check_written_scenario(
         scenario = Scenario.model_validate(answer)
     except ValidationError as error:
         return None, problems + schema_problems(error)
-    verified_techniques, technique_problems = check_written_techniques(scenario, planned_path, index)
+    verified_techniques, verified_groups, fact_problems = check_written_mitre_facts(
+        scenario, answer, planned_path, index, settings, candidate_ids
+    )
+    problems += fact_problems
     technique_ids = []
     for technique in verified_techniques:
         technique_ids.append(technique["stix_id"])
-    verified_groups, group_problems = check_written_groups(scenario, technique_ids, index, settings, candidate_ids)
-    problems += technique_problems + group_problems
     system_names, verified_systems = system_name_by_folded_name(asset_context), []
     for system_name in scenario.supporting_systems:
         input_system_name = system_names.get(fold_name(system_name))
@@ -1066,6 +1091,33 @@ def check_written_scenario(
         return None, problems
     checked = {**answer, **scenario.model_dump(), "attack_techniques": verified_techniques}
     return {**checked, "relevant_groups": verified_groups, "supporting_systems": verified_systems}, []
+
+
+def check_written_mitre_facts(
+    scenario: Scenario,
+    answer: dict[str, Any],
+    planned_path: dict[str, Any],
+    index: MitreIndex,
+    settings: Settings,
+    candidate_ids: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """(techniques, groups, problems): an unplanned technique or a group that fails its checks is left out rather
+    than re-asked (code only removes, never adds), unless too few are left or the text still names it."""
+    techniques, dropped_techniques, problems = check_written_techniques(scenario, planned_path, index, settings)
+    technique_ids = []
+    for technique in techniques:
+        technique_ids.append(technique["stix_id"])
+    groups, dropped_groups, group_problems = check_written_groups(
+        scenario, technique_ids, index, settings, candidate_ids
+    )
+    problems = problems + group_problems + text_naming_dropped_items(answer, dropped_techniques + dropped_groups)
+    if not problems and (dropped_techniques or dropped_groups):
+        log.info(
+            c.LogEvent.MITRE_WRITER_ANSWER_REPAIRED,
+            techniques_dropped=len(dropped_techniques),
+            groups_dropped=len(dropped_groups),
+        )
+    return techniques, groups, problems
 
 
 def read_written_scenario(

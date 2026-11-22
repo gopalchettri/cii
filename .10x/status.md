@@ -70,3 +70,4 @@ Phases 0-3 complete (owner approved the plan 19 Nov 2026); 4 Implementation in p
 - [ ] 6 MITRE index; 7-9 engine; 10 schemas; 11 session; 12 worker task
 - [ ] 13 Routes, runs.py guard, dashboard JSON and the two test lists (until then `tests/test_ai_usage_dashboard.py` fails on the two new `AiApi` members)
 - [ ] 14 Dev timing run on real Kimi
+- [x] 22 Nov: ADR-011 fewer MITRE AI calls (2 actor slices, the further round only when a set needs it, writer answers repaired by removing) and `GET /v1/mitre_sessions/{id}/results`; tests green except the 6 known failures; not committed

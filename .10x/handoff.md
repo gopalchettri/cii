@@ -74,3 +74,6 @@ origin or dashboard row yet; `tests/test_worker.py` lists `tsg_write_mitre_scena
 adds its task module (remove it then). The `.env.uat` `CII_NVD_API_KEY` failure is the old one (11 above).
 Every MITRE size is a required setting: a pod or a process without the lines does not start (the three
 `CII_ANSWER_TOKENS_MITRE_*` lines are read when `app.core.constants` is imported).
+
+## mitre-pipeline (22 Nov 2026)
+ADR-011, `decisions/sde/mitre-pipeline.md`. Open for the owner: the Kimi quota for two creates at once (about 200k tokens a minute). Nothing is committed.

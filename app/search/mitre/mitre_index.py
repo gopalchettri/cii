@@ -80,6 +80,17 @@ def shorten_at_word_boundary(text: str, character_limit: int) -> str:
     return text[:character_limit].rsplit(" ", 1)[0]
 
 
+def opening_sentences(text: str, character_limit: int) -> str:
+    """The whole sentences that open the text within character_limit characters; a first sentence longer than
+    that is cut at a whole word."""
+    if len(text) <= character_limit:
+        return text
+    last_sentence_end = text[:character_limit].rfind(". ")  # ponytail: "e.g. " may end one early: still MITRE's words
+    if last_sentence_end > 0:
+        return text[: last_sentence_end + 1]
+    return shorten_at_word_boundary(text, character_limit)
+
+
 def is_active(stix_object: dict[str, Any]) -> bool:
     """Neither revoked nor deprecated (an empty dict, a missing object, counts as active: callers check type)."""
     return not stix_object.get("revoked") and not stix_object.get("x_mitre_deprecated")

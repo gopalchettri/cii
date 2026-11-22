@@ -232,6 +232,25 @@ def assess_controls(
     return library_mapped, warnings
 
 
+def existing_controls_not_for_this_risk(
+    register: Doc, controls: Sequence[LibraryControl], considered_ids: Sequence[int]
+) -> list[str]:
+    """A warning for each library control the register says is in place that is none of the controls the plan
+    weighs (the scenario's and their alternatives, IT/OT twins as one), so the person sees it was not counted."""
+    by_id = _index_controls(controls)[0]
+    considered = set()
+    for control_id in considered_ids:
+        if control_id in by_id:
+            considered.add(name_match_key(describe_control(by_id[control_id])))
+    refs = [ControlRef.model_validate(entry) for entry in register.get("existing_controls") or []]
+    warnings = []
+    for row in resolve_control_refs(refs, controls)[0]:
+        if name_match_key(describe_control(row)) not in considered:
+            reference = f"{row.code} — {row.name}"
+            warnings.append(PlanWarning.EXISTING_CONTROL_NOT_FOR_THIS_RISK.format(reference=reference))
+    return warnings
+
+
 def _assessed_row(
     row: LibraryControl, item: Doc, affected: list[Doc], categories: Mapping[int, str | None], on: set[int] | None
 ) -> Doc:

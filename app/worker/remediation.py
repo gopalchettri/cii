@@ -45,6 +45,7 @@ from app.domain.remediation.write import (
     active_mapped_controls,
     assess_controls,
     build_snapshot,
+    existing_controls_not_for_this_risk,
     list_affected_systems,
     write_plan,
 )
@@ -131,6 +132,8 @@ def _save_snapshot(lease: JobLease, search: LibrarySearch, rerank: RerankModel, 
     found = find_alternative_controls(rerank, scenario, context, library, [i["control_id"] for i in items], 5, mapped)
     offered = [{"control_id": c.control_id, "code": c.code, "score": s, "match": "alternative"} for c, s in found]
     alternatives = assess_controls(offered, register, controls, affected, categories)[0]
+    considered = [row["control_id"] for row in library_mapped + alternatives]
+    warnings = warnings + existing_controls_not_for_this_risk(register, controls, considered)
     snapshot = build_snapshot(scenario, context, register, library_mapped, warnings, affected, alternatives)
     seconds = {"controls_s": time.perf_counter() - started}
     get_remediation_repository().update_remediation_plan_version(lease, {"snapshot": snapshot}, timings=seconds)

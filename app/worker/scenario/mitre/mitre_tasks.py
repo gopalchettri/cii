@@ -62,8 +62,8 @@ def build_writer_arguments(mitre: dict[str, Any], index: MitreIndex, settings: S
 
 
 def write_mitre_scenario_set(lease: JobLease) -> None:
-    """Plan the run when it has no paths yet, then write the set's open paths together, saving each card. A plan
-    running low asks its further round once the cards are saved, so the board shows what is really left."""
+    """Plan the run when it has no paths yet, then write the set's open paths together, saving each card (a set
+    short of open paths asks the further round first; one that leaves none asks it once its cards are saved)."""
     started, settings = time.perf_counter(), get_settings()
     chat, index, run = get_scenario_chat_model(), get_current_mitre_index(), lease.record
     mitre, timings = run["mitre"], {}  # the board's times, as the shared pipeline's plan_progress names them
@@ -71,7 +71,7 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
         mitre = mitre_session.plan_and_store_mitre_paths(lease, chat, index, settings)
         timings["timings.threats_s"] = round(time.perf_counter() - started, 1)
     writing_from = time.perf_counter()
-    mitre, progress = read_open_paths_planning_more_if_none(lease, chat, index, settings, mitre)
+    mitre, progress = read_open_paths_planning_more_when_short(lease, chat, index, settings, mitre)
     open_paths = progress["open_paths"]
     goal = min(max(0, run["job"]["set_goal"] - progress["written_this_set"]), len(open_paths))  # a retry: its rest
     goal = min(goal, max(0, mitre["run_target"] - progress["written"]))  # never past the run's target
@@ -97,7 +97,7 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
         send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
     run_failed = bool(goal) and not written and not progress["written"]  # no card in the whole run
     if not run_failed:  # a run left with no card fails: no round for it
-        mitre, remaining = plan_more_when_running_low(lease, chat, index, settings, mitre, remaining)
+        mitre, remaining = plan_more_when_none_left(lease, chat, index, settings, mitre, remaining)
     finish_mitre_set(
         lease, mitre, written, failed_path_ids, run_failed, remaining, outcome["groups_removed_over_share"], timings
     )
@@ -111,24 +111,27 @@ def failed_paths_of(outcome: dict[str, Any], open_paths: list[dict[str, Any]]) -
     return failed_path_ids
 
 
-def read_open_paths_planning_more_if_none(
+def read_open_paths_planning_more_when_short(
     lease: JobLease, chat: ChatModel, index: MitreIndex, settings: Settings, mitre: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The run's progress (its open paths). A set of an incomplete "all paths" plan that finds no open path at
-    all (its round was not asked yet, as by a run made before rounds ran at the end of a set) asks it first."""
+    """The run's progress (its open paths). A set of an incomplete "all paths" plan with fewer open paths than it
+    writes asks the planner's further round first, so a round is asked only by the set that needs it."""
     progress = mitre_session.read_mitre_run_progress(lease.record_id, mitre, index, lease.epoch)
-    if progress["open_paths"] or mitre.get("paths_complete", True):
+    set_goal = lease.record["job"]["set_goal"] - progress["written_this_set"]
+    if len(progress["open_paths"]) >= set_goal or mitre.get("paths_complete", True):
         return mitre, progress
-    mitre = mitre_session.plan_further_paths_first(lease, chat, index, settings, mitre, 0)
+    open_count = len(progress["open_paths"])
+    mitre = mitre_session.plan_further_paths_first(lease, chat, index, settings, mitre, open_count)
     return mitre, mitre_session.read_mitre_run_progress(lease.record_id, mitre, index, lease.epoch)
 
 
-def plan_more_when_running_low(
+def plan_more_when_none_left(
     lease: JobLease, chat: ChatModel, index: MitreIndex, settings: Settings, mitre: dict[str, Any], remaining: int
 ) -> tuple[dict[str, Any], int]:
-    """An incomplete "all paths" plan left with fewer open paths than NEXT_SET_SIZE asks its further round now and
-    stores it: (the run's `mitre` part, the paths still open)."""
-    if mitre.get("paths_complete", True) or remaining >= settings.next_set_size:
+    """An incomplete "all paths" plan that this set left with no open path asks its further round now, so the
+    board never reads complete while the planner may find more: (the run's `mitre` part, the paths still open).
+    A plan with paths still open waits for the next set that runs short (read_open_paths_planning_more_when_short)."""
+    if mitre.get("paths_complete", True) or remaining > 0:
         return mitre, remaining
     planned_before = len(mitre["paths"])
     mitre = mitre_session.plan_further_paths_first(lease, chat, index, settings, mitre, remaining)

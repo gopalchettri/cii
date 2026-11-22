@@ -233,6 +233,21 @@ def _run(session_id: str) -> dict[str, Any]:
     return get_mongodb()[Collection.SESSIONS].find_one({"_id": session_id})
 
 
+def _check_mitre_results_show_groups_and_techniques(flow: MitreFlow, session_id: str, written: list[dict]) -> None:
+    """Both results routes give the same cards: each card's actors are its MITRE groups, the lead first and
+    acting, and attack_techniques its techniques, each with its attack.mitre.org page. Mutation: build actors from
+    the card's lead actor only and the names differ."""
+    shared = flow.call("GET", f"/v1/sessions/{session_id}/results")
+    assert flow.call("GET", f"/v1/mitre_sessions/{session_id}/results") == shared
+    for card, scenario in zip(shared["scenarios"], written, strict=True):
+        group_names = [group["name"] for group in scenario["relevant_groups"]]
+        assert [actor["actor_name"] for actor in card["actors"]] == group_names
+        lead, technique = card["actors"][0], card["attack_techniques"][0]
+        assert lead["role"] == "acting" and lead["url"].startswith("https://attack.mitre.org/groups/")
+        assert lead["relevance"] and lead["documented_techniques"]
+        assert technique["url"].startswith("https://attack.mitre.org/techniques/") and "stix_id" not in technique
+
+
 def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_across_sets(flow: MitreFlow) -> None:
     """The first set selects actors and plans once, then writes INITIAL_SET_SIZE cards whose controls the
     controls job picks; the next set writes the rest with no new plan. Zeta, the selected group, names at most
@@ -271,6 +286,7 @@ def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_
     assert [(actor["mitre_id"], actor["relevance"]) for actor in metadata["relevant_actors"]] == [("G0101", 5)]
     assert metadata["relevant_actors"][0]["evidence_quote"] and "matched_fields" in metadata["relevant_actors"][0]
     assert "reason" not in metadata["relevant_actors"][0]  # the AI's unchecked words are never shown
+    _check_mitre_results_show_groups_and_techniques(flow, session_id, scenarios)
     stored_removed = _run(session_id)["mitre"]["groups_removed_over_share"]  # the set's $inc, 0 included
     assert metadata["groups_removed_over_share"] == stored_removed
 
@@ -443,9 +459,40 @@ def test_a_further_round_lost_to_an_outage_is_retried_after_the_cards_are_saved(
     assert [card["path_id"] for card in _cards(session_id)] == ["mitre-1", "mitre-2", "mitre-3"]
 
 
+def test_create_leaves_the_further_round_to_the_next_set_that_runs_short(
+    flow: MitreFlow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MITRE_PLANNER_MAX_FURTHER_ROUNDS=1 (as in .env), 3 planned paths, sets of 2: create writes 2 and leaves 1
+    open, so it asks no further round (no AI call for a set the user may never ask for); the next set, 1 open
+    for a set of 2, asks the round first and writes the open path and the round's new one. Mutation: ask the
+    round at the end of a set left with fewer open paths than NEXT_SET_SIZE and create makes a second planner
+    call."""
+    first = [
+        _grid_plan("P0", "Tampering", ["T1566", "T0831"]),
+        _grid_plan("P1", "Denial of Service", ["T1566", "T0813"]),
+        _grid_plan("P2", "Spoofing", ["T1078", "T0831"]),
+    ]
+    monkeypatch.setattr(get_settings(), "mitre_planner_max_further_rounds", 1)
+    further = [_grid_plan("Q1", "Elevation of Privilege", ["T1078", "T0813"])]
+
+    def answer(user_prompt: str) -> dict[str, Any]:
+        return {"plans": further if "planned_already" in json.loads(user_prompt) else first}
+
+    flow.chat.responders[AiTask.MITRE_PLAN] = answer
+    session_id = flow.start()
+    flow.work()
+    assert len(flow.chat.asked(AiTask.MITRE_PLAN)) == 1 and flow.mitre_details(session_id)["scenarios_left"] == 1
+    assert _run(session_id)["mitre"]["paths_complete"] is False  # the board still offers the next set
+    flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 202)
+    flow.work()
+    assert len(flow.chat.asked(AiTask.MITRE_PLAN)) == 2
+    assert flow.chat.titles_written() == ["P0", "P1", "P2", "Q1"]
+
+
 def test_further_rounds_stop_at_their_cap(flow: MitreFlow, monkeypatch: pytest.MonkeyPatch) -> None:
-    """MITRE_PLANNER_MAX_FURTHER_ROUNDS=1: the one round, asked at the end of the first set, still adds a path,
-    so the plan is complete at the cap and says so. Mutation: ignore the cap and paths_complete stays False."""
+    """MITRE_PLANNER_MAX_FURTHER_ROUNDS=1: the first plan has 1 path for a set of 2, so the one round is asked
+    before writing and adds a path; the set writes both and the plan is complete at the cap and says so.
+    Mutation: ignore the cap and paths_complete stays False."""
     monkeypatch.setattr(get_settings(), "mitre_planner_max_further_rounds", 1)
     first = [_grid_plan("P0", "Tampering", ["T1566", "T0831"])]
     further = [_grid_plan("Q1", "Spoofing", ["T1078", "T0813"])]
@@ -458,7 +505,8 @@ def test_further_rounds_stop_at_their_cap(flow: MitreFlow, monkeypatch: pytest.M
     flow.work()
     stored = _run(session_id)["mitre"]
     assert (stored["paths_complete"], stored["planner_stopped_at_round_cap"], len(stored["paths"])) == (True, True, 2)
-    assert flow.mitre_details(session_id)["scenarios_left"] == 1  # the board shows the path the round added
+    assert flow.chat.titles_written() == ["P0", "Q1"]  # the set is full: the round's path written with it
+    assert flow.mitre_details(session_id)["scenarios_left"] == 0
     assert len(flow.chat.asked(AiTask.MITRE_PLAN)) == 2
 
 
@@ -524,6 +572,7 @@ def test_the_mitre_routes_do_not_know_another_pipelines_run(flow: MitreFlow) -> 
         }
     )
     flow.call("GET", f"/v1/mitre_sessions/{other}", 404)
+    flow.call("GET", f"/v1/mitre_sessions/{other}/results", 404)
     flow.call("POST", f"/v1/mitre_sessions/{other}/scenarios/next-set", 404)
     flow.call("POST", f"/v1/mitre_sessions/{other}/accept", 404, mode="all")
     flow.call("POST", f"/v1/mitre_sessions/{other}/scenarios/reject", 404, scenario_ids=["x"])

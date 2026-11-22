@@ -5344,6 +5344,35 @@
      "title": "Closest Match",
      "type": "boolean"
     },
+    "documented_techniques": {
+     "items": {
+      "$ref": "#/components/schemas/TechniqueLinkView"
+     },
+     "title": "Documented Techniques",
+     "type": "array"
+    },
+    "mitre_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Mitre Id"
+    },
+    "relevance": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Relevance"
+    },
     "role": {
      "anyOf": [
       {
@@ -5376,6 +5405,17 @@
       }
      ],
      "title": "Selection Reason"
+    },
+    "url": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Url"
     }
    },
    "required": [
@@ -10274,6 +10314,13 @@
      "title": "Actors",
      "type": "array"
     },
+    "attack_techniques": {
+     "items": {
+      "$ref": "#/components/schemas/TechniqueLinkView"
+     },
+     "title": "Attack Techniques",
+     "type": "array"
+    },
     "control_match_status": {
      "anyOf": [
       {
@@ -11031,6 +11078,58 @@
     "reason"
    ],
    "title": "TargetSkipped",
+   "type": "object"
+  },
+  "TechniqueLinkView": {
+   "description": "A MITRE ATT&CK technique with its attack.mitre.org page.",
+   "properties": {
+    "domain": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Domain"
+    },
+    "mitre_id": {
+     "title": "Mitre Id",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "url": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Url"
+    },
+    "via_software": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Via Software"
+    }
+   },
+   "required": [
+    "mitre_id",
+    "name"
+   ],
+   "title": "TechniqueLinkView",
    "type": "object"
   },
   "ThreatBlock": {

@@ -346,6 +346,16 @@ class ThreatBlock(BaseModel):
     scope_rank: int | None  # the path's rank in the plan, 1 = most relevant
 
 
+class TechniqueLinkView(BaseModel):
+    """A MITRE ATT&CK technique with its attack.mitre.org page."""
+
+    mitre_id: str
+    name: str
+    domain: str | None = None  # enterprise or ics
+    url: str | None = None
+    via_software: str | None = None  # a group's technique MITRE documents through its software
+
+
 class ActorView(BaseModel):
     actor_id: int | None
     actor_name: str | None
@@ -353,6 +363,45 @@ class ActorView(BaseModel):
     closest_match: bool  # no actor is linked to the threat's type: the nearest library actor acts
     selection: str | None = None  # the acting attacker only: how it was chosen (chosen, balanced ...)
     selection_reason: str | None = None
+    # A MITRE run's groups (each one listed, the lead first); null or empty on the other runs' actors.
+    mitre_id: str | None = None
+    url: str | None = None  # its attack.mitre.org page
+    relevance: str | None = None  # why it is listed, in MITRE's own words
+    documented_techniques: list[TechniqueLinkView] = Field(default_factory=list)
+
+
+def actor_views(content: dict[str, Any]) -> list[ActorView]:
+    """A stored card's actors as every view shows them: a MITRE card's every relevant group, the lead first, each
+    acting with its MITRE page; else the card's own actors."""
+    mitre_groups = (content.get("mitre") or {}).get("relevant_groups")
+    if not mitre_groups:
+        return [_actor_view(actor) for actor in content.get("actors") or []]
+    actors: list[ActorView] = []
+    for group in mitre_groups:
+        actors.append(
+            ActorView(
+                actor_id=None,
+                actor_name=group["name"],
+                role=c.ActorRole.ACTING,
+                closest_match=False,
+                mitre_id=group["mitre_id"],
+                url=group.get("url"),
+                relevance=group.get("relevance"),
+                documented_techniques=group.get("documented_techniques") or [],
+            )
+        )
+    return actors
+
+
+def _actor_view(actor: dict[str, Any]) -> ActorView:
+    return ActorView(
+        actor_id=actor.get("id"),
+        actor_name=actor.get("name"),
+        role=actor.get("role"),
+        closest_match=bool(actor.get("closest")),
+        selection=actor.get("selection"),
+        selection_reason=actor.get("reason"),
+    )
 
 
 class ScopeView(BaseModel):
@@ -422,6 +471,7 @@ class ScenarioView(BaseModel):
     evidence_mode: str | None = None
     evidence: list[EvidenceView] = Field(default_factory=list)
     evidence_search: dict[str, Any] | None = None
+    attack_techniques: list[TechniqueLinkView] = Field(default_factory=list)  # a MITRE run's, with their pages
 
 
 class ScenarioList(BaseModel):

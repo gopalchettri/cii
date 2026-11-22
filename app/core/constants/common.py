@@ -336,6 +336,7 @@ class LogEvent(StrEnum):
     MITRE_FURTHER_PATHS_PLANNED = "mitre.further_paths_planned"  # an "all paths" run's "any others?" round
     MITRE_SET_WRITTEN = "mitre.set_written"  # one set of a MITRE run: written, dropped, seconds
     MITRE_PATH_DROPPED = "mitre.path_dropped"  # one path's scenario failed its checks or its AI answer
+    MITRE_WRITER_ANSWER_REPAIRED = "mitre.writer_answer_repaired"  # code left out unplanned techniques or groups
     MITRE_ACTOR_SLICE_FAILED = "mitre.actor_slice_failed"  # one slice of actor profiles got no usable answer
     MITRE_PLANNER_SCOPE_FAILED = "mitre.planner_scope_failed"  # one planner scope got no usable answer
     MITRE_DUPLICATE_CHECK_FAILED = "mitre.duplicate_check_failed"  # no usable verdict: the round's paths kept

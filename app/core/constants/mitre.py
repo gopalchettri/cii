@@ -57,14 +57,15 @@ class MitreProblem(StrEnum):
     TECHNIQUE_NOT_PLANNED = (
         "attack technique {mitre_id} is not one of the planned techniques (stix_id and mitre_id must match)"
     )
-    TOO_MANY_GROUPS = "list at most {count} relevant_groups"
     GROUP_NOT_A_CANDIDATE = "relevant group {name} ({mitre_id}) must be one of the supplied candidate_actors"
-    GROUP_LISTED_TWICE = "relevant group {name} is listed twice"
     GROUP_NOT_DOCUMENTED = "MITRE does not document {name} for any technique of this scenario"
     SYSTEM_NOT_THE_ASSETS = "supporting system {name} is not one of the asset supporting systems"
     THREAT_TYPE_NOT_LISTED = "threat_type must be one of threat_types, copied exactly"
     CROSSING_TECHNIQUES_DROPPED = "The plan crosses between IT and OT: keep both its Enterprise and ICS techniques"
     INVENTED_ID = "Invented MITRE ID {mitre_id}"
+    DROPPED_ITEM_IN_TEXT = (
+        "the scenario text names {name}, which is not a planned technique or a verified group: leave it out"
+    )
     NO_SCENARIO_FOR_PATH = "no scenario was returned for this path (slot)"
 
 

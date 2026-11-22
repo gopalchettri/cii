@@ -56,6 +56,7 @@ from app.schemas.mitre.mitre_scenarios import MitreRunDetails, MitreRunStatus, M
 from app.schemas.scenario_internal import FrozenContext, control_view
 from app.schemas.scenarios import (
     RunActionStarted,
+    RunResults,
     ScenarioIdsRequest,
     SessionStatus,
     StartRunRequest,
@@ -493,6 +494,12 @@ def refuse_other_pipelines(pipeline: str | None, session_id: str) -> None:
     """404 for a run another pipeline made: the MITRE routes never read or write one."""
     if pipeline != c.RunPipeline.MITRE:
         raise NotFound(c.SessionMessage.NOT_FOUND.format(session_id=session_id))
+
+
+def list_mitre_run_results(run: SessionStatus, include_replaced: bool, offset: int, limit: int) -> RunResults:
+    """GET /v1/sessions/{id}/results' page, for a MITRE run only (404 for another pipeline's)."""
+    refuse_other_pipelines(run.pipeline, run.session_id)
+    return runs.list_threat_scenarios_of_session(run, include_replaced, offset, limit)
 
 
 @origin_of_its_jobs(AiApi.MITRE_NEXT_SET)

@@ -12,7 +12,7 @@ from app.core.exceptions import JobFailed
 from app.core.prompts import MITRE_PROMPTS
 from app.domain.scenario.mitre_scenario import mitre_engine as engine
 from app.domain.shared.ask_ai import call_tokens
-from app.search.mitre.mitre_index import MitreIndex, build_mitre_index, get_mitre_id
+from app.search.mitre.mitre_index import MitreIndex, build_mitre_index, get_mitre_id, opening_sentences
 from tests.fakes import FakeChatModel
 from tests.mitre.mitre_samples import (
     ALPHA,
@@ -165,7 +165,7 @@ def test_actor_selection_slices_are_rechecked_and_no_actor_is_lost(index: MitreI
     def no_rows(data: dict[str, Any]) -> list[Any]:
         return []
 
-    selection, chat = select_actors(underestimated, no_rows, mitre_plan_call_tokens_limit=limit)
+    selection, chat = select_actors(underestimated, no_rows, mitre_actor_slice_tokens_limit=limit)
     asked = inputs_of(chat, AiTask.MITRE_ACTOR_SELECTION)
     assert len(asked) == 5 and selection["status"] == "empty"  # packed as one slice, split by the re-check
     for user_prompt in chat.asked(AiTask.MITRE_ACTOR_SELECTION):
@@ -218,7 +218,7 @@ def test_actor_selection_drops_an_id_listed_by_another_slice(index: MitreIndex) 
             return [actor_row("G0101", 3)]
         return [actor_row("G0101", 5)]  # Zeta is not in this slice
 
-    selection, chat = select_actors(index, rows, mitre_plan_call_tokens_limit=one_profile_per_slice_limit(index))
+    selection, chat = select_actors(index, rows, mitre_actor_slice_tokens_limit=one_profile_per_slice_limit(index))
     assert len(chat.asked(AiTask.MITRE_ACTOR_SELECTION)) == 5 and selection["actors"][ZETA]["relevance"] == 3
 
 
@@ -255,7 +255,7 @@ def test_a_failed_slice_loses_only_its_own_actors(index: MitreIndex) -> None:
         return [actor_row("G0101", 5)] if slice_lists(data, "G0101") else []
 
     selection, _ = select_actors(
-        index, alpha_slice_fails, mitre_plan_call_tokens_limit=one_profile_per_slice_limit(index)
+        index, alpha_slice_fails, mitre_actor_slice_tokens_limit=one_profile_per_slice_limit(index)
     )
     assert selection["status"] == "partial (4 of 5 slices)" and selection["ranked_actor_ids"] == [ZETA]
 
@@ -608,8 +608,8 @@ def test_writer_gets_mitre_candidates_and_code_sets_the_evidence(index: MitreInd
     writer_input = inputs_of(chat, AiTask.MITRE_WRITE)[0]
     candidates = writer_input["candidate_actors"]
     assert [candidate["name"] for candidate in candidates] == ["Zeta", "Alpha", "Gamma"]  # in the scheduler's order
-    assert candidates[0]["targeting"] == "a quote from MITRE" and candidates[0]["relevance_reason"] == "Similar sector."
-    assert candidates[1]["targeting"] is None and candidates[1]["relevance_reason"] is None
+    assert candidates[0]["targeting"] == "a quote from MITRE" and "relevance_reason" not in candidates[0]
+    assert candidates[1]["targeting"] is None  # the AI's unchecked reason never reaches the writer
     assert candidates[1]["documented_for"] == [{"technique": "T1566", "domain": "enterprise", "via_software": "Tool"}]
     assert writer_input["groups_used_in_other_scenarios"] == []
     assert [technique["domain"] for technique in writer_input["techniques"]] == ["enterprise", "ics"]
@@ -720,8 +720,10 @@ def test_writer_trims_procedures_then_candidates_to_fit_the_call_limit(
 @pytest.mark.parametrize(
     "bad_answer",
     [
-        writer_answer(groups=(("Beta", "G0103"),)),  # not a candidate
-        writer_answer(groups=(("Zeta", "G0101"), ("Zeta", "G0101"))),  # listed twice
+        writer_answer(groups=(("Beta", "G0103"),)),  # not a candidate, and no other group left
+        writer_answer(  # names Beta, which is left out: asked again
+            narrative="Zeta and Beta could phish an operator.", groups=(("Zeta", "G0101"), ("Beta", "G0103"))
+        ),
         writer_answer() | {"relevant_groups": []},  # schema: no group
         writer_answer() | {"attack_techniques": []},  # schema: no technique
         writer_answer(techniques=("T0831",)),  # the crossing's IT side dropped
@@ -762,10 +764,47 @@ def test_the_problems_name_the_failing_field_and_the_trimmed_candidates(index: M
     )
     assert "candidate_actors" in problems[0]
     too_many = writer_answer(groups=(("Zeta", "G0101"), ("Alpha", "G0102")))
-    _, problems = engine.check_written_scenario(
+    checked, problems = engine.check_written_scenario(
         too_many, planned_path, asset_context(), index, settings(mitre_groups_per_scenario=1), [ZETA, ALPHA]
     )
-    assert problems == ["list at most 1 relevant_groups"]
+    assert problems == [] and [group["name"] for group in checked["relevant_groups"]] == ["Zeta"]  # first N kept
+
+
+def test_a_technique_reaches_the_writer_as_its_opening_sentences(index: MitreIndex) -> None:
+    """Only the whole sentences that open MITRE's description, within WRITER_TECHNIQUE_DESCRIPTION_CHARACTERS,
+    reach the writer: MITRE's own words, never cut mid-sentence. Mutation: send the full description and the
+    writer gets every sentence."""
+    description = "Adversaries may phish operators. They send lures by email. They also call the help desk."
+    objects = {**index["objects"], CONTROL_LOGIC: {**index["objects"][CONTROL_LOGIC], "description": description}}
+    shown = engine.writer_techniques(
+        [CONTROL_LOGIC], {**index, "objects": objects}, settings(writer_technique_description_characters=70)
+    )
+    assert shown[0]["description"] == "Adversaries may phish operators. They send lures by email."
+    assert opening_sentences("One very long first sentence without any stop", 20) == "One very long first"
+
+
+def test_code_leaves_out_an_unplanned_technique_or_a_bad_group_instead_of_asking_again(index: MitreIndex) -> None:
+    """The writer adds a technique the plan lacks (T1078), a group listed twice and one that is no candidate
+    (Beta): code keeps the planned techniques and Zeta, in one writer call. Mutation: report the unplanned
+    technique as a problem again and the writer is asked twice."""
+    answer = writer_answer(techniques=("T1566", "T0831", "T1078"), groups=(("Zeta", "G0101"), ("Zeta", "G0101")))
+    answer["relevant_groups"].append({"name": "Beta", "mitre_id": "G0103", "relevance": ""})
+    chat = chat_with(scenario=answer)
+    scenario = write_scenario(chat, first_planned_path(index), index)
+    assert len(chat.asked(AiTask.MITRE_WRITE)) == 1 and scenario is not None
+    assert [technique["mitre_id"] for technique in scenario["attack_techniques"]] == ["T1566", "T0831"]
+    assert [group["name"] for group in scenario["relevant_groups"]] == ["Zeta"]
+
+
+def test_a_left_out_technique_or_group_named_in_the_text_is_asked_again(index: MitreIndex) -> None:
+    """The text must never tell of what the card no longer lists: naming the left-out T1078 (or its MITRE name)
+    in the scenario keeps the re-ask."""
+    for narrative in ("An attacker uses T1078 to log in.", "An attacker uses valid accounts to log in."):
+        answer = writer_answer(narrative=narrative, techniques=("T1566", "T0831", "T1078"))
+        _, problems = engine.check_written_scenario(
+            answer, first_planned_path(index), asset_context(), index, settings(), [ZETA, ALPHA, GAMMA]
+        )
+        assert problems and "leave it out" in problems[0], narrative
 
 
 def test_several_relevant_groups_are_each_verified_against_mitre(index: MitreIndex) -> None:

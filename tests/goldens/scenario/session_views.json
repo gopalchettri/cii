@@ -9,11 +9,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -126,11 +131,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": {
@@ -245,11 +255,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -362,11 +377,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -481,11 +501,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -596,6 +621,7 @@
   "accepted_by": null,
   "actor": null,
   "actors": [],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -675,11 +701,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -792,11 +823,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": {
@@ -911,11 +947,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "NEAREST_ONLY",
   "controls": [
    {
@@ -1084,11 +1125,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -1122,11 +1168,16 @@
       "actor_id": 3,
       "actor_name": "Malicious insider",
       "closest_match": false,
+      "documented_techniques": [],
+      "mitre_id": null,
+      "relevance": null,
       "role": "acting",
       "selection": "chosen",
-      "selection_reason": "It could reach SCADA server from the office network."
+      "selection_reason": "It could reach SCADA server from the office network.",
+      "url": null
      }
     ],
+    "attack_techniques": [],
     "control_match_status": "PENDING",
     "controls": [],
     "controls_error": null,
@@ -1319,11 +1370,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
