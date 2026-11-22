@@ -62,7 +62,7 @@ from app.schemas.scenarios import (
     session_status_from_record,
 )
 from app.search.library_cache import get_library_cache
-from app.search.mitre.mitre_index import MitreIndex, get_mitre_id
+from app.search.mitre.mitre_index import MitreIndex, get_mitre_id, get_mitre_url
 from app.worker.celery_app import send_job
 
 log = structlog.get_logger(__name__)
@@ -79,6 +79,15 @@ SHOWN_STATUS: Final[dict[c.Status, MitreRunStatus]] = {
 MITRE_RUN_FIELDS: Final = ("entity_id", "asset_id", "context", "mitre", "job.set_goal", "job.batch", "last_action.kind")
 #: A system column the engine never gets: ids, the alias and the category the engine's own type replaces.
 SYSTEM_COLUMNS_NOT_SENT: Final = (*c.ContextProperties.ALWAYS_USED, "category_name")
+#: The engine's name for an asset column of tsg_GetAssetContext (the names MITRE_ASSET_FIELDS_TO_MATCH and the
+#: prompts use); any other column the procedure returns is sent under its own name. asset_type is the platform's
+#: recorded type: the engine's own asset_type is the IT or OT of category_code.
+ASSET_COLUMN_ENGINE_NAMES: Final = {
+    "cii_asset_description": "asset_description",
+    "sub_sector": "subsector",
+    "critical_service": "service_name",
+    "asset_type": "recorded_asset_type",
+}
 #: The status read's fields: the board's (SESSION_STATUS_FIELDS), then the run's MITRE part without its frozen
 #: context, and of its plan paths only their ids.
 MITRE_STATUS_FIELDS: Final = (
@@ -170,8 +179,9 @@ def engine_asset_type(category_code: str | None, unknown_as: str) -> str:
 
 
 def build_engine_asset_context(context: FrozenContext) -> dict[str, Any]:
-    """The engine's asset context from the run's frozen one: the asset's own facts and its systems', redacted
-    as every prompt's are, and no contact name (the engine sends every field to the model)."""
+    """The engine's asset context from the run's frozen one: every fact tsg_GetAssetContext returned for the
+    asset and its systems (ids aside), redacted as every prompt's are (the engine sends every field to the
+    model). The asset's columns are named as ASSET_COLUMN_ENGINE_NAMES says, any other under its own name."""
     facts = context.asset_context
     asset_type = engine_asset_type(context.asset.get("category_code"), "IT")
     supporting_systems = []
@@ -182,13 +192,9 @@ def build_engine_asset_context(context: FrozenContext) -> dict[str, Any]:
                 system_facts[name] = value
         system_type = engine_asset_type(system.get("category_code"), asset_type)
         supporting_systems.append({"name": system["name"], "type": system_type, **facts_safe_for_prompt(system_facts)})
-    described = {
-        "asset_description": facts.get("cii_asset_description"),
-        "sector": facts.get("sector"),
-        "subsector": facts.get("sub_sector"),
-        "service_name": facts.get("critical_service"),
-        "data_handled": facts.get("data_handled"),
-    }
+    described = {}
+    for column, value in facts.items():
+        described[ASSET_COLUMN_ENGINE_NAMES.get(column, column)] = value
     named = {"asset_name": context.asset["name"], "asset_type": asset_type}
     return {**named, **facts_safe_for_prompt(described), "supporting_systems": supporting_systems}
 
@@ -312,11 +318,15 @@ def plan_further_paths_first(
 
 
 def report_selected_actors(selection: dict[str, Any], index: MitreIndex) -> list[dict[str, Any]]:
-    """The selected actors in rank order, each with the MITRE quote it was kept for (the POC's audit list)."""
+    """The selected actors in rank order, each with the MITRE quote it was kept for and its attack.mitre.org
+    page (the POC's audit list). The AI's own reason is never shown: code does not check it against MITRE."""
     report = []
     for actor_id in selection["ranked_actor_ids"]:
-        actor = index["objects"][actor_id]
-        report.append({"mitre_id": get_mitre_id(actor), "name": actor["name"], **selection["actors"][actor_id]})
+        actor, choice = index["objects"][actor_id], selection["actors"][actor_id]
+        shown = {"mitre_id": get_mitre_id(actor), "name": actor["name"], "url": get_mitre_url(actor)}
+        for field in ("relevance", "evidence_quote", "matched_fields"):
+            shown[field] = choice.get(field)
+        report.append(shown)
     return report
 
 

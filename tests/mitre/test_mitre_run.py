@@ -270,6 +270,7 @@ def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_
     assert metadata["it_ot_crossing_required"] is True and metadata["it_ot_crossing_met"] is True
     assert [(actor["mitre_id"], actor["relevance"]) for actor in metadata["relevant_actors"]] == [("G0101", 5)]
     assert metadata["relevant_actors"][0]["evidence_quote"] and "matched_fields" in metadata["relevant_actors"][0]
+    assert "reason" not in metadata["relevant_actors"][0]  # the AI's unchecked words are never shown
     stored_removed = _run(session_id)["mitre"]["groups_removed_over_share"]  # the set's $inc, 0 included
     assert metadata["groups_removed_over_share"] == stored_removed
 
@@ -679,6 +680,9 @@ def test_a_mitre_card_is_the_shape_the_controls_picker_reads(monkeypatch: pytest
 
 
 def test_the_engine_gets_the_assets_facts_and_its_own_it_or_ot_types() -> None:
+    """Every column tsg_GetAssetContext returns reaches the engine: the named ones renamed, the platform's
+    recorded type beside the engine's IT or OT, any other (target_rto_hours, asset_priority) under its own name.
+    Mutation: keep a fixed list of facts and the others are dropped."""
     asset = mitre_session.build_engine_asset_context(_OT_CONTEXT)
     assert (asset["asset_name"], asset["asset_type"], asset["sector"], asset["subsector"]) == (
         "Grid Control Centre",
@@ -686,6 +690,16 @@ def test_the_engine_gets_the_assets_facts_and_its_own_it_or_ot_types() -> None:
         "Energy",
         "Electricity",
     )
+    assert (
+        asset["service_name"] == "Electricity transmission"
+        and "Runs the transmission grid" in asset["asset_description"]
+    )
+    assert (asset["recorded_asset_type"], asset["target_rto_hours"], asset["asset_priority"]) == (
+        "Control system",
+        4.0,
+        "High",
+    )
+    assert not {"id", "cii_asset_description", "critical_service", "sub_sector"} & set(asset)
     systems = asset["supporting_systems"]
     assert [(system["name"], system["type"]) for system in systems] == [("SCADA server", "OT"), ("Historian", "IT")]
     assert not {"id", "alias", "category_code"} & set(systems[0]) and systems[0]["technology_used"]

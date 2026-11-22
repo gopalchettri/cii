@@ -12,7 +12,8 @@ MitreRunStatus = Literal["queued", "running", "complete", "failed", "cancelled"]
 
 
 class RelevantGroup(BaseModel):
-    """A MITRE group the writer chose from candidate_actors; code adds evidence_type and documented_techniques."""
+    """A MITRE group the writer chose from candidate_actors; code adds evidence_type, documented_techniques and
+    relevance, in MITRE's words only (any relevance the writer sends is replaced)."""
 
     name: str = Field(min_length=1)
     mitre_id: str = Field(min_length=1)
@@ -27,7 +28,8 @@ class Technique(BaseModel):
 
 
 class Scenario(BaseModel):
-    """What the writer returns for one path; code adds category, evidence, mitigations and prompt_version. The
+    """What the writer returns for one path; code adds category, evidence, mitigations, prompt_version and the
+    attack.mitre.org page (url) of each technique and group, as MITRE's own reference gives it. The
     most groups a scenario names is MITRE_GROUPS_PER_SCENARIO, checked by code."""
 
     scenario_title: str = Field(min_length=1)

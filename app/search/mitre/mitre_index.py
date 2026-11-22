@@ -56,6 +56,14 @@ def get_mitre_id(stix_object: dict[str, Any]) -> str | None:
     return None
 
 
+def get_mitre_url(stix_object: dict[str, Any]) -> str | None:
+    """The object's page on attack.mitre.org, as MITRE's own reference gives it, or None."""
+    for reference in stix_object.get("external_references") or []:
+        if reference.get("source_name") in MITRE_SOURCE_NAMES and reference.get("url"):
+            return str(reference["url"])
+    return None
+
+
 def clean_mitre_text(text: str) -> str:
     """MITRE text as a reader sees it: no citation labels, link text without its URL, plain quotes and dashes,
     single spaces. Used for every stored description and every quote the model returns, so both compare fairly."""

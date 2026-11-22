@@ -614,15 +614,43 @@ def test_writer_gets_mitre_candidates_and_code_sets_the_evidence(index: MitreInd
     assert writer_input["groups_used_in_other_scenarios"] == []
     assert [technique["domain"] for technique in writer_input["techniques"]] == ["enterprise", "ics"]
     assert scenario is not None and scenario["relevant_groups"][0]["evidence_type"] == "direct"
+    phishing, logic = "https://attack.mitre.org/techniques/T1566", "https://attack.mitre.org/techniques/T0831"
     assert scenario["relevant_groups"][0]["documented_techniques"] == [
-        {"mitre_id": "T1566", "name": "Phishing", "domain": "enterprise", "via_software": None},
-        {"mitre_id": "T0831", "name": "Modify Control Logic", "domain": "ics", "via_software": None},
+        {"mitre_id": "T1566", "name": "Phishing", "domain": "enterprise", "via_software": None, "url": phishing},
+        {"mitre_id": "T0831", "name": "Modify Control Logic", "domain": "ics", "via_software": None, "url": logic},
     ]
+    # each technique and group links to its own attack.mitre.org page, as MITRE's reference gives it
+    assert [technique["url"] for technique in scenario["attack_techniques"]] == [phishing, logic]
+    assert scenario["relevant_groups"][0]["url"] == "https://attack.mitre.org/groups/G0101"
     assert "M1017" in json.dumps(scenario["mitigations"]) and scenario["prompt_version"] == PromptVersion.MITRE_WRITER
     assert (
         scenario["category"] == "Tampering"
         and scenario["relevant_groups"][0]["mitre_targeting_quote"] == "a quote from MITRE"
     )
+    # the writer's own words about the group are replaced by MITRE's: its checked quote and documented techniques
+    assert scenario["relevant_groups"][0]["relevance"] == (
+        'MITRE describes it: "a quote from MITRE". MITRE documents it using Phishing, Modify Control Logic.'
+    )
+
+
+def test_a_group_with_no_targeting_quote_is_listed_for_its_documented_techniques_only() -> None:
+    documented = [{"name": "Phishing", "via_software": "Tool"}, {"name": "Modify Control Logic", "via_software": None}]
+    assert engine.relevance_from_mitre(documented, None) == (
+        "Listed because MITRE documents it using Phishing (via Tool), Modify Control Logic."
+    )
+
+
+def test_a_technique_the_writer_dropped_keeps_no_mitigations_or_procedures(index: MitreIndex) -> None:
+    answer = writer_answer(techniques=("T1566", "T0831"))
+    scenario, problems = engine.check_written_scenario(
+        answer, first_planned_path(index), asset_context(), index, settings(), [ZETA]
+    )
+    assert problems == [] and scenario is not None
+    scenario["attack_techniques"] = scenario["attack_techniques"][:1]  # the writer kept Phishing only
+    procedures = [{"technique": "T1566", "text": "kept"}, {"technique": "T0831", "text": "dropped"}]
+    shown = engine.add_mitre_evidence_to_scenario(scenario, procedures, index, selection_of((ZETA, 5)), {})
+    assert [entry["technique"] for entry in shown["mitigations"]] == ["T1566"]
+    assert [procedure["text"] for procedure in shown["procedures"]] == ["kept"]
 
 
 def test_a_group_documented_only_for_the_enterprise_step_is_valid_for_an_ot_asset(index: MitreIndex) -> None:
@@ -1004,8 +1032,8 @@ def test_a_sole_group_over_its_share_is_replaced_by_a_verified_candidate(
     result, _ = run_writers(index, fake_paths(2), 2, selection_of((ZETA, 5), (GAMMA, 3)), mitre_parallel_writers=1)
     second_group = result["written"][1][1]["relevant_groups"][0]
     assert second_group["name"] == "Gamma" and second_group["relevance"].startswith(
-        "Similar sector. MITRE documents it using Phishing"
-    )
+        'MITRE describes it: "a quote from MITRE". MITRE documents it using Phishing'
+    )  # never the selection AI's own reason
     assert result["groups_removed_over_share"] == 1
 
 

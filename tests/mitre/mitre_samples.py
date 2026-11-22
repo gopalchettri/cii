@@ -21,8 +21,17 @@ TOOL, CAMPAIGN, MITIGATION = "tool--example", "campaign--own", "course-of-action
 DELTA, PLC_ASSET = "intrusion-set--delta", "x-mitre-asset--plc"
 
 
+#: The attack.mitre.org folder of each kind of ATT&CK ID, by its first letter, as MITRE's references give it.
+PAGE_FOLDERS = {"T": "techniques", "G": "groups", "S": "software", "C": "campaigns", "M": "mitigations", "A": "assets"}
+
+
+def mitre_page(mitre_id: str) -> str:
+    """The attack.mitre.org page MITRE's reference gives an ID (T1566.001 -> .../techniques/T1566/001)."""
+    return f"https://attack.mitre.org/{PAGE_FOLDERS[mitre_id[0]]}/{mitre_id.replace('.', '/')}"
+
+
 def mitre_reference(mitre_id: str, source: str = "mitre-attack") -> list[dict[str, str]]:
-    return [{"source_name": source, "external_id": mitre_id}]
+    return [{"source_name": source, "external_id": mitre_id, "url": mitre_page(mitre_id)}]
 
 
 def relationship(relationship_id: str, source_id: str, target_id: str, kind: str = "uses") -> dict[str, Any]:

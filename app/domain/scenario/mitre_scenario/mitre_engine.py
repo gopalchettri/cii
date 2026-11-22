@@ -32,7 +32,13 @@ from app.domain.shared.ask_ai import (
 from app.domain.shared.names import threat_name_key
 from app.domain.shared.parallel import run_in_parallel
 from app.schemas.mitre.mitre_scenarios import Scenario
-from app.search.mitre.mitre_index import MitreIndex, clean_mitre_text, get_mitre_id, shorten_at_word_boundary
+from app.search.mitre.mitre_index import (
+    MitreIndex,
+    clean_mitre_text,
+    get_mitre_id,
+    get_mitre_url,
+    shorten_at_word_boundary,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -1128,31 +1134,59 @@ def systems_targeted(
 
 def add_mitre_evidence_to_scenario(
     scenario: dict[str, Any],
-    planned_path: dict[str, Any],
     procedures: list[dict[str, Any]],
     index: MitreIndex,
     actor_selection: dict[str, Any],
     system_mitre_assets: dict[str, list[str]],
 ) -> dict[str, Any]:
-    """The checked scenario with what the reader is shown beside it: the systems each technique targets, the
-    quote each group was selected for, the procedures and the MITRE mitigations of every path technique."""
+    """The checked scenario with what the reader is shown beside it, for the techniques it kept only: the systems
+    each targets, each group's selection quote and relevance in MITRE's own words, the procedures, the MITRE
+    mitigations and the attack.mitre.org page (url) of each technique and group."""
     selected_actors = actor_selection["actors"]
     for group in scenario["relevant_groups"]:
-        choice = selected_actors.get(index["group_by_mitre_id"][group["mitre_id"]]) or {}
+        group_id = index["group_by_mitre_id"][group["mitre_id"]]
+        choice = selected_actors.get(group_id) or {}
+        group["url"] = get_mitre_url(index["objects"][group_id])
         group["mitre_targeting_quote"] = choice.get("evidence_quote")
         group["matched_fields"] = choice.get("matched_fields") or []
-    mitigations = []
-    for technique_id in planned_path["technique_stix_ids"]:
-        technique = index["objects"][technique_id]
+        group["relevance"] = relevance_from_mitre(
+            group.get("documented_techniques") or [], choice.get("evidence_quote")
+        )
+        for documented in group.get("documented_techniques") or []:
+            documented["url"] = technique_url(index, documented["mitre_id"])
+    kept_ids, mitigations = set(), []
+    for technique in scenario["attack_techniques"]:
+        technique["url"] = get_mitre_url(index["objects"][technique["stix_id"]])
+        kept_ids.add(technique["mitre_id"])
         mitigations.append(
             {
-                "technique": get_mitre_id(technique),
-                "technique_name": technique["name"],
-                "mitigations": index["mitigations_by_technique"][technique_id],
+                "technique": technique["mitre_id"],
+                "technique_name": index["objects"][technique["stix_id"]]["name"],
+                "mitigations": index["mitigations_by_technique"][technique["stix_id"]],
             }
         )
+    kept_procedures = [procedure for procedure in procedures if procedure["technique"] in kept_ids]
     targeted = systems_targeted(scenario, index, system_mitre_assets)
-    return {**scenario, "systems_targeted": targeted, "procedures": procedures, "mitigations": mitigations}
+    return {**scenario, "systems_targeted": targeted, "procedures": kept_procedures, "mitigations": mitigations}
+
+
+def relevance_from_mitre(documented_techniques: list[dict[str, Any]], targeting_quote: str | None) -> str:
+    """Why a group is listed, in MITRE's words only: its checked targeting quote, then the scenario techniques
+    MITRE documents it for (with the software where indirect). No AI text."""
+    uses = []
+    for evidence in documented_techniques:
+        software = evidence.get("via_software")
+        uses.append(f"{evidence['name']} (via {software})" if software else evidence["name"])
+    documented = f"MITRE documents it using {', '.join(uses)}."
+    if targeting_quote:
+        return f'MITRE describes it: "{targeting_quote}". {documented}'
+    return f"Listed because {documented}"
+
+
+def technique_url(index: MitreIndex, mitre_id: str) -> str | None:
+    """A technique's attack.mitre.org page by its ATT&CK ID, or None for an ID the index does not hold."""
+    technique_id = index["technique_by_mitre_id"].get(mitre_id)
+    return get_mitre_url(index["objects"][technique_id]) if technique_id else None
 
 
 #: The writer input fields of one path; the rest (SHARED_INPUT_FIELDS) is sent once a call.
@@ -1273,12 +1307,7 @@ def check_brief_answer(
     if scenario is None:
         return None, problems
     with_evidence = add_mitre_evidence_to_scenario(
-        scenario,
-        brief["path"],
-        brief["procedures"],
-        writing["index"],
-        writing["actor_selection"],
-        writing["system_mitre_assets"],
+        scenario, brief["procedures"], writing["index"], writing["actor_selection"], writing["system_mitre_assets"]
     )
     return with_evidence, []
 
@@ -1395,17 +1424,12 @@ def replacement_group_under_share(
         documented_techniques = documented_techniques_of_group(candidate_id, technique_ids, index)
         if not documented_techniques:
             continue
-        technique_names = []
-        for evidence in documented_techniques:
-            technique_names.append(evidence["name"])
-        documented = f"MITRE documents it using {', '.join(technique_names)}."
-        choice = selected_actors.get(candidate_id)
-        relevance = f"{choice['reason']} {documented}" if choice else f"Listed because {documented}"
+        quote = (selected_actors.get(candidate_id) or {}).get("evidence_quote")
         candidate = index["objects"][candidate_id]
         return {
             "name": candidate["name"],
             "mitre_id": get_mitre_id(candidate),
-            "relevance": relevance,
+            "relevance": relevance_from_mitre(documented_techniques, quote),
             "evidence_type": evidence_type(documented_techniques),
             "documented_techniques": documented_techniques,
         }
