@@ -28,6 +28,24 @@ class MitreMessage(StrEnum):
     )
     NO_PATHS = "No attack path passed the MITRE checks for this asset: no scenario can be written."
     NO_SCENARIO = "No scenario passed the MITRE checks for this run's paths."
+    NOTHING_LEFT = (
+        "Every MITRE attack path of this run is done: {written} scenarios written, {dropped} dropped by the MITRE "
+        "checks. {why}"
+    )
+    PLANNER_FOUND_EVERY_PATH = "The planner found no further relevant path."
+    PLANNER_AT_ROUND_CAP = "The planner stopped at MITRE_PLANNER_MAX_FURTHER_ROUNDS."
+    TARGET_REACHED = (
+        "TOTAL_SCENARIO_COUNT ({target}) reached: {written} scenarios written, {dropped} dropped by the MITRE "
+        "checks; {left_out} further MITRE attack paths were left out."
+    )
+    SET_STARTED = (
+        "Writing the next set: up to {size} of the {remaining} scenarios left ({written} written, {dropped} dropped "
+        "so far)."
+    )
+    SET_PLANNING_FIRST = (
+        "Asking the MITRE planner for further relevant paths, then writing the next set ({written} written, "
+        "{dropped} dropped so far)."
+    )
 
 
 class MitreProblem(StrEnum):

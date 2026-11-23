@@ -89,8 +89,9 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
         "threat_category", "contributing_categories", "threat_type", "threat_name",
         "supporting_systems_involved",
         "scenario_title", "scenario_statement", "risk_statement", "assumptions", "route_status",
-        "also_applies",
+        "also_applies", "threat_scenario_description",
     ]  # fmt: skip
+    assert shown["scenario"]["threat_scenario_description"] is None  # not a MITRE card: its writer has no such line
     assert list(shown["scenario"]["supporting_systems_involved"][0]) == [
         "supporting_system_id", "supporting_system", "is_entry_point", "justification", "is_applicable",
     ]  # fmt: skip

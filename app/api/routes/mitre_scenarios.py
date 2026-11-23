@@ -11,7 +11,7 @@ from app.core import constants as c
 from app.domain.scenario import runs
 from app.domain.scenario.mitre_scenario import mitre_session
 from app.schemas import scenarios as views
-from app.schemas.mitre.mitre_scenarios import MitreSessionStatus
+from app.schemas.mitre.mitre_scenarios import MitreNextSetStarted, MitreSessionStatus
 
 router = APIRouter(tags=[c.ApiTag.MITRE])
 
@@ -95,13 +95,19 @@ def regenerate_mitre_scenarios(
 @router.post(
     "/v1/mitre_sessions/{session_id}/scenarios/next-set",
     status_code=202,
-    response_model=views.RunActionStarted,
+    response_model=MitreNextSetStarted,
+    responses={200: {"model": MitreNextSetStarted, "description": "Nothing left to write: remaining 0."}},
     summary="6. Write the next set",
 )
-def write_mitre_next_set(run: CallersRun, principal: Caller) -> views.RunActionStarted:
-    """Writes the next scenarios from the planned paths not written yet (202). 409 `nothing_left` when every
-    path is written or failed its checks."""
-    return mitre_session.write_next_mitre_scenario_set(principal, run)
+def write_mitre_next_set(run: CallersRun, principal: Caller, response: Response) -> MitreNextSetStarted:
+    """Writes the next scenarios from the planned paths not written yet (202 `generating`). With nothing left,
+    nothing starts: 200 with `status` `nothing_left` (every path written or dropped by the MITRE checks) or
+    `target_reached` (TOTAL_SCENARIO_COUNT left the rest out) and `remaining` 0. Either answer carries
+    `remaining`, `written`, `dropped` and `message`."""
+    answer = mitre_session.write_next_mitre_scenario_set(principal, run)
+    if answer.status != c.ActionStatus.GENERATING:  # nothing started
+        response.status_code = 200
+    return answer
 
 
 @router.post(

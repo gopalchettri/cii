@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.scenarios import RunBoard
+from app.schemas.scenarios import RunActionStarted, RunBoard
 
 #: A MITRE run's status as its routes show it (the POC's words).
 MitreRunStatus = Literal["queued", "running", "complete", "failed", "cancelled"]
@@ -56,6 +56,16 @@ class MitreRunDetails(BaseModel):
     result: dict[str, Any] | None
     status_url: str
     next_set_url: str
+
+
+class MitreNextSetStarted(RunActionStarted):
+    """POST /v1/mitre_sessions/{id}/scenarios/next-set: v1's 202 shape plus the run's counts as the click finds
+    them; 200 with status nothing_left or target_reached (remaining 0) when nothing is left to write."""
+
+    remaining: int  # scenarios still to write before this set
+    written: int
+    dropped: int  # paths the MITRE checks dropped
+    message: str
 
 
 class MitreSessionStatus(RunBoard):

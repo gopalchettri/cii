@@ -81,6 +81,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -205,6 +206,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -327,6 +329,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -459,6 +462,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -583,6 +587,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -773,6 +778,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -897,6 +903,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1073,6 +1080,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1240,6 +1248,7 @@
      ],
      "threat_category": "Tampering",
      "threat_name": "Ransomware encrypts backup servers",
+     "threat_scenario_description": null,
      "threat_type": "Malware"
     },
     "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1320,6 +1329,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1445,6 +1455,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",

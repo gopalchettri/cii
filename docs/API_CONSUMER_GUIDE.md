@@ -383,6 +383,7 @@ Headers: identity headers.
 | `scenario.assumptions` | string[] | each "assumes ... - not recorded in the platform"; [] when none |
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
 | `scenario.also_applies` | string[] | other threats of the same kind on the same system |
+| `scenario.threat_scenario_description` | string or null | a MITRE card's threat line, as its MITRE status shows it; null on other cards |
 | `threat.threat_id` | string or null | `lib:<id>` or `ai:<name>` |
 | `threat.threat_category` / `.threat_category_id` | | |
 | `threat.threat_type` / `.threat_type_id` / `.threat_name` | | |
@@ -486,7 +487,9 @@ There is no AI reviewer: `validation_errors` never holds "The plan check could n
 ### 3.4b `GET /v1/mitre_sessions/{session_id}/results`
 
 The same page, parameters and fields as 3.4 (a MITRE card's `actors` are its MITRE groups and `attack_techniques` its
-techniques, each with its attack.mitre.org `url`). `404` for a run that is not a MITRE run.
+techniques, each with its attack.mitre.org `url`; its `threat.threat_id` is `ai:<threat name>`, as an AI threat's in 3.4).
+A MITRE next set and regenerate show their own `progress.timings.threats` and `.scenarios`, as 3.2 describes.
+`404` for a run that is not a MITRE run.
 
 ### 3.5 `POST /v1/sessions/{session_id}/accept`
 
@@ -662,6 +665,31 @@ Headers: identity headers.
 Notes:
 - When: `session_status` not `active`. You do **not** have to decide the current set first: it is allowed during `awaiting_review` too (`awaiting_next_set` only means "everything written is decided and paths remain"). `progress.scenario_count.remaining` > 0 tells you paths are left.
 - `generating`: the run is `active` until the set is written; accept/regenerate → `409 generation_in_progress` meanwhile. Done when `session_status` leaves `active` and `progress.last_next_set.outcome` is no longer `running`.
+
+### 3.7b `POST /v1/mitre_sessions/{session_id}/scenarios/next-set`
+
+As 3.7 for a MITRE run, with two differences:
+- When nothing is left to write it is **not** a 409. It answers **200** with nothing started.
+- Every answer carries the run's counts as the click finds them: `remaining` (scenarios still to write before this set), `written`, `dropped` (paths the MITRE checks dropped) and `message`.
+
+**UI rule: decide on `status`.** `generating` means a set is being written, so poll 3.2. `nothing_left` or `target_reached` means hide the next-set button; `remaining` is then 0.
+
+| HTTP | `status` | Meaning |
+| --- | --- | --- |
+| 202 | `generating` | a set is being written. With `remaining` 0, the plan is still open and the job asks the planner for further paths first |
+| 200 | `nothing_left` | the planner found every relevant path, and each is written or was dropped by the MITRE checks |
+| 200 | `target_reached` | `TOTAL_SCENARIO_COUNT` was reached, and further planned paths were left out |
+
+```json
+{ "session_id": "ead89a4d54e641438e3e50e8473cd24b", "user_id": "jane.doe@example.com", "status": "generating",
+  "epoch": 4, "remaining": 6, "written": 12, "dropped": 1,
+  "message": "Writing the next set: up to 5 of the 6 scenarios left (12 written, 1 dropped so far)." }
+```
+```json
+{ "session_id": "ead89a4d54e641438e3e50e8473cd24b", "user_id": "jane.doe@example.com", "status": "nothing_left",
+  "epoch": 3, "remaining": 0, "written": 17, "dropped": 2,
+  "message": "Every MITRE attack path of this run is done: 17 scenarios written, 2 dropped by the MITRE checks. The planner found no further relevant path." }
+```
 
 ## 4. Remediation endpoints
 

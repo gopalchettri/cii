@@ -149,7 +149,9 @@
     "enum": [
      "generating",
      "regenerating",
-     "mapping_controls"
+     "mapping_controls",
+     "nothing_left",
+     "target_reached"
     ],
     "title": "ActionStatus",
     "type": "string"
@@ -3089,6 +3091,61 @@
      "api_key"
     ],
     "title": "MintedApiClient",
+    "type": "object"
+   },
+   "MitreNextSetStarted": {
+    "description": "POST /v1/mitre_sessions/{id}/scenarios/next-set: v1's 202 shape plus the run's counts as the click finds\nthem; 200 with status nothing_left or target_reached (remaining 0) when nothing is left to write.",
+    "properties": {
+     "dropped": {
+      "title": "Dropped",
+      "type": "integer"
+     },
+     "epoch": {
+      "title": "Epoch",
+      "type": "integer"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "remaining": {
+      "title": "Remaining",
+      "type": "integer"
+     },
+     "session_id": {
+      "title": "Session Id",
+      "type": "string"
+     },
+     "status": {
+      "$ref": "#/components/schemas/ActionStatus"
+     },
+     "user_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Id"
+     },
+     "written": {
+      "title": "Written",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "session_id",
+     "user_id",
+     "status",
+     "epoch",
+     "remaining",
+     "written",
+     "dropped",
+     "message"
+    ],
+    "title": "MitreNextSetStarted",
     "type": "object"
    },
    "MitreRunDetails": {
@@ -6102,6 +6159,17 @@
        }
       ],
       "title": "Threat Name"
+     },
+     "threat_scenario_description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Threat Scenario Description"
      },
      "threat_type": {
       "anyOf": [
@@ -11729,7 +11797,7 @@
   },
   "/v1/mitre_sessions/{session_id}/scenarios/next-set": {
    "post": {
-    "description": "Writes the next scenarios from the planned paths not written yet (202). 409 `nothing_left` when every\npath is written or failed its checks.",
+    "description": "Writes the next scenarios from the planned paths not written yet (202 `generating`). With nothing left,\nnothing starts: 200 with `status` `nothing_left` (every path written or dropped by the MITRE checks) or\n`target_reached` (TOTAL_SCENARIO_COUNT left the rest out) and `remaining` 0. Either answer carries\n`remaining`, `written`, `dropped` and `message`.",
     "operationId": "write_mitre_next_set_v1_mitre_sessions__session_id__scenarios_next_set_post",
     "parameters": [
      {
@@ -11812,11 +11880,21 @@
      }
     ],
     "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MitreNextSetStarted"
+        }
+       }
+      },
+      "description": "Nothing left to write: remaining 0."
+     },
      "202": {
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/RunActionStarted"
+         "$ref": "#/components/schemas/MitreNextSetStarted"
         }
        }
       },

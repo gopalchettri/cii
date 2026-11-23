@@ -25,6 +25,7 @@ from app.core.constants import (
     ErrorCode,
     Header,
     IntelSource,
+    MitreMessage,
     MitreStage,
     PromotionOutcome,
     RunPipeline,
@@ -42,6 +43,7 @@ from app.crud.scenarios import get_threat_scenario_repository
 from app.domain.scenario import attack_controls
 from app.domain.scenario.mitre_scenario import mitre_session
 from app.schemas import scenarios as views
+from app.schemas.mitre.mitre_scenarios import MitreNextSetStarted
 from app.worker import jobs
 from app.worker.scenario import controls_job
 from app.worker.scenario import tasks as scenario_tasks
@@ -246,6 +248,31 @@ def _check_mitre_results_show_groups_and_techniques(flow: MitreFlow, session_id:
         assert lead["role"] == "acting" and lead["url"].startswith("https://attack.mitre.org/groups/")
         assert lead["relevance"] and lead["documented_techniques"]
         assert technique["url"].startswith("https://attack.mitre.org/techniques/") and "stix_id" not in technique
+        # The writer's threat line in the scenario block too (owner 2026-11-23), as the MITRE status shows it.
+        description = card["scenario"]["threat_scenario_description"]
+        assert description and description == scenario["threat_scenario_description"]
+
+
+def _ask_next_set_with_nothing_left(flow: MitreFlow, session_id: str) -> dict:
+    """A next set with nothing left: 200 (never a conflict, owner 2026-11-23), remaining 0, nothing queued."""
+    epoch = _run(session_id)["job"]["epoch"]
+    done = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 200)
+    assert done["remaining"] == 0 and done["epoch"] == epoch and done["message"]
+    assert flow.work() == [] and _run(session_id)["job"]["epoch"] == epoch  # no job, no new epoch
+    return done
+
+
+def test_a_mitre_next_set_past_total_scenario_count_says_target_reached(
+    flow: MitreFlow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TOTAL_SCENARIO_COUNT=2 over 4 valid paths: the first set writes 2, and the next set says target_reached
+    with the 2 paths it left out. Mutation: leave out the left-out count and it says nothing_left."""
+    monkeypatch.setattr(get_settings(), "total_scenario_count", 2)
+    session_id = flow.start()
+    flow.work()
+    done = _ask_next_set_with_nothing_left(flow, session_id)
+    assert (done["status"], done["written"], done["dropped"]) == ("target_reached", 2, 0)
+    assert done["message"] == MitreMessage.TARGET_REACHED.format(target=2, written=2, dropped=0, left_out=2)
 
 
 def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_across_sets(flow: MitreFlow) -> None:
@@ -299,7 +326,9 @@ def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_
     assert len(further_round["planned_already"]) == 4  # asked at the end of the set that left no open path
     assert len(flow.chat.asked(AiTask.MITRE_ACTOR_SELECTION)) == 1
     board_times = flow.call("GET", f"/v1/sessions/{session_id}")["progress"]["timings"]
-    assert board_times["threats"] is None and board_times["scenarios"] is not None, board_times  # no new plan
+    # The next set's own threats time too, as the shared next set's: the click until writing began and the
+    # further round it asked (owner 2026-11-23; it was null).
+    assert board_times["threats"] is not None and board_times["scenarios"] is not None, board_times
     cards = _cards(session_id)
     assert [card["path_id"] for card in cards] == ["mitre-1", "mitre-2", "mitre-3", "mitre-4"]
     leads = [card["content"]["mitre"]["relevant_groups"][0]["mitre_id"] for card in cards]
@@ -308,8 +337,9 @@ def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_
     assert (stored["paths_complete"], stored["further_rounds"], len(stored["paths"])) == (True, 1, 4)
     assert flow.mitre_details(session_id)["scenarios_left"] == 0
     assert flow.call("GET", f"/v1/sessions/{session_id}")["progress"]["scenario_count"]["remaining"] == 0
-    refused = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 409)
-    assert refused["reason"] == ConflictReason.NOTHING_LEFT
+    done = _ask_next_set_with_nothing_left(flow, session_id)
+    assert (done["status"], done["written"], done["dropped"]) == ("nothing_left", 4, 0)
+    assert done["message"].endswith(MitreMessage.PLANNER_FOUND_EVERY_PATH)
 
 
 def test_a_path_that_failed_its_checks_is_never_written_again(flow: MitreFlow) -> None:
@@ -343,8 +373,9 @@ def test_a_next_set_whose_paths_all_fail_ends_partial_and_keeps_the_runs_cards(f
     assert (summary["outcome"], summary["delivered"], summary["remaining"]) == ("partial", 0, 0)
     assert len(flow.mitre_details(session_id)["result"]["scenarios"]) == 2
     assert _run(session_id)["mitre"]["failed_path_ids"] == ["mitre-3", "mitre-4"]
-    refused = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 409)
-    assert refused["reason"] == ConflictReason.NOTHING_LEFT
+    done = _ask_next_set_with_nothing_left(flow, session_id)  # never scenarios_abandoned (owner 2026-11-23)
+    assert (done["status"], done["written"], done["dropped"]) == ("nothing_left", 2, 2)
+    assert "2 scenarios written, 2 dropped by the MITRE checks" in done["message"]
 
 
 def test_the_run_stops_at_total_scenario_count_and_a_spare_path_stands_in_for_a_dropped_one(
@@ -362,8 +393,8 @@ def test_the_run_stops_at_total_scenario_count_and_a_spare_path_stands_in_for_a_
     flow.work()
     assert [card["path_id"] for card in _cards(session_id)] == ["mitre-1", "mitre-3", "mitre-4"]
     assert flow.mitre_details(session_id)["scenarios_left"] == 0 and _run(session_id)["counts"]["planned"] == 3
-    refused = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 409)
-    assert refused["reason"] == ConflictReason.NOTHING_LEFT
+    done = _ask_next_set_with_nothing_left(flow, session_id)  # all 4 paths used: 3 written, 1 dropped
+    assert (done["status"], done["written"], done["dropped"]) == ("nothing_left", 3, 1)
     assert len(flow.chat.asked(AiTask.MITRE_PLAN)) == 1  # a counted run asks once: never a further round
 
 
@@ -422,8 +453,7 @@ def test_an_all_paths_run_asks_for_further_paths_until_a_round_adds_none(flow: M
         2,
         True,
     )
-    refused = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 409)
-    assert refused["reason"] == ConflictReason.NOTHING_LEFT
+    assert _ask_next_set_with_nothing_left(flow, session_id)["status"] == "nothing_left"
 
 
 def test_a_further_round_lost_to_an_outage_is_retried_after_the_cards_are_saved(flow: MitreFlow) -> None:
@@ -631,6 +661,9 @@ def test_a_regenerated_mitre_scenario_is_its_next_version_over_the_earlier_one(f
     assert versions[0]["superseded_by"] == versions[1]["_id"] and versions[1]["superseded_by"] is None
     progress = flow.call("GET", f"/v1/sessions/{session_id}")["progress"]
     assert (progress["last_regen"]["replaced"], progress["last_regen"]["outcome"]) == (1, "complete")
+    # The regenerate's own threats and writing times, as the shared regenerate's (owner 2026-11-23).
+    assert set(_run(session_id)["timings"]) >= {"threats_s", "scenarios_s"}
+    assert progress["timings"]["threats"] is not None and progress["timings"]["scenarios"] is not None
     assert flow.mitre_details(session_id)["written"] == 2
     lease = SimpleNamespace(
         record={"job": {"batch": [{"path_id": "mitre-1", "replaces": first}]}}, record_id=session_id
@@ -649,10 +682,31 @@ def test_a_mitre_rewrite_that_fails_its_checks_keeps_the_earlier_version(flow: M
     assert (last_regen["replaced"], last_regen["outcome"]) == (0, "partial")
 
 
+def test_a_next_set_with_no_open_path_and_the_plan_still_open_says_it_asks_the_planner_first(flow: MitreFlow) -> None:
+    """An "all paths" plan still open with no open path (its end-of-set round not asked yet): the next set starts
+    (202 generating, remaining 0) and says its job asks the planner first. Mutation: answer nothing_left when
+    remaining is 0 and the plan, still open, is never asked for more."""
+    session_id, _ = _first_set(flow)
+    opened = {"counts.remaining": 0, "mitre.paths_complete": False}
+    get_mongodb()[Collection.SESSIONS].update_one({"_id": session_id}, {"$set": opened})
+    started = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 202)
+    assert (started["status"], started["remaining"]) == (ActionStatus.GENERATING, 0)
+    written = _run(session_id)["counts"]["written"]
+    assert started["message"] == MitreMessage.SET_PLANNING_FIRST.format(written=written, dropped=0)
+
+
 def test_the_mitre_next_set_answers_as_the_group_6_next_set(flow: MitreFlow) -> None:
     session_id, _ = _first_set(flow)
+    before = _run(session_id)["counts"]
     started = flow.call("POST", f"/v1/mitre_sessions/{session_id}/scenarios/next-set", 202)
-    assert set(started) == set(views.RunActionStarted.model_fields) and started["status"] == ActionStatus.GENERATING
+    assert set(started) == set(MitreNextSetStarted.model_fields) and started["status"] == ActionStatus.GENERATING
+    # The 202 carries the run's counts as the click finds them too (owner 2026-11-23: never null on a next set).
+    counted = (started["remaining"], started["written"], started["dropped"])
+    assert counted == (before["remaining"], before["written"], 0) and started["remaining"] > 0, started
+    size = min(get_settings().next_set_size, before["remaining"])
+    assert started["message"] == MitreMessage.SET_STARTED.format(
+        size=size, remaining=before["remaining"], written=before["written"], dropped=0
+    )
     flow.work()
     last_next_set = flow.call("GET", f"/v1/sessions/{session_id}")["progress"]["last_next_set"]
     assert (last_next_set["requested"], last_next_set["delivered"], last_next_set["outcome"]) == (2, 2, "complete")
@@ -708,6 +762,8 @@ def test_a_mitre_card_is_the_shape_the_controls_picker_reads(monkeypatch: pytest
     run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": _OT_CONTEXT.to_record()}
     card = mitre_session.build_mitre_card(run, {"path_id": "mitre-1", "path_rank": 1}, scenario, 1)
     assert card["controls"]["status"] == Status.QUEUED and card["status"] == ScenarioStatus.DONE
+    # The API's threat_id: the shared "ai:<name>" key of the threat, never the path's number (owner 2026-11-23).
+    assert card["content"]["threat"]["key"] == "ai:unauthorized control of the scada server"
     assert card["content"]["attack"] == {
         "group": {"id": "G0101", "name": "Zeta"},
         "techniques": [

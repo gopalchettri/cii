@@ -5311,7 +5311,9 @@
    "enum": [
     "generating",
     "regenerating",
-    "mapping_controls"
+    "mapping_controls",
+    "nothing_left",
+    "target_reached"
    ],
    "title": "ActionStatus",
    "type": "string"
@@ -10237,6 +10239,17 @@
       }
      ],
      "title": "Threat Name"
+    },
+    "threat_scenario_description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Threat Scenario Description"
     },
     "threat_type": {
      "anyOf": [

@@ -50,9 +50,10 @@ from app.domain.scenario.session import (
     get_session_owned_by_caller,
 )
 from app.domain.shared.audit import audit_target, caller_actor, origin_of_its_jobs
+from app.domain.shared.names import name_match_key
 from app.domain.shared.prompt_redaction import facts_safe_for_prompt
 from app.realtime.publisher import publish_session_status
-from app.schemas.mitre.mitre_scenarios import MitreRunDetails, MitreRunStatus, MitreSessionStatus
+from app.schemas.mitre.mitre_scenarios import MitreNextSetStarted, MitreRunDetails, MitreRunStatus, MitreSessionStatus
 from app.schemas.scenario_internal import FrozenContext, control_view
 from app.schemas.scenarios import (
     RunActionStarted,
@@ -77,7 +78,15 @@ SHOWN_STATUS: Final[dict[c.Status, MitreRunStatus]] = {
     c.Status.CANCELLED: "cancelled",
 }
 #: What the worker's claim reads of a MITRE run: everything a set needs, in the claim's one read.
-MITRE_RUN_FIELDS: Final = ("entity_id", "asset_id", "context", "mitre", "job.set_goal", "job.batch", "last_action.kind")
+#: What a next set reads of a finished plan to say why nothing is left (build_mitre_nothing_left).
+MITRE_PLAN_END_FIELDS: Final = (
+    "mitre.paths_complete",
+    "mitre.paths.path_id",
+    "mitre.failed_path_ids",
+    "mitre.run_target",
+    "mitre.planner_stopped_at_round_cap",
+)
+MITRE_RUN_FIELDS: Final = ("entity_id", "asset_id", "context", "mitre", "job.set_goal", "job.batch", "last_action")
 #: A system column the engine never gets: ids, the alias and the category the engine's own type replaces.
 SYSTEM_COLUMNS_NOT_SENT: Final = (*c.ContextProperties.ALWAYS_USED, "category_name")
 #: The engine's name for an asset column of tsg_GetAssetContext (the names MITRE_ASSET_FIELDS_TO_MATCH and the
@@ -438,9 +447,10 @@ def library_category_id(category: str) -> int | None:
 
 def build_mitre_card_threat(scenario: dict[str, Any], path: dict[str, Any]) -> dict[str, Any]:
     """content.threat as the shared routes read it: an AI threat named by the risk title, of the library type the
-    writer picked (none when the library has no types), ranked by its path."""
+    writer picked (none when the library has no types), ranked by its path. Its key is the shared pipeline's
+    AI threat key, "ai:<name>" (the API's threat_id), never the path's number."""
     return {
-        "key": path["path_id"],  # one AI threat a path
+        "key": f"ai:{name_match_key(scenario['threat_scenario_description'])}",
         "name": scenario["threat_scenario_description"],
         "type": scenario.get("threat_type") or "",
         "type_id": scenario.get("threat_type_id"),
@@ -503,23 +513,68 @@ def list_mitre_run_results(run: SessionStatus, include_replaced: bool, offset: i
 
 
 @origin_of_its_jobs(AiApi.MITRE_NEXT_SET)
-def write_next_mitre_scenario_set(principal: Principal, run: SessionStatus) -> RunActionStarted:
+def write_next_mitre_scenario_set(principal: Principal, run: SessionStatus) -> MitreNextSetStarted:
     """Queues the run's next NEXT_SET_SIZE open paths (a run never planned plans first; an incomplete "all paths"
-    plan with none open asks the planner for more first); 409 when none is left and the plan is complete."""
+    plan with none open asks the planner for more first). With none left and the plan complete, nothing is queued
+    and the answer says so (build_mitre_nothing_left): never a conflict (owner 2026-11-23). Either answer carries
+    the run's counts as the click finds them."""
     refuse_other_pipelines(run.pipeline, run.session_id)
     check_session_ready_for_review(run)
-    if run.counts.get("planned") and not run.counts.get("remaining") and is_mitre_plan_complete(run.session_id):
-        message = c.ReviewMessage.NOTHING_LEFT.format(session_id=run.session_id)
-        raise Conflict(message, reason=c.ConflictReason.NOTHING_LEFT)
-    epoch = queue_mitre_job(run, c.RunActionKind.NEXT_SET, get_settings().next_set_size, [])
+    mitre, remaining = read_mitre_plan_end(run.session_id), run.counts.get("remaining", 0)
+    if run.counts.get("planned") and not remaining and mitre.get("paths_complete", True):
+        return build_mitre_nothing_left(run, mitre)  # a run planned before further rounds: complete
+    set_size = get_settings().next_set_size
+    epoch = queue_mitre_job(run, c.RunActionKind.NEXT_SET, set_size, [])
     send_mitre_job(principal, run, epoch, c.AuditAction.RUN_NEXT_SET, {"epoch": epoch})
-    return runs._started(run, c.ActionStatus.GENERATING, epoch)
+    counted = count_written_and_dropped(run, mitre)
+    if remaining:
+        message = c.MitreMessage.SET_STARTED.format(size=min(set_size, remaining), remaining=remaining, **counted)
+    else:  # an incomplete "all paths" plan with none open: its job asks the planner first
+        message = c.MitreMessage.SET_PLANNING_FIRST.format(**counted)
+    return build_mitre_next_set_answer(run, c.ActionStatus.GENERATING, epoch, remaining, message, counted)
 
 
-def is_mitre_plan_complete(session_id: str) -> bool:
-    """Whether the run's planner found every path it will (a run planned before further rounds: complete)."""
-    found = get_threat_scenario_session_repository().get(fields=("mitre.paths_complete",), _id=session_id) or {}
-    return bool((found.get("mitre") or {}).get("paths_complete", True))
+def build_mitre_next_set_answer(
+    run: SessionStatus, status: c.ActionStatus, epoch: int, remaining: int, message: str, counted: dict[str, int]
+) -> MitreNextSetStarted:
+    """The next set's answer: v1's started shape plus the run's counts (`counted`: written and dropped)."""
+    return MitreNextSetStarted(
+        session_id=run.session_id,
+        user_id=run.user_id,
+        status=status,
+        epoch=epoch,
+        remaining=remaining,
+        written=counted["written"],
+        dropped=counted["dropped"],
+        message=message,
+    )
+
+
+def read_mitre_plan_end(session_id: str) -> dict[str, Any]:
+    """The run's `mitre` part as far as a next set's answer needs it, in one read."""
+    found = get_threat_scenario_session_repository().get(fields=MITRE_PLAN_END_FIELDS, _id=session_id)
+    return (found or {}).get("mitre") or {}
+
+
+def count_written_and_dropped(run: SessionStatus, mitre: dict[str, Any]) -> dict[str, int]:
+    """The run's scenarios written so far and its paths the MITRE checks dropped, as a next set's answer shows."""
+    return {"written": run.counts.get("written", 0), "dropped": len(mitre.get("failed_path_ids") or [])}
+
+
+def build_mitre_nothing_left(run: SessionStatus, mitre: dict[str, Any]) -> MitreNextSetStarted:
+    """A next set with nothing left (200, remaining 0 for the UI): target_reached when TOTAL_SCENARIO_COUNT left
+    planned paths unwritten, else nothing_left; the message counts the written and dropped scenarios."""
+    counted = count_written_and_dropped(run, mitre)
+    left_out = max(0, len(mitre.get("paths") or []) - counted["written"] - counted["dropped"])
+    if left_out:
+        status = c.ActionStatus.TARGET_REACHED
+        message = c.MitreMessage.TARGET_REACHED.format(target=mitre.get("run_target"), left_out=left_out, **counted)
+    else:
+        status = c.ActionStatus.NOTHING_LEFT
+        cap = mitre.get("planner_stopped_at_round_cap")
+        why = c.MitreMessage.PLANNER_AT_ROUND_CAP if cap else c.MitreMessage.PLANNER_FOUND_EVERY_PATH
+        message = c.MitreMessage.NOTHING_LEFT.format(why=why, **counted)
+    return build_mitre_next_set_answer(run, status, run.epoch, 0, message, counted)
 
 
 @origin_of_its_jobs(AiApi.MITRE_REGENERATE)

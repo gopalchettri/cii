@@ -737,6 +737,7 @@ def _build_scenario_text(content: dict[str, Any]) -> views.ScenarioText:
         assumptions=assumptions,
         route_status=c.ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,
         also_applies=content.get("also_applies") or [],
+        threat_scenario_description=(content.get("mitre") or {}).get("threat_scenario_description"),
     )
 
 

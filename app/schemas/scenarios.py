@@ -326,6 +326,7 @@ class ScenarioText(BaseModel):
     assumptions: list[str]
     route_status: str | None
     also_applies: list[str]  # other threats of the same kind of attack on the same system, strongest first
+    threat_scenario_description: str | None = None  # a MITRE card's writer's threat line; null on other cards
 
 
 class ThreatBlock(BaseModel):

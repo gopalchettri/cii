@@ -12,6 +12,7 @@ from celery import Task
 from app.ai import ChatModel
 from app.ai.chat import get_scenario_chat_model
 from app.core import constants as c
+from app.core.clock import utc_now
 from app.core.config import Settings, get_settings
 from app.core.exceptions import JobFailed, LeaseLost
 from app.crud.jobs import JobLease, ended_job_fields
@@ -66,13 +67,12 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
     short of open paths asks the further round first; one that leaves none asks it once its cards are saved)."""
     started, settings = time.perf_counter(), get_settings()
     chat, index, run = get_scenario_chat_model(), get_current_mitre_index(), lease.record
-    mitre, timings = run["mitre"], {}  # the board's times, as the shared pipeline's plan_progress names them
+    mitre = run["mitre"]
     if not mitre.get("paths"):
         mitre = mitre_session.plan_and_store_mitre_paths(lease, chat, index, settings)
-        timings["timings.threats_s"] = round(time.perf_counter() - started, 1)
-    writing_from = time.perf_counter()
     mitre, progress = read_open_paths_planning_more_when_short(lease, chat, index, settings, mitre)
-    open_paths = progress["open_paths"]
+    timings = {"timings.threats_s": seconds_until_writing(run, started)}  # the board's, as plan_progress's
+    writing_from, open_paths = time.perf_counter(), progress["open_paths"]
     goal = min(max(0, run["job"]["set_goal"] - progress["written_this_set"]), len(open_paths))  # a retry: its rest
     goal = min(goal, max(0, mitre["run_target"] - progress["written"]))  # never past the run's target
     mitre_session.store_mitre_stage(lease, c.MitreStage.WRITING)
@@ -97,10 +97,19 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
         send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
     run_failed = bool(goal) and not written and not progress["written"]  # no card in the whole run
     if not run_failed:  # a run left with no card fails: no round for it
-        mitre, remaining = plan_more_when_none_left(lease, chat, index, settings, mitre, remaining)
+        mitre, remaining = plan_more_when_none_left(lease, chat, index, settings, mitre, remaining, timings)
     finish_mitre_set(
         lease, mitre, written, failed_path_ids, run_failed, remaining, outcome["groups_removed_over_share"], timings
     )
+
+
+def seconds_until_writing(run: dict[str, Any], job_started: float) -> float:
+    """The board's threats time, as the shared pipeline's (owner 2026-10-28): a create's from its job's start (its
+    plan); a next set's or regenerate's from the click, so its queue wait and any planning round in it count."""
+    last_action = run.get("last_action") or {}
+    if last_action.get("kind") in (c.RunActionKind.NEXT_SET, c.RunActionKind.REGENERATE):
+        return round((utc_now() - last_action["started_at"]).total_seconds(), 1)
+    return round(time.perf_counter() - job_started, 1)
 
 
 def failed_paths_of(outcome: dict[str, Any], open_paths: list[dict[str, Any]]) -> list[str]:
@@ -126,15 +135,23 @@ def read_open_paths_planning_more_when_short(
 
 
 def plan_more_when_none_left(
-    lease: JobLease, chat: ChatModel, index: MitreIndex, settings: Settings, mitre: dict[str, Any], remaining: int
+    lease: JobLease,
+    chat: ChatModel,
+    index: MitreIndex,
+    settings: Settings,
+    mitre: dict[str, Any],
+    remaining: int,
+    timings: dict[str, float],
 ) -> tuple[dict[str, Any], int]:
     """An incomplete "all paths" plan that this set left with no open path asks its further round now, so the
     board never reads complete while the planner may find more: (the run's `mitre` part, the paths still open).
-    A plan with paths still open waits for the next set that runs short (read_open_paths_planning_more_when_short)."""
+    The round's seconds join the set's threats time in `timings`. A plan with paths still open waits for the next
+    set that runs short (read_open_paths_planning_more_when_short)."""
     if mitre.get("paths_complete", True) or remaining > 0:
         return mitre, remaining
-    planned_before = len(mitre["paths"])
+    planned_before, round_from = len(mitre["paths"]), time.perf_counter()
     mitre = mitre_session.plan_further_paths_first(lease, chat, index, settings, mitre, remaining)
+    timings["timings.threats_s"] = round(timings["timings.threats_s"] + time.perf_counter() - round_from, 1)
     return mitre, remaining + len(mitre["paths"]) - planned_before
 
 
@@ -152,6 +169,8 @@ def rewrite_mitre_scenarios(lease: JobLease) -> None:
     progress = mitre_session.read_mitre_run_progress(
         lease.record_id, mitre, index, lease.epoch, replaced_path_ids=set(current_cards)
     )
+    timings = {"timings.threats_s": seconds_until_writing(run, started)}
+    writing_from = time.perf_counter()
     mitre_session.store_mitre_stage(lease, c.MitreStage.WRITING)
     outcome = engine.write_scenario_set(
         chat,
@@ -169,7 +188,8 @@ def rewrite_mitre_scenarios(lease: JobLease) -> None:
             scenarios, failed_card["_id"], c.ErrorCode.GENERATION_FAILED, c.MitreMessage.NO_SCENARIO
         )
     replaced = already_replaced + len(outcome["written"])
-    finish_mitre_rewrite(lease, replaced, len(run["job"]["batch"]), round(time.perf_counter() - started, 1))
+    timings["timings.scenarios_s"] = round(time.perf_counter() - writing_from, 1)
+    finish_mitre_rewrite(lease, replaced, len(run["job"]["batch"]), timings)
 
 
 def find_cards_to_rewrite(lease: JobLease, scenarios: ThreatScenarioRepository) -> tuple[dict[str, Any], int]:
@@ -252,8 +272,9 @@ def finish_mitre_set(
     lease.update_job(changes | ended, operators=operators)
 
 
-def finish_mitre_rewrite(lease: JobLease, replaced: int, requested: int, seconds: float) -> None:
-    """Queue the new versions' controls, count the run's cards and end the job with the board's last_regen."""
+def finish_mitre_rewrite(lease: JobLease, replaced: int, requested: int, timings: dict[str, float]) -> None:
+    """Queue the new versions' controls, count the run's cards and end the job with the board's last_regen and
+    `timings` (its threats and writing seconds)."""
     if replaced:
         send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
     get_threat_scenario_session_repository().update_scenario_session_counts(lease.record_id)
@@ -263,6 +284,6 @@ def finish_mitre_rewrite(lease: JobLease, replaced: int, requested: int, seconds
         "last_action.outcome": outcome,
         "last_regen.outcome": outcome,
         "last_regen.replaced": replaced,
-        "timings.scenarios_s": seconds,
+        **timings,
     }
     lease.update_job(ended | ended_job_fields(c.Status.DONE))

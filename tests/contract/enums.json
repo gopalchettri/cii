@@ -13,7 +13,9 @@
  "ActionStatus": {
   "GENERATING": "generating",
   "MAPPING_CONTROLS": "mapping_controls",
-  "REGENERATING": "regenerating"
+  "NOTHING_LEFT": "nothing_left",
+  "REGENERATING": "regenerating",
+  "TARGET_REACHED": "target_reached"
  },
  "ActorRole": {
   "ACTING": "acting"
