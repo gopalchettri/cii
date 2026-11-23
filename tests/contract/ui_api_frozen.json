@@ -6001,8 +6001,8 @@
      "type": "string"
     },
     "subsector": {
+     "default": "",
      "maxLength": 255,
-     "minLength": 1,
      "title": "Subsector",
      "type": "string"
     }
@@ -6011,7 +6011,6 @@
     "service_name",
     "service_description",
     "sector",
-    "subsector",
     "entity_names"
    ],
    "title": "CreateMappingRequest",

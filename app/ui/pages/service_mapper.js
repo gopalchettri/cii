@@ -38,7 +38,7 @@ export async function show(container, tools) {
     service_name: text("service_name", { maxlength: NAME_MAX }),
     service_description: build_element("textarea", { required: true, maxlength: DESCRIPTION_MAX, rows: 5, value: START.service_description }),
     sector: text("sector", { maxlength: NAME_MAX }),
-    subsector: text("subsector", { maxlength: NAME_MAX }),
+    subsector: text("subsector", { maxlength: NAME_MAX, required: false }),
     entity_names: text("entity_names"),
   };
   const recent_place = build_element("div", { class: "columns" });
@@ -105,7 +105,12 @@ export async function show(container, tools) {
   const service_fields = [
     build_field("Service name", service.service_name),
     build_field("Service description", service.service_description, { hint: "What the service does: the AI works from this." }),
-    build_element("div", { class: "toolbar" }, build_field("Sector", service.sector), build_field("Subsector", service.subsector)),
+    build_element(
+      "div",
+      { class: "toolbar" },
+      build_field("Sector", service.sector),
+      build_field("Subsector (optional)", service.subsector, { hint: "Left empty: found in the catalog by name and sector." }),
+    ),
     build_field("Entity names", service.entity_names, { hint: "Comma separated, 1 to 20." }),
   ];
   container.append(
@@ -174,7 +179,7 @@ function build_services(services, tools, actions) {
 function build_recent(items, tools, open) {
   const columns = [
     { title: "Service", show: (mapping) => mapping.selected_service.service_name },
-    { title: "Sector / subsector", show: (mapping) => `${mapping.selected_service.sector} / ${mapping.selected_service.subsector}` },
+    { title: "Sector / subsector", show: (mapping) => [mapping.selected_service.sector, mapping.selected_service.subsector].filter(Boolean).join(" / ") },
     { title: "In the catalog", show: (mapping) => (mapping.selected_service.service_id ? `Yes, id ${mapping.selected_service.service_id}` : "No") },
     { title: "Status", show: (mapping) => tools.build_badge(mapping.status) },
     { title: "Runs done", show: (mapping) => of_limit(mapping.generations_done, mapping.max_generations), nowrap: true },

@@ -469,7 +469,7 @@
       <div class="grid">
         <div class="field"><label for="smName">Service name</label><input id="smName" type="text"></div>
         <div class="field"><label for="smSector">Sector</label><input id="smSector" type="text"></div>
-        <div class="field"><label for="smSubsector">Subsector</label><input id="smSubsector" type="text"></div>
+        <div class="field"><label for="smSubsector">Subsector (optional)</label><input id="smSubsector" type="text"></div>
         <div class="field"><label for="smEntities">Entity names</label><input id="smEntities" type="text">
           <div class="hint">Comma separated, 1 to 20.</div></div>
       </div>
@@ -2149,8 +2149,8 @@ $(function () {
   $("#btnSmCreate").on("click", function () {
     var body = { service_name: $("#smName").val().trim(), service_description: $("#smDesc").val().trim(), sector: $("#smSector").val().trim(),
                  subsector: $("#smSubsector").val().trim(), entity_names: $("#smEntities").val().split(",").map(function (x) { return x.trim(); }).filter(Boolean) };
-    if (!body.service_name || !body.service_description || !body.sector || !body.subsector || !body.entity_names.length) {
-      toast("Details missing", "Fill in the service name, sector, subsector, entity names and description.", "warn"); return;
+    if (!body.service_name || !body.service_description || !body.sector || !body.entity_names.length) {
+      toast("Details missing", "Fill in the service name, sector, entity names and description (the subsector is optional).", "warn"); return;
     }
     withBusy($(this), api("POST", "/v1/service-mapper", body))
       .done(function (r) {

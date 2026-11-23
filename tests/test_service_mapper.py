@@ -1412,3 +1412,72 @@ def test_the_same_key_replays_the_run_it_started_and_another_body_is_refused(emp
     with pytest.raises(Conflict) as repeated:
         mapper.create_service_mapping(PRINCIPAL, _request(), derived, derived=True)
     assert repeated.value.reason == ConflictReason.DUPLICATE_REQUEST
+
+
+@pytest.mark.parametrize(
+    ("body", "subsector"),
+    [
+        ({}, ""),
+        ({"subsector": None}, ""),
+        ({"subsector": "   "}, ""),
+        ({"subsector": " Land "}, "Land"),
+        ({"sub_sector_name": " Power  Grid "}, "Power Grid"),
+    ],
+)
+def test_the_subsector_is_optional_and_trimmed(body: dict[str, Any], subsector: str) -> None:
+    """Owner 2026-11-23 (D87): a service filed under its sector only is sent without a subsector."""
+    assert (
+        CreateMappingRequest.model_validate(_request().model_dump(exclude={"subsector"}) | body).subsector == subsector
+    )
+
+
+def test_without_a_subsector_the_selected_service_is_found_by_its_name_and_sector() -> None:
+    no_subsector = _request().model_copy(update={"subsector": ""})
+    assert generate.selected_service(no_subsector, _catalog()).service_id == 1  # filed under Energy / Power
+    assert generate.selected_service(no_subsector.model_copy(update={"sector": "Water"}), _catalog()) is None
+    assert generate.selected_service(_request().model_copy(update={"subsector": "Grid"}), _catalog()) is None
+    rows = _catalog_rows()
+    twice = replace(  # a second "Power Generation System" in Energy, under Grid
+        rows,
+        services=[*rows.services, {"service_id": 3, "service_name": "Power Generation System"}],
+        sectors=[*rows.sectors, {"sector_id": 12, "sector_name": "Grid", "parent_sector_id": 10}],
+        sector_links=[*rows.sector_links, {"service_id": 3, "sector_id": 12}],
+    )
+    assert generate.selected_service(no_subsector, build_catalog(twice)) is None  # which one is meant: neither
+    assert generate.selected_service(_request(), build_catalog(twice)).service_id == 1  # a subsector picks one
+
+
+def test_the_prompt_and_the_search_leave_out_a_subsector_none_was_given() -> None:
+    queries: list[str] = []
+
+    class _RecordingSearch:
+        def candidates(self, catalog, sent_queries):
+            queries.extend(sent_queries)
+            return list(catalog.services)
+
+    no_subsector = _request().model_copy(update={"subsector": ""})
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _RecordingSearch(), no_subsector, _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    assert "subsector" not in chat.prompts[0]["selected_service"]
+    assert queries[0].endswith(". Energy")
+    chat = _Chat(_answer().model_dump(), _answer().model_dump())
+    generate_result(chat, _RecordingSearch(), _request(), _catalog(), ("mapping", 1), (2, 1))  # type: ignore[arg-type]
+    assert chat.prompts[0]["selected_service"]["subsector"] == "Power"  # given: sent as before
+    assert queries[3].endswith(". Energy / Power")
+
+
+def test_the_api_takes_a_mapping_without_a_subsector(client: TestClient) -> None:
+    _mapper()
+    minted = client.post(
+        "/v1/tsg/api-clients", json={"name": "service-mapper-no-subsector"}, headers=ADMIN | {"X-User-Id": "admin"}
+    ).json()
+    headers = {
+        "X-API-Key": minted["api_key"],
+        "X-User-Id": "reviewer-1",
+        "X-Entity-Id": "86",
+        "X-Tenant-Id": "tenant-a",
+    }
+    created = client.post("/v1/service-mapper", json=_request().model_dump(exclude={"subsector"}), headers=headers)
+    assert created.status_code == 202, created.text
+    listed = client.get("/v1/service-mapper", headers=headers).json()["items"]
+    assert [item["selected_service"]["subsector"] for item in listed] == [""]

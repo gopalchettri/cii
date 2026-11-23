@@ -1155,7 +1155,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `service_name` | string 1-255 | yes | the service to map |
 | `service_description` | string 1-4000 | yes | what the service does; the AI works from this |
 | `sector` | string 1-255 | yes | sector name, e.g. `Transport`. `sector_name` is also accepted. |
-| `subsector` | string 1-255 | yes | sub-sector name, e.g. `Land`. `sub_sector_name` is also accepted. |
+| `subsector` | string 0-255 | no | sub-sector name, e.g. `Land`. `sub_sector_name` is also accepted. Left out, `null` or blank: saved as `""`, and the service is matched to the catalog by its name and sector only. |
 | `entity_names` | string[] 1-20 | yes | the entities that run the service; each 1-255 chars, no repeats in any letter case |
 
 ```json
@@ -1191,7 +1191,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | 409 | `generation_limit_reached` | the service's mapping has had its runs (`details.mapping_id`, `details.max_generations`) |
 
 Notes:
-- Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`). A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
+- Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`), except `subsector`, which is then none. A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
 - `sector`, `subsector` and `entity_names` are free text for the AI: names, not ids, and not checked against the catalog. The mapping belongs to the entity in `X-Entity-Id`, whatever `entity_names` says.
 - How many new services one run finds per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
 - The same service again (same `service_name`, `sector` and `subsector`; the other fields may differ): the next run of its mapping, with this body's details, which the mapping keeps. While its run is queued or running, the same body answers `200` with it (no second run) and another body `409 generation_in_progress`.
