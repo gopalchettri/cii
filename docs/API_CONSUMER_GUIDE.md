@@ -384,7 +384,7 @@ Headers: identity headers.
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
 | `scenario.also_applies` | string[] | other threats of the same kind on the same system |
 | `scenario.threat_scenario_description` | string or null | a MITRE card's threat line, as its MITRE status shows it; null on other cards |
-| `threat.threat_id` | string or null | `lib:<id>` or `ai:<name>` |
+| `threat.threat_id` | string or null | `lib:<id>` for a library threat; null when the AI wrote the threat (`is_threat_ai_generated` true) |
 | `threat.threat_category` / `.threat_category_id` | | |
 | `threat.threat_type` / `.threat_type_id` / `.threat_name` | | |
 | `threat.library_threat_type` / `.library_threat_name` | string or null | null if not in library |
@@ -487,7 +487,7 @@ There is no AI reviewer: `validation_errors` never holds "The plan check could n
 ### 3.4b `GET /v1/mitre_sessions/{session_id}/results`
 
 The same page, parameters and fields as 3.4 (a MITRE card's `actors` are its MITRE groups and `attack_techniques` its
-techniques, each with its attack.mitre.org `url`; its `threat.threat_id` is `ai:<threat name>`, as an AI threat's in 3.4).
+techniques, each with its attack.mitre.org `url`; its threat is AI-written, so `threat.threat_id` is null, as for every AI threat in 3.4).
 A MITRE next set and regenerate show their own `progress.timings.threats` and `.scenarios`, as 3.2 describes.
 `404` for a run that is not a MITRE run.
 

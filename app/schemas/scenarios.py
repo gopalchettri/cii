@@ -330,7 +330,7 @@ class ScenarioText(BaseModel):
 
 
 class ThreatBlock(BaseModel):
-    threat_id: str | None  # the plan's key: "lib:<catalogue id>" or "ai:<name>"
+    threat_id: str | None  # "lib:<catalogue id>" for a library threat; null for an AI-written one
     threat_category: str | None
     threat_category_id: int | None
     threat_type: str | None

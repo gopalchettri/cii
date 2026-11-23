@@ -251,6 +251,13 @@ def _check_mitre_results_show_groups_and_techniques(flow: MitreFlow, session_id:
         # The writer's threat line in the scenario block too (owner 2026-11-23), as the MITRE status shows it.
         description = card["scenario"]["threat_scenario_description"]
         assert description and description == scenario["threat_scenario_description"]
+        # An AI-written threat has no threat_id (owner 2026-11-23): it names no library threat.
+        threat = card["threat"]
+        assert (threat["threat_id"], threat["is_threat_ai_generated"], threat["threat_catalogue_id"]) == (
+            None,
+            True,
+            None,
+        )
 
 
 def _ask_next_set_with_nothing_left(flow: MitreFlow, session_id: str) -> dict:

@@ -105,6 +105,17 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
     assert "standards" not in shown["controls"][0]
 
 
+def test_a_library_threat_shows_its_lib_id_and_an_ai_written_one_none() -> None:
+    """threat_id names a library threat only (owner 2026-11-23); the AI-written one keeps its stored key for the
+    run's own checks. Mutation: show the stored key and the AI card reads 'ai:...'."""
+    assert build_scenario_view(_record()).threat.threat_id == "lib:568"
+    record = _record()
+    ai_threat = {"key": "ai:loss of grid control", "library_id": None, "ai_generated": True}
+    record["content"]["threat"] |= ai_threat
+    threat = build_scenario_view(record).threat
+    assert (threat.threat_id, threat.is_threat_ai_generated, threat.threat_catalogue_id) == (None, True, None)
+
+
 def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:
     view = build_scenario_view(_record())
     assert (view.actor, view.threat_source, view.threat_type_source) == ("Nation-state/APT", "LIBRARY", "LIBRARY")

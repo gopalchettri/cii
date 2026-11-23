@@ -749,7 +749,7 @@ def _build_threat_block(content: dict[str, Any]) -> views.ThreatBlock:
     verified = library_id is not None and threat.get("library_status") in (None, c.LibraryStatus.ACTIVE)
     grounding = None if not threat else c.GroundingStatus.VERIFIED if verified else c.GroundingStatus.UNVERIFIED
     return views.ThreatBlock(
-        threat_id=threat.get("key"),
+        threat_id=None if threat.get("ai_generated") else threat.get("key"),  # owner 2026-11-23: no id for an AI one
         threat_category=name,
         threat_category_id=own_id if own_id is not None else kinds_id,
         threat_type=threat.get("type"),
