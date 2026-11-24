@@ -441,9 +441,12 @@ def promote_threat_scenario_to_library(
 ) -> api_views.PromotionResult:
     """Proposes the accepted scenario's AI threat to the curators."""
     scenario, threat = _accepted_ai_threat(run.session_id, scenario_id, run.pipeline == c.RunPipeline.MITRE)
-    actors = (scenario.get("content") or {}).get("actors") or []
-    actor_ids = tuple(actor["id"] for actor in actors if actor.get("id"))
-    result = _propose_threat(scenario_id, threat, actor_ids, principal)
+    content = scenario.get("content") or {}
+    actor_ids = tuple(actor["id"] for actor in content.get("actors") or [] if actor.get("id"))
+    stored = get_threat_scenario_session_repository().get(fields="context", _id=run.session_id) or {}
+    context = FrozenContext.from_record(stored["context"]) if stored.get("context") else None
+    asset_type = rules.scenario_asset_type(content, context)
+    result = _propose_threat(scenario_id, threat, actor_ids, principal, asset_type)
     promotion = {
         "by": principal.user_id,
         "by_client": principal.client_id,
@@ -487,22 +490,39 @@ def _accepted_ai_threat(
 
 
 def _propose_threat(
-    scenario_id: str, threat: dict[str, Any], actor_ids: tuple[int, ...], principal: Principal
+    scenario_id: str,
+    threat: dict[str, Any],
+    actor_ids: tuple[int, ...],
+    principal: Principal,
+    asset_type: str | None = None,
 ) -> api_views.PromotedThreat:
+    """The threat proposed with the scenario's AssetType; a threat the library holds already keeps its own (shown
+    for a live one, None for a pending or rejected one), as nothing is written."""
     name, type_name = threat["name"], threat["type"]["name"]
-    known = rules.find_library_threat_by_name(get_library_cache().get_threat_library(), name)
+    library = get_library_cache().get_threat_library()
+    known = rules.find_library_threat_by_name(library, name)
     if known is not None:
         outcome, type_id, catalogue_id = known
+        asset_type = next((held.asset_type for held in library.threats if held.catalogue_id == catalogue_id), None)
     else:
-        proposal = ThreatProposal(threat["category"], type_name, name, c.LibrarySource.AI, principal.user_id, actor_ids)
+        proposal = ThreatProposal(
+            threat["category"], type_name, name, c.LibrarySource.AI, principal.user_id, actor_ids, asset_type
+        )
         proposed, _ = get_threat_repository().propose_threat(f"promote:{scenario_id}", proposal)
         outcome = {
             c.ResolveOutcome.CREATED_PENDING: c.PromotionOutcome.INSERTED,
             c.ResolveOutcome.CURATOR_REJECTED: c.PromotionOutcome.CURATOR_REJECTED,
         }.get(proposed.outcome, c.PromotionOutcome.EXISTING)
         type_id, catalogue_id = proposed.type_id, proposed.catalogue_id
+        if proposed.outcome != c.ResolveOutcome.CREATED_PENDING:  # nothing was written: the type is not this call's
+            asset_type = None
     return api_views.PromotedThreat(
-        threat=name, threat_type=type_name, threat_type_id=type_id, threat_catalogue_id=catalogue_id, outcome=outcome
+        threat=name,
+        threat_type=type_name,
+        threat_type_id=type_id,
+        threat_catalogue_id=catalogue_id,
+        outcome=outcome,
+        asset_type=asset_type,
     )
 
 

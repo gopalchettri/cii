@@ -62,6 +62,7 @@ class ThreatProposal:
     source: LibrarySource
     created_by: str  # the person's X-User-Id
     actor_ids: tuple[int, ...]  # linked to a NEW type only
+    asset_type: str | None = None  # IT or OT, where the scenario attacks; saved on a NEW threat only (owner 2026-11-24)
 
 
 @dataclass(frozen=True)

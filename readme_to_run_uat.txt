@@ -2,7 +2,7 @@
 # This runs TSG on one Windows machine against the UAT stores. To deploy TSG on OpenShift, follow deploy\DEPLOYMENT_GUIDE.md.
 #
 # Use "Windows PowerShell" (the prompt starts with PS). NOT CMD: there a .ps1 file opens in an editor instead of
-# running. NOT PowerShell 7 (pwsh): run.ps1 needs Windows PowerShell 5.1.
+# running. NOT PowerShell 7 (pwsh): run_uat.ps1 needs Windows PowerShell 5.1.
 # Run every command from the cii folder (the one with pyproject.toml), e.g.:
 cd C:\Users\gopal.chettri\Documents\cii_tsg_rem-sm
 
@@ -52,7 +52,7 @@ Copy-Item .env.uat .env -Force
 #      EVIDENCE_SIMILARITY_THRESHOLD=50        must be set while EXTERNAL_INTELLIGENCE_ENABLED=true
 #      CII_AI_BYPASS_PROXY=true                the AI calls go straight to the AI gateway, not through the proxy
 #      CII_LOG_LEVEL=INFO                      DEBUG is for a short diagnosis only
-#    After any later change to .env: .\stop.ps1, then .\run.ps1 again.
+#    After any later change to .env: .\stop.ps1, then .\run_uat.ps1 again.
 
 # 5. Check the settings and the three UAT stores (window from step 2, .venv activated)
 python -c "from app.core.config import get_settings; s = get_settings(); print(s.env, s.scenario_chat_model, s.mongo_db)"
@@ -80,7 +80,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #      only missing from what the AI is told.
 
 # 7. Start everything - one command, from the cii folder
-.\run.ps1 -NoBrowser -ApiHost 0.0.0.0
+.\run_uat.ps1 -NoBrowser -ApiHost 0.0.0.0
 #    -ApiHost 0.0.0.0 lets other machines (the UI) call the API; without it only this machine can.
 #    It opens 6 windows - TSG api, worker, service_mapper, maintenance, reaper, beat - starts the monitoring tools
 #    (Grafana, Flower, ...), waits up to 90 s and prints the /ready answer.
@@ -97,7 +97,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 #    inbound: the server admin opens it once.
 
 # 8. Check
-.\run.ps1 status
+.\run_uat.ps1 status
 #    each of the 6 must say "running", and /ready 200 with mongo/sql/redis true and a worker for every queue.
 #    503 on /ready: the body says which store or queue is missing - fix that store, or read that worker's window.
 #    In a browser on this machine:
@@ -123,7 +123,7 @@ python -c "from app.core.readiness import check_readiness; print(check_readiness
 # 10. PROBLEM: the AI calls fail
 #    worker log shows  ai.call_unavailable / ProxyError 503 / ERR_CONNECT_FAIL 110 / ai_timed_out, or at
 #    start  ai.gateway_route host=llmapi.govai.ae route=proxy  -> the AI calls go through the corporate proxy.
-#    FIX 1: .env must have CII_AI_BYPASS_PROXY=true (step 4). Fix it, .\stop.ps1, .\run.ps1.
+#    FIX 1: .env must have CII_AI_BYPASS_PROXY=true (step 4). Fix it, .\stop.ps1, .\run_uat.ps1.
 #    FIX 2: still failing? test direct access from this machine:
 #             nslookup llmapi.govai.ae
 #             Test-NetConnection llmapi.govai.ae -Port 443
@@ -171,7 +171,7 @@ curl.exe http://localhost:8000/v1/tsg/intel/refresh/<job_id>
 curl.exe http://localhost:8000/v1/tsg/intel/health
 #    A source "failed": its last_error ends with the reason, e.g. "(last: ConnectTimeout: ...)" or "(last: HTTP 503)".
 #      ConnectTimeout / ConnectError / ProxyError = the app cannot get out (proxy, firewall): set
-#      CII_PROXY_URL=<the proxy of step 3> in .env, .\stop.ps1, .\run.ps1, refresh again. HTTP 5xx or 429 = the
+#      CII_PROXY_URL=<the proxy of step 3> in .env, .\stop.ps1, .\run_uat.ps1, refresh again. HTTP 5xx or 429 = the
 #      source is busy: refresh again later (an import the schedule started tries again within the hour by itself).
 #    On OpenShift use https://threatgen-api.apps.dda-desc-az1-01.desccii.local instead of http://localhost:8000
 #    (add -k if this PC does not trust the cluster certificate).
@@ -202,8 +202,8 @@ curl.exe http://localhost:8000/v1/tsg/intel/control-links
 #    SECURITY: the page has no login of its own. Anyone who can reach port 8000 can open it and change the
 #    switch and the schedule, exactly as they can call those API routes today.
 
-# 13. Grafana + Flower (monitoring). .\run.ps1 starts them (step 7) and .\stop.ps1 stops them.
-#    .\run.ps1 status lists them: 7 lines, each "ready" (Grafana, Prometheus, Alertmanager, Loki, Alloy, Flower, redis_exporter).
+# 13. Grafana + Flower (monitoring). .\run_uat.ps1 starts them (step 7) and .\stop.ps1 stops them.
+#    .\run_uat.ps1 status lists them: 7 lines, each "ready" (Grafana, Prometheus, Alertmanager, Loki, Alloy, Flower, redis_exporter).
 #    Open:
 #      Grafana (start here)   http://localhost:3000/grafana/
 #      Flower (celery jobs)   http://localhost:5555/flower/
@@ -211,7 +211,7 @@ curl.exe http://localhost:8000/v1/tsg/intel/control-links
 #      Alertmanager           http://localhost:9093/alertmanager/
 #    Notes:
 #      - The FIRST start downloads about 500 MB (github.com, dl.grafana.com). Behind the proxy: set the two $env:
-#        lines of step 3 in the window before .\run.ps1. No internet at all: download on another machine and copy the
+#        lines of step 3 in the window before .\run_uat.ps1. No internet at all: download on another machine and copy the
 #        folder to %USERPROFILE%\.tsg\monitoring-v2
 #      - Ports 3000, 5555, 9090, 9093 must be free (v1's monitoring uses the same ports - stop it first).
 #      - Grafana's log panels read the log files in logs\ (CII_LOG_DIR=logs, as in .env.uat).

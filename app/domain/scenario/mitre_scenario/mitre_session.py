@@ -390,9 +390,11 @@ def read_mitre_run_progress(
 def build_mitre_attack_block(scenario: dict[str, Any]) -> dict[str, Any]:
     """content.attack as the controls job reads it: the lead group, each technique with the MITRE mitigations
     recorded for it, and those mitigations once each (the ones that are no defence left out)."""
-    recorded = {}
+    recorded, inherited = {}, {}
     for technique_mitigations in scenario["mitigations"]:
         recorded[technique_mitigations["technique"]] = technique_mitigations["mitigations"]
+        if technique_mitigations.get("inherited_from"):
+            inherited[technique_mitigations["technique"]] = technique_mitigations["inherited_from"]
     techniques, mitigations = [], dict[str, dict[str, str]]()
     for technique in scenario["attack_techniques"]:
         source = c.IntelSource.ATTACK_ICS if technique["domain"] == "ics" else c.IntelSource.ATTACK_ENTERPRISE
@@ -403,9 +405,15 @@ def build_mitre_attack_block(scenario: dict[str, Any]) -> dict[str, Any]:
                 mitigations.setdefault(
                     mitigation["mitre_id"], {"id": mitigation["mitre_id"], "name": mitigation["name"]}
                 )
-        techniques.append(
-            {"id": technique["mitre_id"], "name": technique["name"], "source": source, "mitigations": mitigation_ids}
-        )
+        listed = {
+            "id": technique["mitre_id"],
+            "name": technique["name"],
+            "source": source,
+            "mitigations": mitigation_ids,
+        }
+        if technique["mitre_id"] in inherited:  # its parent technique's mitigations (MITRE lists none of its own)
+            listed["mitigations_from"] = inherited[technique["mitre_id"]]
+        techniques.append(listed)
     lead_group = scenario["relevant_groups"][0]
     group = {"id": lead_group["mitre_id"], "name": lead_group["name"]}
     return {"group": group, "techniques": techniques, "mitigations": list(mitigations.values())}

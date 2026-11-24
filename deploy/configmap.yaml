@@ -152,6 +152,10 @@ items:                                           # one tsg-config per project th
       MITRE_PLAN_CALL_TOKENS_LIMIT: "60000"                             # most tokens (prompt chars/3 + answer room) one planner call holds: the POC's 34,000 input tokens x 1.5 + the 8,192 planner room (required: no default)
       MITRE_ACTOR_SLICE_TOKENS_LIMIT: "34000"                           # most tokens (prompt chars/3 + answer room) one actor-selection slice holds: two slices asked in parallel, each answer within its 8,192 room (required: no default)
       MITRE_WRITE_CALL_TOKENS_LIMIT: "60000"                            # most tokens (prompt chars/3 + answer room) one writer call holds: a set's paths are written together up to it (required: no default)
+      MITRE_CONTROLS_BY_TECHNIQUE: "true"                              # a MITRE card's controls chosen per technique among its MITRE-linked library controls (false: per sentence) (required: no default)
+      CONTROLS_PER_TECHNIQUE_CANDIDATES: "6"                           # MITRE-linked controls offered per technique, best link first (required: no default)
+      CONTROLS_PER_TECHNIQUE: "2"                                      # controls the AI keeps per technique (required: no default)
+      MITIGATION_TEXT_CHARACTERS: "300"                                # MITRE's words on how a mitigation defends a technique, cut to this (required: no default)
   - apiVersion: v1                               # core API version
     kind: ConfigMap                              # plain, non-secret settings
     metadata:                                    # the object's name and place

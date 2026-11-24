@@ -1,4 +1,4 @@
-"""run.ps1's windows turn QuickEdit off, so a click in one never freezes its program at its next log line."""
+"""run_dev.ps1's windows turn QuickEdit off, so a click in one never freezes its program at its next log line."""
 
 import base64
 import re
@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-RUN_PS1 = (REPO / "run.ps1").read_text(encoding="ascii")
+RUN_PS1 = (REPO / "run_dev.ps1").read_text(encoding="ascii")
 ENABLE_QUICK_EDIT_MODE, ENABLE_EXTENDED_FLAGS = 0x40, 0x80
 POWERSHELL = shutil.which("powershell") or ""
 
 
 def _quick_edit_off_script() -> str:
-    """The script run.ps1 runs first in every window."""
+    """The script run_dev.ps1 runs first in every window."""
     found = re.search(r"\$QuickEditOff = @'\n(.*?)\n'@", RUN_PS1, re.DOTALL)
-    assert found, "run.ps1 has no $QuickEditOff script"
+    assert found, "run_dev.ps1 has no $QuickEditOff script"
     return found.group(1)
 
 
@@ -29,7 +29,7 @@ def test_every_window_turns_quick_edit_off_before_its_program_starts() -> None:
 
 @pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell is not installed here")
 def test_the_quick_edit_script_clears_quick_edit_in_a_new_console(tmp_path: Path) -> None:
-    """Run in a new hidden console, as run.ps1's windows are, the script leaves QuickEdit off."""
+    """Run in a new hidden console, as run_dev.ps1's windows are, the script leaves QuickEdit off."""
     out = tmp_path / "mode.txt"
     probe = (
         f"{_quick_edit_off_script()}\n"

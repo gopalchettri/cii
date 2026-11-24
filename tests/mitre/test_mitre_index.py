@@ -26,6 +26,7 @@ from tests.mitre.mitre_samples import (
     relationship,
     sample_index,
     settings,
+    technique,
 )
 
 
@@ -62,7 +63,9 @@ def test_index_keeps_active_objects_and_builds_the_lookups() -> None:
     for procedure in index["procedures_by_technique"][PHISHING]:
         newest_first.append(procedure["actor"])
     assert newest_first == ["Gamma", "Own op", "Tool", "Zeta"]
-    assert index["mitigations_by_technique"][PHISHING] == [{"mitre_id": "M1017", "name": "User Training"}]
+    # MITRE's words on how the mitigation defends the technique, citation labels taken out (owner 2026-11-24)
+    phishing_mitigations = index["mitigations_by_technique"][PHISHING]
+    assert phishing_mitigations == [{"mitre_id": "M1017", "name": "User Training", "text": "Observed"}]
     assert index["group_by_mitre_id"]["G0101"] == ZETA and "T1566" in index["known_mitre_ids"]
     assert "T1001" not in index["known_mitre_ids"]  # a revoked ID counts as invented
 
@@ -180,3 +183,28 @@ def test_the_process_index_is_built_once_per_stored_version(stores: tuple[FakeSt
     ics.versions = ["v2"]
     rebuilt = mitre_index.get_current_mitre_index()
     assert rebuilt is not first and CONTROL_LOGIC in rebuilt["techniques"] and enterprise.reads == 2
+
+
+def test_a_sub_technique_without_mitigations_takes_its_parents() -> None:
+    """Owner 2026-11-24: MITRE lists a parent's mitigations once (T1070 Indicator Removal) and none for some of its
+    sub-techniques (T1070.004 File Deletion); such a sub-technique takes its parent's, noted as inherited. One with
+    any mitigation of its own (even "Limited or Not Effective") keeps it. Mutation: skip the fallback and the
+    attachment sub-technique has no mitigation."""
+    stix = documents()
+    limited = {
+        "type": "course-of-action",
+        "id": "course-of-action--limited",
+        "name": "Mitigation Limited or Not Effective",
+        "external_references": mitre_reference("M0816"),
+    }
+    attachment = technique("attack-pattern--attachment", "T1566.001", "Spearphishing Attachment", "initial-access", "A")
+    via_service = technique("attack-pattern--service", "T1566.003", "Spearphishing via Service", "initial-access", "S")
+    stix["enterprise"] += [attachment, via_service, limited]
+    stix["enterprise"].append(relationship("m9", "course-of-action--limited", "attack-pattern--service", "mitigates"))
+    index = mitre_index.build_mitre_index(stix, settings())
+    assert index["mitigations_by_technique"]["attack-pattern--attachment"] == [
+        {"mitre_id": "M1017", "name": "User Training", "text": "Observed"}
+    ]
+    assert index["mitigations_inherited_from"] == {"attack-pattern--attachment": "T1566"}
+    own = index["mitigations_by_technique"]["attack-pattern--service"]
+    assert own == [{"mitre_id": "M0816", "name": "Mitigation Limited or Not Effective", "text": "Observed"}]

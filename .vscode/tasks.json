@@ -10,9 +10,9 @@
   },
   "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
   "tasks": [
-    { "label": "TSG: start", "type": "shell", "command": ".\\run.ps1", "problemMatcher": [] },
+    { "label": "TSG: start", "type": "shell", "command": ".\\run_dev.ps1", "problemMatcher": [] },
     { "label": "TSG: stop", "type": "shell", "command": ".\\stop.ps1", "problemMatcher": [] },
-    { "label": "TSG: status", "type": "shell", "command": ".\\run.ps1 status", "problemMatcher": [] },
+    { "label": "TSG: status", "type": "shell", "command": ".\\run_dev.ps1 status", "problemMatcher": [] },
     {
       "label": "TSG: check the stores",
       "type": "shell",

@@ -23,7 +23,7 @@ V1_KEYS = [
 V2_EXTRAS = [
     "session_id", "version", "status", "failure", "regenerate_error", "created_at", "controls_status",
     "controls_error", "replaced_by",
-    "evidence_mode", "evidence", "evidence_search", "attack_techniques",
+    "evidence_mode", "evidence", "evidence_search", "attack_techniques", "procedures", "mitigations",
 ]  # fmt: skip
 WRITTEN_AT = datetime(2026, 10, 16, 3, 24, 57, tzinfo=UTC)
 
@@ -85,6 +85,7 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
     shown = build_scenario_view(_record()).model_dump()
     assert list(shown) == V1_KEYS + V2_EXTRAS
     assert shown["attack_techniques"] == [] and shown["actors"][0]["mitre_id"] is None  # not a MITRE card
+    assert shown["procedures"] == [] and shown["mitigations"] == []
     assert list(shown["scenario"]) == [
         "threat_category", "contributing_categories", "threat_type", "threat_name",
         "supporting_systems_involved",

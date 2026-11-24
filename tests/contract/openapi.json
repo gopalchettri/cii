@@ -3092,6 +3092,35 @@
     "title": "MintedApiClient",
     "type": "object"
    },
+   "MitigationLinkView": {
+    "properties": {
+     "mitre_id": {
+      "title": "Mitre Id",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Text"
+     }
+    },
+    "required": [
+     "mitre_id",
+     "name"
+    ],
+    "title": "MitigationLinkView",
+    "type": "object"
+   },
    "MitreNextSetStarted": {
     "description": "POST /v1/mitre_sessions/{id}/scenarios/next-set: v1's 202 shape plus the run's counts as the click finds\nthem; 200 with status nothing_left or target_reached (remaining 0) when nothing is left to write.",
     "properties": {
@@ -4567,8 +4596,76 @@
     "title": "PlanView",
     "type": "object"
    },
+   "ProcedureView": {
+    "description": "A MITRE procedure example: how a group, campaign or software MITRE documents used one technique.",
+    "properties": {
+     "actor": {
+      "title": "Actor",
+      "type": "string"
+     },
+     "actor_mitre_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Actor Mitre Id"
+     },
+     "actor_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Actor Type"
+     },
+     "technique": {
+      "title": "Technique",
+      "type": "string"
+     },
+     "text": {
+      "title": "Text",
+      "type": "string"
+     },
+     "via_software": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Via Software"
+     }
+    },
+    "required": [
+     "technique",
+     "actor",
+     "text"
+    ],
+    "title": "ProcedureView",
+    "type": "object"
+   },
    "PromotedThreat": {
     "properties": {
+     "asset_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Asset Type"
+     },
      "outcome": {
       "$ref": "#/components/schemas/PromotionOutcome"
      },
@@ -6418,6 +6515,20 @@
        }
       ]
      },
+     "mitigations": {
+      "items": {
+       "$ref": "#/components/schemas/TechniqueMitigationsView"
+      },
+      "title": "Mitigations",
+      "type": "array"
+     },
+     "procedures": {
+      "items": {
+       "$ref": "#/components/schemas/ProcedureView"
+      },
+      "title": "Procedures",
+      "type": "array"
+     },
      "regenerate_error": {
       "anyOf": [
        {
@@ -7159,6 +7270,49 @@
      "name"
     ],
     "title": "TechniqueLinkView",
+    "type": "object"
+   },
+   "TechniqueMitigationsView": {
+    "description": "The MITRE mitigations recorded for one technique of the scenario.",
+    "properties": {
+     "inherited_from": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Inherited From"
+     },
+     "mitigations": {
+      "items": {
+       "$ref": "#/components/schemas/MitigationLinkView"
+      },
+      "title": "Mitigations",
+      "type": "array"
+     },
+     "technique": {
+      "title": "Technique",
+      "type": "string"
+     },
+     "technique_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Technique Name"
+     }
+    },
+    "required": [
+     "technique"
+    ],
+    "title": "TechniqueMitigationsView",
     "type": "object"
    },
    "ThreatBlock": {

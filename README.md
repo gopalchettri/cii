@@ -25,8 +25,8 @@ py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[local,dev]" -c requirements.txt
 Copy-Item .env.dev.example .env   # then fill in the blank values
-.\run.ps1                         # API, workers, beat and monitoring; waits for /ready
-.\run.ps1 status
+.\run_dev.ps1                         # API, workers, beat and monitoring; waits for /ready
+.\run_dev.ps1 status
 .\stop.ps1
 ```
 

@@ -117,7 +117,9 @@ def build_mitre_index(documents_by_domain: dict[str, list[dict[str, Any]]], sett
 
     Keys: objects, domains, relationships_from, techniques, techniques_by_actor ({actor_id: {technique_id:
     software name or None}}), technique_catalogue, catalogue_legend, procedures_by_technique,
-    mitigations_by_technique, technique_by_mitre_id, group_by_mitre_id, known_mitre_ids, software_descriptions,
+    mitigations_by_technique, mitigations_inherited_from ({sub-technique id: its parent's MITRE ID}, for the
+    sub-techniques with no mitigation of their own), technique_by_mitre_id, group_by_mitre_id, known_mitre_ids,
+    software_descriptions,
     dataset_snapshot, actor_profiles (one line per group and campaign with its call tokens), campaign_groups
     ({campaign_id: [attributed group ids]}), ics_assets, asset_by_mitre_id and asset_mitre_ids_by_technique."""
     index: MitreIndex = {}
@@ -128,6 +130,7 @@ def build_mitre_index(documents_by_domain: dict[str, list[dict[str, Any]]], sett
     _add_ics_assets(index, settings)
     _add_technique_catalogue(index, settings)
     _add_procedures_and_mitigations(index, settings)
+    _inherit_parent_mitigations(index)
     _add_lookups_by_mitre_id(index, settings)
     return index
 
@@ -346,7 +349,7 @@ def _codes_to_names(codes: dict[str, str]) -> dict[str, str]:
 
 
 def _add_procedures_and_mitigations(index: MitreIndex, settings: Settings) -> None:
-    """procedures_by_technique: MITRE procedure examples, newest first; mitigations_by_technique."""
+    """procedures_by_technique: MITRE procedure examples, newest first; mitigations_by_technique (MITRE's text)."""
     objects = index["objects"]
     procedures_by_technique: dict[str, list[dict[str, Any]]] = {}
     mitigations_by_technique: dict[str, list[dict[str, Any]]] = {}
@@ -373,7 +376,7 @@ def _add_procedures_and_mitigations(index: MitreIndex, settings: Settings) -> No
                 }
                 dated_procedures.append((relationship.get("modified") or "", len(dated_procedures), procedure))
             elif relationship["relationship_type"] == "mitigates" and source["type"] == "course-of-action":
-                mitigations[str(get_mitre_id(source))] = {"mitre_id": get_mitre_id(source), "name": source.get("name")}
+                mitigations[str(get_mitre_id(source))] = _mitigation_entry(source, relationship, settings)
         dated_procedures.sort(reverse=True)  # newest first; the position breaks ties, procedures are never compared
         procedures_by_technique[technique_id] = []
         for _, _, procedure in dated_procedures:
@@ -385,6 +388,34 @@ def _add_procedures_and_mitigations(index: MitreIndex, settings: Settings) -> No
         procedures_by_technique,
         mitigations_by_technique,
     )
+
+
+def _mitigation_entry(source: dict[str, Any], relationship: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """One mitigation of a technique, with MITRE's own words on how it defends that technique: the controls are
+    held to them (owner 2026-11-24)."""
+    text = shorten_at_word_boundary(relationship.get("description") or "", settings.mitigation_text_characters)
+    return {"mitre_id": get_mitre_id(source), "name": source.get("name"), "text": text}
+
+
+def _inherit_parent_mitigations(index: MitreIndex) -> None:
+    """A sub-technique MITRE records no mitigation for takes its parent technique's (T1070.004 -> T1070), noted in
+    mitigations_inherited_from {technique_id: the parent's MITRE ID} (owner 2026-11-24: a card's technique always
+    has MITRE's defences when its parent has some). A sub-technique MITRE gives any mitigation keeps its own, even
+    "Mitigation Limited or Not Effective"."""
+    by_mitre_id = {}
+    for technique_id, technique in index["techniques"].items():
+        by_mitre_id[get_mitre_id(technique)] = technique_id
+    inherited: dict[str, str] = {}
+    for technique_id, technique in index["techniques"].items():
+        mitre_id = str(get_mitre_id(technique))
+        if "." not in mitre_id or index["mitigations_by_technique"][technique_id]:
+            continue
+        parent_mitre_id = mitre_id.split(".")[0]
+        parent_id = by_mitre_id.get(parent_mitre_id)
+        if parent_id is not None and index["mitigations_by_technique"][parent_id]:
+            index["mitigations_by_technique"][technique_id] = list(index["mitigations_by_technique"][parent_id])
+            inherited[technique_id] = parent_mitre_id
+    index["mitigations_inherited_from"] = inherited
 
 
 def _add_lookups_by_mitre_id(index: MitreIndex, settings: Settings) -> None:

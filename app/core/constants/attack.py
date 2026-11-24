@@ -98,6 +98,20 @@ class ControlLinks:
     LABEL_PREFIX: Final = "C"  # a control's label in a prompt (C1, C2 ...): no library id reaches the AI
     SCENARIO_SENTENCE_PREFIX: Final = "S"  # S1, S2 ...: the sentences of the scenario statement
     RISK_SENTENCE_PREFIX: Final = "R"  # R1, R2 ...: the sentences of the risk statement
+    # A MITRE card's controls (owner 2026-11-24): how they were chosen (controls.made_with.picked_by), and the
+    # outcomes tsg_control_picks_total counts.
+    PICKED_BY_TECHNIQUE: Final = "technique"  # the AI chose per technique among its MITRE-linked controls
+    PICKED_BY_LINK: Final = "mitre_link"  # its answer could not be read: each technique's best MITRE link
+    PICKS_KEPT: Final = "kept"
+    PICKS_DROPPED: Final = "dropped"
+    EFFECT_CORRECTED: Final = "effect_corrected"  # a pick's effect its control cannot have, set to one it can
+    #: The effects a control of these library domains can have (owner 2026-11-24): a backup or recovery control
+    #: restores or limits, never prevents; a monitoring control sees, never prevents. A pick of another effect is
+    #: given the first.
+    EFFECTS_BY_DOMAIN: Final = {
+        "Business Continuity & Disaster Recovery": ("recover", "contain"),
+        "Continuous Monitoring": ("detect",),
+    }
     #: Listed by ATT&CK as mitigations, yet they mitigate nothing ("Mitigation Limited or Not Effective",
     #: "Do Not Mitigate", "Pre-compromise").
     NOT_MITIGATIONS: Final = frozenset({"M0816", "M1055", "M1056"})
@@ -134,11 +148,22 @@ class ControlPickDrop(StrEnum):
     WRONG_TYPE = "the control's IT/OT type does not fit the scenario's systems"
     TWICE = "the control is already picked for another sentence of this scenario"
     TOO_MANY = "more than {most} controls on one sentence"
+    # A MITRE card's picks, per technique (owner 2026-11-24)
+    NO_TECHNIQUE = "names no technique of this scenario that has controls to choose from"
+    NOT_THIS_TECHNIQUE = "names no control linked to this technique's MITRE mitigations"
+    TWICE_FOR_TECHNIQUE = "the control is already picked for this technique"
+    TOO_MANY_FOR_TECHNIQUE = "more than {most} controls on one technique"
 
 
 class ControlPickMessage(StrEnum):
     PICKED_REASON = "{effect}: {sentence}"  # a picked control's reason: how it helps, and the sentence it reduces
     SCENARIOS_NOT_A_LIST = "scenarios must be a list of objects, one per slot"
+    # A MITRE card's control: how it helps, the technique it defends against and the MITRE mitigation it carries
+    TECHNIQUE_REASON = "{effect}: {technique} {technique_name} (MITRE {mitigation})"
+    # A nearest pick: its technique got no exact pick (none fitted, or the AI's answer could not be read).
+    LINK_SCORE_REASON = "{reason}, picked by the MITRE link score"
+    # A card short of MIN_CONTROLS topped up by the library search (owner 2026-11-24: never no control).
+    SEARCH_TOP_UP_REASON = "Nearest by the library search, too few MITRE-linked controls fitted: {reason}"
 
 
 class TechniqueControlState(StrEnum):
@@ -151,3 +176,4 @@ class TechniqueControlState(StrEnum):
     TYPE_MISMATCH = "type_mismatch"  # the linked controls are of another IT/OT type than the scenario's systems
     NOT_OFFERED = "not_offered"  # its linked controls did not reach the shortlist: other links ranked higher
     NOT_PICKED = "not_picked"  # linked controls were offered and the AI picked none
+    NEAREST = "nearest"  # no exact pick: its best MITRE-linked control is shown, marked NEAREST (owner 2026-11-24)

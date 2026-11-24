@@ -1,4 +1,4 @@
-"""run.ps1 sizes its workers from .env, and gives tsg_remediation its own worker with a remote reranker."""
+"""run_dev.ps1 sizes its workers from .env, and gives tsg_remediation its own worker with a remote reranker."""
 
 import json
 import re
@@ -11,10 +11,10 @@ import pytest
 from app.worker import ROUTED_QUEUES
 
 REPO = Path(__file__).resolve().parents[1]
-RUN_PS1 = (REPO / "run.ps1").read_text(encoding="ascii")
+RUN_PS1 = (REPO / "run_dev.ps1").read_text(encoding="ascii")
 POWERSHELL = shutil.which("powershell") or ""
 NO_POWERSHELL = pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell is not installed here")
-#: Loads run.ps1's program table and functions (never its start), then prints each program's command line and
+#: Loads run_dev.ps1's program table and functions (never its start), then prints each program's command line and
 #: the Prometheus targets file start writes, for the .env given.
 PROBE = r"""param([string]$Script, [string]$EnvFile, [string]$WorkerTargetsFile)
 $ErrorActionPreference = 'Stop'
@@ -28,7 +28,7 @@ foreach ($statement in $tree.EndBlock.Statements) {
         Invoke-Expression $statement.Extent.Text
     }
 }
-$commands = [ordered]@{}  # not $programs: names ignore case, and that is run.ps1's $Programs
+$commands = [ordered]@{}  # not $programs: names ignore case, and that is run_dev.ps1's $Programs
 foreach ($name in Get-ProgramNames) { $commands[$name] = @(Get-Arguments $name) }
 Save-WorkerTargets (Get-ProgramNames)
 @{ programs = $commands; targets = [IO.File]::ReadAllText($WorkerTargetsFile) } | ConvertTo-Json -Depth 4
@@ -44,7 +44,7 @@ def _start(tmp_path: Path, env_lines: list[str]) -> tuple[dict[str, list[str]], 
     env.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     probe.write_text(PROBE, encoding="ascii")
     command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(probe)]
-    command += ["-Script", str(REPO / "run.ps1"), "-EnvFile", str(env), "-WorkerTargetsFile", str(targets)]
+    command += ["-Script", str(REPO / "run_dev.ps1"), "-EnvFile", str(env), "-WorkerTargetsFile", str(targets)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)  # noqa: S603
     assert result.returncode == 0 and not result.stderr, result.stderr
     found = json.loads(result.stdout)

@@ -134,7 +134,7 @@ tests:
           - exp_labels: { severity: critical }
             exp_annotations:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
-              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+              description: "Laptop: .\\run_dev.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
   # A start after the stack was down from 6 to 20 minutes: the new worker exports nothing until its first pass
   # starts, a minute later. Quiet from then on. Before, the alert read a rise in tsg_jobs_total, which a first
@@ -189,7 +189,7 @@ tests:
           - exp_labels: { severity: critical }
             exp_annotations:
               summary: "The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired."
-              description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+              description: "Laptop: .\\run_dev.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
   # Beat sends the reaper every minute, but from 5 minutes on no pass finishes (MongoDB down): the reaper is
   # failing, not beat.
@@ -310,7 +310,7 @@ tests:
           - exp_labels: { severity: critical, queue: tsg_threats }
             exp_annotations:
               summary: "No worker is taking tsg_threats jobs; they wait until one starts."
-              description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
+              description: "Laptop: .\\run_dev.ps1 start (or check the worker's window). UAT: check the worker pods."
 
   - interval: 1m
     input_series:
@@ -596,14 +596,14 @@ tests:
           - exp_labels: { severity: critical }
             exp_annotations:
               summary: "No API instance is running and answering."
-              description: "Nobody can use the app. Laptop: .\\run.ps1 start. UAT: check the api pods."
+              description: "Nobody can use the app. Laptop: .\\run_dev.ps1 start. UAT: check the api pods."
       - eval_time: 6m
         alertname: WorkerNotRunning
         exp_alerts:
           - exp_labels: { severity: critical }
             exp_annotations:
               summary: "No worker process is running and answering."
-              description: "No background job runs. Laptop: .\\run.ps1 start. UAT: check the worker pods."
+              description: "No background job runs. Laptop: .\\run_dev.ps1 start. UAT: check the worker pods."
 
   - interval: 1m
     input_series:

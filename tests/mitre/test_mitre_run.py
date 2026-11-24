@@ -4,6 +4,7 @@ on the test MongoDB with the synthetic MITRE index and fake AI models, its contr
 then its routes, the shared routes that read it and the shared ones that refuse it."""
 
 import json
+import re
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
@@ -12,8 +13,11 @@ from typing import Any
 import pytest
 from celery import states
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import Engine
 
+from app.ai import TruncatedAiAnswer
+from app.core import metrics
 from app.core.clock import utc_now
 from app.core.config import get_settings
 from app.core.constants import (
@@ -22,6 +26,8 @@ from app.core.constants import (
     Collection,
     ConflictReason,
     ControlLinks,
+    ControlMatch,
+    ControlPickDrop,
     ErrorCode,
     Header,
     IntelSource,
@@ -50,7 +56,7 @@ from app.worker.scenario import tasks as scenario_tasks
 from app.worker.scenario.mitre import mitre_tasks
 from tests.fakes import FakeEmbeddings
 from tests.mitre.mitre_samples import THREAT_TYPES, MitreChat, actor_row, documents, sample_index, writer_answer
-from tests.test_attack_controls import CONTROLS, MFA_IT, MFA_OT, WORDS, Picking, scenarios_in
+from tests.test_attack_controls import BACKUP_OT, CONTROLS, FILTER, MFA_IT, MFA_OT, WORDS, Picking, scenarios_in
 from tests.test_attack_controls import _link as link_controls
 from tests.test_control_mapping import _OT_CONTEXT, _ScoresByText, _snapshot
 
@@ -111,10 +117,15 @@ class MitreAi(MitreChat):
 
     @staticmethod
     def _pick(user_prompt: str) -> dict[str, Any]:
+        """Per technique (a MITRE card's controls, owner 2026-11-24): each technique's best-linked control."""
         picked = []
         for item in scenarios_in(user_prompt):
-            picks = [{"sentence": "S1", "label": item["CONTROLS"][0]["label"], "effect": "prevent"}]
-            picked.append({"slot": item["slot"], "picks": picks if item["CONTROLS"] else []})
+            picks = []
+            for technique in item["TECHNIQUES"]:
+                picks.append(
+                    {"technique": technique["id"], "label": technique["CONTROLS"][0]["label"], "effect": "prevent"}
+                )
+            picked.append({"slot": item["slot"], "picks": picks})
         return {"scenarios": picked}
 
     def titles_written(self) -> list[str]:
@@ -248,6 +259,15 @@ def _check_mitre_results_show_groups_and_techniques(flow: MitreFlow, session_id:
         assert lead["role"] == "acting" and lead["url"].startswith("https://attack.mitre.org/groups/")
         assert lead["relevance"] and lead["documented_techniques"]
         assert technique["url"].startswith("https://attack.mitre.org/techniques/") and "stix_id" not in technique
+        # MITRE's procedure examples and mitigations as the MITRE status shows them (owner 2026-11-24), no stix id.
+        # A technique MITRE lists no mitigation for names the parent it borrows them from (inherited_from).
+        shown_mitigations = [
+            entry | {"inherited_from": entry.get("inherited_from")} for entry in scenario["mitigations"]
+        ]
+        assert card["procedures"] and card["mitigations"] == shown_mitigations
+        assert all(link["text"] for entry in card["mitigations"] for link in entry["mitigations"])
+        shown_fields = ("technique", "actor", "actor_mitre_id", "actor_type", "via_software", "text")
+        assert card["procedures"] == [{key: p.get(key) for key in shown_fields} for p in scenario["procedures"]]
         # The writer's threat line in the scenario block too (owner 2026-11-23), as the MITRE status shows it.
         description = card["scenario"]["threat_scenario_description"]
         assert description and description == scenario["threat_scenario_description"]
@@ -314,6 +334,9 @@ def test_a_run_is_planned_once_and_written_set_by_set_with_the_group_share_held_
     for scenario in scenarios:
         assert scenario["controls_status"] == Status.DONE and scenario["controls"]
         assert scenario["controls"][0]["control_id"] == MFA_OT.control_id  # the OT copy: S1 names the OT system
+        # Picked per technique by the controls job itself (owner 2026-11-24): the reason names the technique and
+        # its MITRE mitigation. Mutation: leave content.mitre out of the job's card and the sentence picker runs.
+        assert re.match(r"prevent: T\d{4}(\.\d{3})? .+ \(MITRE M\d{4}", scenario["controls"][0]["match_reason"])
     assert len(flow.chat.asked(AiTask.PICK_CONTROLS)) == 1  # the set's one pick, from the mitigations' links
     assert (metadata["relevant_actors_selected"], metadata["valid_paths_found"]) == (1, 4)
     assert metadata["it_ot_crossing_required"] is True and metadata["it_ot_crossing_met"] is True
@@ -653,6 +676,12 @@ def test_a_mitre_run_is_reviewed_with_the_group_6_answers(flow: MitreFlow) -> No
         "Unauthorised access",
     )
     assert proposed["outcome"] in (PromotionOutcome.INSERTED, PromotionOutcome.EXISTING)  # one name a test database
+    # Owner 2026-11-24: a MITRE threat is saved OT when its path has an ICS technique, else IT.
+    cards = flow.call("GET", f"/v1/sessions/{session_id}/results")["scenarios"]
+    card = next(shown for shown in cards if shown["scenario_id"] == first)
+    attacks_ot = any(technique["domain"] == "ics" for technique in card["attack_techniques"])
+    if proposed["outcome"] == PromotionOutcome.INSERTED:
+        assert proposed["asset_type"] == ("OT" if attacks_ot else "IT")
 
 
 def test_a_regenerated_mitre_scenario_is_its_next_version_over_the_earlier_one(flow: MitreFlow) -> None:
@@ -785,10 +814,381 @@ def test_a_mitre_card_is_the_shape_the_controls_picker_reads(monkeypatch: pytest
     }
     assert card["content"]["systems"] == [{"id": 321, "name": "SCADA server", "entry_point": False}]
     assert attack_controls.is_attack_scenario(card)
-    picker.answer(("SC1", "S1", "Operator authentication", "prevent"))
+    picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0859", "Operator authentication", "prevent"))
+    )
     record = picker.pick(card)[card["_id"]]
     assert [item["control_id"] for item in record["items"]] == [MFA_OT.control_id]
     assert record["technique_states"] == [{"id": "T0859", "state": TechniqueControlState.MATCHED}]
+
+
+# ----------------------------------------------------------------------------- controls per technique (2026-11-24)
+
+
+def picking_per_technique(*picks: tuple[str, str, str, str]) -> Any:
+    """The AI's per-technique answer: per (slot, technique, control name, effect), the label the prompt gives that
+    control; a name the prompt does not list is answered as the label itself."""
+
+    def answer(user_prompt: str) -> dict[str, Any]:
+        asked = scenarios_in(user_prompt)
+        by_slot: dict[str, list[dict[str, Any]]] = {item["slot"]: [] for item in asked}
+        for slot, technique, name, effect in picks:
+            item = next(entry for entry in asked if entry["slot"] == slot)
+            labels = {}
+            for listed in item["TECHNIQUES"]:
+                for control in listed["CONTROLS"]:
+                    labels.setdefault(control["name"], control["label"])
+            by_slot[slot].append({"technique": technique, "label": labels.get(name, name), "effect": effect})
+        return {"scenarios": [{"slot": slot, "picks": picks_of} for slot, picks_of in by_slot.items()]}
+
+    return answer
+
+
+TECHNIQUE_NAMES = {
+    "T0859": "Valid Accounts",
+    "T0809": "Data Destruction",
+    "T0886": "Remote Services",
+    "T0800": "X",
+    "T1070.004": "File Deletion",
+}
+MITIGATION_NAMES = {"M0932": "Multi-factor Authentication", "M0953": "Data Backup", "M0930": "Network Segmentation"}
+
+
+def _mitre_card(
+    mitigated_by: dict[str, list[str]], targeted: dict[str, str] | None = None, inherited: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """A MITRE card on the SCADA server (OT) and the Historian (IT): each technique with its MITRE mitigations, and
+    the system a technique targets (MITRE systems_targeted) when given."""
+    scenario = {
+        "scenario_title": "Operator accounts abused",
+        "threat_scenario_description": "Unauthorized control of the SCADA server",
+        "threat_type": "Unauthorised access",
+        "threat_type_id": 2,
+        "threat_scenario": "Zeta logs in to the SCADA server and wipes the Historian.",
+        "risk_statement": "Loss of control of the SCADA server could stop transmission.",
+        "assumptions": [],
+        "category": "Spoofing",
+        "supporting_systems": ["SCADA server", "Historian"],
+        "relevant_groups": [{"name": "Zeta", "mitre_id": "G0101"}],
+        "attack_techniques": [
+            {"mitre_id": technique, "name": TECHNIQUE_NAMES[technique], "domain": "ics", "stix_id": "x"}
+            for technique in mitigated_by
+        ],
+        "mitigations": [
+            {
+                "technique": technique,
+                "technique_name": TECHNIQUE_NAMES[technique],
+                "mitigations": [
+                    {"mitre_id": m, "name": MITIGATION_NAMES.get(m, "None"), "text": f"MITRE: {m} for {technique}"}
+                    for m in mitigations
+                ],
+            }
+            | ({"inherited_from": (inherited or {})[technique]} if technique in (inherited or {}) else {})
+            for technique, mitigations in mitigated_by.items()
+        ],
+        "systems_targeted": [
+            {"technique": technique, "supporting_system": system, "mitre_assets": []}
+            for technique, system in (targeted or {}).items()
+        ],
+    }
+    run = {"_id": "run-1", "entity_id": 86, "asset_id": 103, "context": _OT_CONTEXT.to_record()}
+    return mitre_session.build_mitre_card(run, {"path_id": "mitre-1", "path_rank": 1}, scenario, 1)
+
+
+@pytest.fixture
+def technique_picker(monkeypatch: pytest.MonkeyPatch) -> Picking:
+    """The pick's fake models, and no MITRE link stored yet."""
+    picker = Picking()
+    monkeypatch.setattr(attack_controls, "get_scenario_chat_model", lambda: picker.chat)
+    get_mongodb()[Collection.CONTROL_LINKS].delete_many({})
+    return picker
+
+
+def _offered(picker: Picking) -> dict[str, list[tuple[str, str]]]:
+    """Each technique's offered (control name, the ID of the MITRE mitigation it is linked to) in the last pick
+    prompt, slot 1."""
+    return {
+        technique["id"]: [(control["name"], control["mitigation"]) for control in technique["CONTROLS"]]
+        for technique in _asked_techniques(picker)
+    }
+
+
+def _asked_techniques(picker: Picking) -> list[dict[str, Any]]:
+    (item,) = scenarios_in(picker.chat.asked(AiTask.PICK_CONTROLS)[-1])
+    return list(item["TECHNIQUES"])
+
+
+def test_a_mitre_cards_controls_come_per_technique_from_its_own_mitigations(technique_picker: Picking) -> None:
+    """Owner 2026-11-24: each technique offers only the controls linked to ITS MITRE mitigations, of the IT/OT type
+    of the system it acts on; a pick of another technique's control is dropped; every control names its
+    technique and mitigation. Mutation: offer the card's links to every technique and Offline backup is kept
+    for Valid Accounts."""
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card({"T0859": ["M0932"], "T0809": ["M0953"]}, targeted={"T0859": "SCADA server"})
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS,
+        picking_per_technique(
+            ("SC1", "T0859", "Operator authentication", "prevent"),
+            ("SC1", "T0859", "Offline backup", "detect"),
+            ("SC1", "T0809", "Offline backup", "recover"),
+        ),
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert _offered(technique_picker) == {
+        "T0859": [("Operator authentication", "M0932")],
+        "T0809": [("Offline backup", "M0953")],
+    }
+    # Each mitigation in MITRE's own words for THAT technique: the AI holds a control to what MITRE says it does.
+    assert _asked_techniques(technique_picker)[0]["MITIGATIONS"] == [
+        {"id": "M0932", "name": "Multi-factor Authentication", "mitre_says": "MITRE: M0932 for T0859"}
+    ]
+    assert [item["control_id"] for item in record["items"]] == [MFA_OT.control_id, BACKUP_OT.control_id]
+    assert record["items"][0]["rationale"] == "prevent: T0859 Valid Accounts (MITRE M0932 Multi-factor Authentication)"
+    assert {item["match"] for item in record["items"]} == {ControlMatch.EXACT}
+    assert [drop["reason"] for drop in record["dropped"]] == [ControlPickDrop.NOT_THIS_TECHNIQUE]
+    assert record["made_with"]["picked_by"] == ControlLinks.PICKED_BY_TECHNIQUE
+    assert [state["state"] for state in record["technique_states"]] == [TechniqueControlState.MATCHED] * 2
+
+
+def test_a_sub_technique_without_mitigations_is_defended_through_its_parents(technique_picker: Picking) -> None:
+    """Owner 2026-11-24: T1070.004 File Deletion has no MITRE mitigation of its own; it carries its parent T1070's,
+    and each control it gets says so. Mutation: drop mitigations_from and the reason no longer names the parent."""
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card({"T1070.004": ["M0953"]}, inherited={"T1070.004": "T1070"})
+    assert card["content"]["attack"]["techniques"][0]["mitigations_from"] == "T1070"
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T1070.004", "Offline backup", "recover"))
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert _offered(technique_picker) == {"T1070.004": [("Offline backup", "M0953")]}
+    (asked,) = _asked_techniques(technique_picker)
+    assert asked["mitigations_of_parent"] == "T1070"
+    assert asked["MITIGATIONS"] == [{"id": "M0953", "name": "Data Backup", "mitre_says": "MITRE: M0953 for T1070.004"}]
+    expected = "recover: T1070.004 File Deletion (MITRE M0953 Data Backup, for parent T1070)"
+    assert [item["rationale"] for item in record["items"]] == [expected]
+    assert record["technique_states"] == [{"id": "T1070.004", "state": TechniqueControlState.MATCHED}]
+
+
+def test_a_control_defending_two_techniques_is_shown_once_with_both_reasons(technique_picker: Picking) -> None:
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    link_controls("M0930", (MFA_IT.control_id, 70.0))
+    card = _mitre_card({"T0859": ["M0932"], "T0886": ["M0930"]})
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS,
+        picking_per_technique(
+            ("SC1", "T0859", "Operator authentication", "prevent"),
+            ("SC1", "T0886", "Operator authentication", "prevent"),
+        ),
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    (item,) = record["items"]
+    assert "T0859 Valid Accounts" in item["rationale"] and "T0886 Remote Services" in item["rationale"]
+    assert [state["state"] for state in record["technique_states"]] == [TechniqueControlState.MATCHED] * 2
+
+
+def test_at_most_controls_per_technique_are_kept(technique_picker: Picking) -> None:
+    """CONTROLS_PER_TECHNIQUE (.env, 2): a third pick on one technique is dropped."""
+    link_controls("M0932", (MFA_IT.control_id, 90.0), (FILTER.control_id, 80.0), (BACKUP_OT.control_id, 70.0))
+    card = _mitre_card({"T0859": ["M0932"]})
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS,
+        picking_per_technique(
+            ("SC1", "T0859", "Operator authentication", "prevent"),
+            ("SC1", "T0859", "Zone filter", "contain"),
+            ("SC1", "T0859", "Offline backup", "recover"),
+        ),
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert len(record["items"]) == get_settings().controls_per_technique == 2
+    assert record["dropped"][0]["reason"] == ControlPickDrop.TOO_MANY_FOR_TECHNIQUE.format(most=2)
+
+
+def test_a_card_without_a_linked_control_is_topped_up_by_the_search(technique_picker: Picking) -> None:
+    """No mitigation, or only a non-defence: no_known_defence; a prepared mitigation without a linked control:
+    no_library_control; one never prepared: not_prepared; only a control of the wrong IT/OT type for the system
+    the technique acts on: type_mismatch. Nothing to choose from: the AI is not asked, each gap is named, and the
+    card still shows the library search's nearest control (owner 2026-11-24: controls are never zero).
+    Mutation: skip the top-up and the card shows no control."""
+    not_a_defence = sorted(ControlLinks.NOT_MITIGATIONS)[0]
+    link_controls("M0953")  # prepared, linked to no control
+    link_controls("M0932", (BACKUP_OT.control_id, 80.0))  # only an OT control, for a technique on the IT Historian
+    card = _mitre_card(
+        {"T0800": [], "T0859": ["M0932", not_a_defence], "T0809": ["M0953"], "T0886": ["M0930"]},
+        targeted={"T0859": "Historian"},
+    )
+    card["content"]["attack"]["techniques"].append(
+        {"id": "T0890", "name": "Only a non-defence", "source": "ics", "mitigations": [not_a_defence]}
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert technique_picker.chat.asked(AiTask.PICK_CONTROLS) == []
+    (item,) = record["items"]  # MIN_CONTROLS is 1 in the tests
+    assert item["match"] == ControlMatch.NEAREST and item["score"] is not None
+    assert item["rationale"].startswith("Nearest by the library search, too few MITRE-linked controls fitted: ")
+    assert record["query"]
+    assert {state["id"]: state["state"] for state in record["technique_states"]} == {
+        "T0800": TechniqueControlState.NO_KNOWN_DEFENCE,
+        "T0859": TechniqueControlState.TYPE_MISMATCH,
+        "T0809": TechniqueControlState.NO_LIBRARY_CONTROL,
+        "T0886": TechniqueControlState.NOT_PREPARED,
+        "T0890": TechniqueControlState.NO_KNOWN_DEFENCE,
+    }
+
+
+def test_an_unreadable_answer_keeps_each_techniques_best_mitre_link(technique_picker: Picking) -> None:
+    """No meaning search for a MITRE card: its techniques keep their best-linked control, labelled nearest and
+    saying so. Mutation: fall back to the search and a control linked to no mitigation of the card appears."""
+    link_controls("M0932", (FILTER.control_id, 60.0), (MFA_IT.control_id, 90.0))
+    card = _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})
+    before = metrics.CONTROL_PICKS.labels(ControlLinks.PICKED_BY_LINK)._value.get()
+    technique_picker.chat.queue(AiTask.PICK_CONTROLS, TruncatedAiAnswer("the answer was cut off"))
+    record = technique_picker.pick(card)[card["_id"]]
+    (item,) = record["items"]
+    assert item["control_id"] == MFA_OT.control_id and item["match"] == ControlMatch.NEAREST
+    assert item["rationale"].endswith("picked by the MITRE link score")
+    assert record["made_with"]["picked_by"] == ControlLinks.PICKED_BY_LINK
+    assert metrics.CONTROL_PICKS.labels(ControlLinks.PICKED_BY_LINK)._value.get() == before + 1
+
+
+def test_an_unreadable_answer_gives_every_technique_its_nearest_mitre_link(technique_picker: Picking) -> None:
+    """Owner 2026-11-24: every step gets a control, a sub-technique on its parent's mitigations too; each is NEAREST.
+    Mutation: skip inherited techniques and Offline backup is not shown for T1070.004."""
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card(
+        {"T0859": ["M0932"], "T1070.004": ["M0953"]},
+        targeted={"T0859": "SCADA server"},
+        inherited={"T1070.004": "T1070"},
+    )
+    technique_picker.chat.queue(AiTask.PICK_CONTROLS, TruncatedAiAnswer("the answer was cut off"))
+    record = technique_picker.pick(card)[card["_id"]]
+    assert [item["control_id"] for item in record["items"]] == [MFA_OT.control_id, BACKUP_OT.control_id]
+    assert {item["match"] for item in record["items"]} == {ControlMatch.NEAREST}
+    assert record["technique_states"] == [
+        {"id": "T0859", "state": TechniqueControlState.NEAREST},
+        {"id": "T1070.004", "state": TechniqueControlState.NEAREST},
+    ]
+
+
+def test_a_technique_the_ai_finds_no_fit_for_shows_its_nearest_mitre_link(technique_picker: Picking) -> None:
+    """Owner 2026-11-24: if there is no exact match the nearest is shown. The AI picks for T0859 only: T0809 gets
+    its best MITRE link, NEAREST and saying so, after the exact pick. Mutation: leave T0809 empty and one item is
+    shown."""
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card({"T0809": ["M0953"], "T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0859", "Operator authentication", "prevent"))
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    exact, nearest = record["items"]
+    assert (exact["control_id"], exact["match"]) == (MFA_OT.control_id, ControlMatch.EXACT)
+    assert (nearest["control_id"], nearest["match"]) == (BACKUP_OT.control_id, ControlMatch.NEAREST)
+    assert nearest["rationale"].endswith("(MITRE M0953 Data Backup), picked by the MITRE link score")
+    assert {state["id"]: state["state"] for state in record["technique_states"]} == {
+        "T0809": TechniqueControlState.NEAREST,
+        "T0859": TechniqueControlState.MATCHED,
+    }
+
+
+def test_an_exact_pick_keeps_its_own_it_ot_copy_over_an_earlier_nearest_one(technique_picker: Picking) -> None:
+    """T0809 acts on the IT Historian and T0859 on the OT SCADA server; both link to Operator authentication. The
+    AI picks the OT copy for T0859 only, so T0809's nearest is the IT copy, earlier in the path: the item is the OT
+    copy, EXACT, so remediation applies it to the OT system. Mutation: keep the first row and the IT copy is
+    stored."""
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    card = _mitre_card(
+        {"T0809": ["M0932"], "T0859": ["M0932"]}, targeted={"T0809": "Historian", "T0859": "SCADA server"}
+    )
+    technique_picker.chat.queue(AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0859", "C2", "prevent")))
+    record = technique_picker.pick(card)[card["_id"]]
+    labels = {technique["id"]: technique["CONTROLS"][0]["label"] for technique in _asked_techniques(technique_picker)}
+    assert labels == {"T0809": "C1", "T0859": "C2"}  # one label per IT/OT copy
+    (item,) = record["items"]
+    assert (item["control_id"], item["match"]) == (MFA_OT.control_id, ControlMatch.EXACT)
+    assert {state["id"]: state["state"] for state in record["technique_states"]} == {
+        "T0809": TechniqueControlState.NEAREST,
+        "T0859": TechniqueControlState.MATCHED,
+    }
+
+
+def test_a_card_short_of_min_controls_is_topped_up_once_per_control(
+    technique_picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MIN_CONTROLS=3: a card with one MITRE-linked control gets the search's nearest up to 3, never one it already
+    shows (or its IT/OT twin). Mutation: top up without the twin check and Operator authentication is listed
+    twice."""
+    monkeypatch.setattr(get_settings(), "min_controls", 3)
+    monkeypatch.setattr(get_settings(), "nearest_controls", 3)
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    card = _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0859", "Operator authentication", "prevent"))
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    names = [item["name"] for item in record["items"]]
+    assert names[0] == "Operator authentication" and len(names) == len(set(names))
+    assert 1 < len(names) <= 3 and record["items"][0]["match"] == ControlMatch.EXACT
+    assert {item["match"] for item in record["items"][1:]} == {ControlMatch.NEAREST}
+    assert [item["rank"] for item in record["items"]] == list(range(1, len(names) + 1))
+
+
+def test_a_card_stored_before_mitres_words_were_kept_is_judged_by_the_mitigations_name(
+    technique_picker: Picking,
+) -> None:
+    """A card stored before 2026-11-24 has no MITRE text: its mitigation goes without mitre_says (never a blank the
+    prompt would hold every control to). Mutation: send mitre_says "" and the asked mitigation has it."""
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card({"T0809": ["M0953"]})
+    for technique in card["content"]["mitre"]["mitigations"]:
+        for mitigation in technique["mitigations"]:
+            del mitigation["text"]
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0809", "Offline backup", "recover"))
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert _asked_techniques(technique_picker)[0]["MITIGATIONS"] == [{"id": "M0953", "name": "Data Backup"}]
+    assert [item["control_id"] for item in record["items"]] == [BACKUP_OT.control_id]
+
+
+def test_an_effect_a_controls_domain_cannot_have_is_corrected(
+    technique_picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner 2026-11-24: a backup control restores or limits, it never prevents. The AI's "prevent" is kept as
+    "recover", noted and counted. Mutation: keep the AI's effect and the reason says prevent."""
+    monkeypatch.setitem(ControlLinks.EFFECTS_BY_DOMAIN, BACKUP_OT.domain, ("recover", "contain"))
+    link_controls("M0953", (BACKUP_OT.control_id, 80.0))
+    card = _mitre_card({"T0809": ["M0953"]})
+    before = metrics.CONTROL_PICKS.labels(ControlLinks.EFFECT_CORRECTED)._value.get()
+    technique_picker.chat.queue(
+        AiTask.PICK_CONTROLS, picking_per_technique(("SC1", "T0809", "Offline backup", "prevent"))
+    )
+    record = technique_picker.pick(card)[card["_id"]]
+    assert [item["rationale"] for item in record["items"]] == [
+        f"recover: T0809 {TECHNIQUE_NAMES['T0809']} (MITRE M0953 Data Backup)"
+    ]
+    (pick,) = record["picks"]
+    assert pick["effect"] == "recover" and pick["effect_corrected_from"] == "prevent"
+    assert metrics.CONTROL_PICKS.labels(ControlLinks.EFFECT_CORRECTED)._value.get() == before + 1
+
+
+def test_the_switch_off_picks_a_mitre_cards_controls_per_sentence_again(
+    technique_picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MITRE_CONTROLS_BY_TECHNIQUE=false is the rollback: the sentence picker, as before 2026-11-24."""
+    monkeypatch.setattr(get_settings(), "mitre_controls_by_technique", False)
+    link_controls("M0932", (MFA_IT.control_id, 90.0))
+    card = _mitre_card({"T0859": ["M0932"]})
+    technique_picker.answer(("SC1", "S1", "Operator authentication", "prevent"))
+    record = technique_picker.pick(card)[card["_id"]]
+    assert "SENTENCES" in scenarios_in(technique_picker.chat.asked(AiTask.PICK_CONTROLS)[-1])[0]
+    assert record["items"][0]["rationale"].startswith("prevent: Zeta logs in")
+
+
+@pytest.mark.parametrize("name", ["controls_per_technique", "controls_per_technique_candidates"])
+def test_a_per_technique_size_below_one_is_refused(name: str) -> None:
+    with pytest.raises(ValidationError):
+        get_settings().model_validate({**get_settings().model_dump(), name: 0})
 
 
 def test_the_engine_gets_the_assets_facts_and_its_own_it_or_ot_types() -> None:

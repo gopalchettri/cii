@@ -91,6 +91,10 @@ os.environ.update(
     MITRE_PLAN_CALL_TOKENS_LIMIT="60000",
     MITRE_ACTOR_SLICE_TOKENS_LIMIT="34000",
     MITRE_WRITE_CALL_TOKENS_LIMIT="60000",
+    MITRE_CONTROLS_BY_TECHNIQUE="true",
+    CONTROLS_PER_TECHNIQUE_CANDIDATES="6",
+    CONTROLS_PER_TECHNIQUE="2",
+    MITIGATION_TEXT_CHARACTERS="300",
 )
 
 from app.core.config import Settings  # noqa: E402  # reads .env only; builds no client

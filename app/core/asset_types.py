@@ -46,6 +46,16 @@ def place_asset_types(asset_category: str | None, system_categories: Iterable[st
     return compatible_asset_types(None, codes) if codes else compatible_asset_types(asset_category, ())
 
 
+def place_asset_label(asset_category: str | None, system_categories: Iterable[str | None]) -> str | None:
+    r"""IT or OT for one place, as the library types its threats: OT when OT fits it (an OT or IT\OT system), else
+    IT when IT fits; None when no code is recorded (the threat is saved untyped)."""
+    fitting = place_asset_types(asset_category, system_categories)
+    for label in (AssetType.OT, AssetType.IT):
+        if label in fitting:
+            return label.value
+    return None
+
+
 def find_fitting_entry_points(
     asset_type: str | None,
     entry_points: tuple[int, ...],

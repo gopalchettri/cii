@@ -147,7 +147,7 @@ every review call is the same.
 | `worker-reaper` | `tsg_reaper` | `tsg_reap`, `tsg_retry_controls` | repairs lost jobs (every minute) and stalled control mappings (every 5 min), alone so no long job holds its threads |
 | `beat` | - | - | sends the timed tasks above |
 
-Each worker is one process with threads (`-c` in its Deployment). Locally `.\run.ps1` runs the same queues.
+Each worker is one process with threads (`-c` in its Deployment). Locally `.\run_dev.ps1` runs the same queues.
 
 **The code layout.** The FastAPI layout (ADR-004): `app/api/routes` (one router per feature), `app/api/deps.py`
 (the shared `Depends`), `app/schemas` (request and response shapes), `app/crud` (database calls), `app/domain` (the
@@ -437,7 +437,7 @@ accept, reject or regenerate takes 1-50 scenario ids; every id at fault is named
 | Reject | `POST /v1/sessions/{id}/scenarios/reject` | pending → rejected |
 | Regenerate | `POST /v1/sessions/{id}/regenerate/scenarios` | a new version of each chosen current scenario, written afresh (`tsg_write_scenarios`, new epoch); the old one stays until the new one is written. An AI outage's failure card is written again in its place |
 | Next set | `POST /v1/sessions/{id}/scenarios/next-set` | the next `NEXT_SET_SIZE` (6) open paths, best rank first. None left: it resumes controls a cancel stopped, else 409 `nothing_left`, `target_reached` or `scenarios_abandoned` |
-| Promote | `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library` | an accepted scenario's AI-proposed threat goes to the curators |
+| Promote | `POST /v1/sessions/{id}/scenarios/{sid}/promote-to-library` | an accepted scenario's AI-proposed threat goes to the curators, saved with the scenario's AssetType (`IT` or `OT`, where it attacks); the answer's `results[].asset_type` shows it |
 | Cancel | `POST /v1/sessions/{id}/cancel` | stops queued or running work, and controls still waiting |
 | Delete | `DELETE /v1/sessions/{id}` | removes the run, its scenarios and plans; 409 `cancel_first` while work runs |
 

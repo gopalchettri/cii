@@ -226,6 +226,14 @@ class MitreScenarioSettings(BaseSettings):
     mitre_actor_slice_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_ACTOR_SLICE_TOKENS_LIMIT")
     mitre_plan_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_PLAN_CALL_TOKENS_LIMIT")
     mitre_write_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_WRITE_CALL_TOKENS_LIMIT")
+    # Controls (owner 2026-11-24): a MITRE card's controls are chosen per technique, among the library controls
+    # linked to its MITRE mitigations (false: per sentence, as an ATT&CK card's). Each technique offers at most
+    # CONTROLS_PER_TECHNIQUE_CANDIDATES of them, best link first; the AI keeps at most CONTROLS_PER_TECHNIQUE. Each
+    # mitigation comes with MITRE's own words on how it defends that technique, cut to MITIGATION_TEXT_CHARACTERS.
+    mitre_controls_by_technique: bool = Field(validation_alias="MITRE_CONTROLS_BY_TECHNIQUE")
+    controls_per_technique_candidates: int = Field(ge=1, validation_alias="CONTROLS_PER_TECHNIQUE_CANDIDATES")
+    controls_per_technique: int = Field(ge=1, validation_alias="CONTROLS_PER_TECHNIQUE")
+    mitigation_text_characters: int = Field(ge=1, validation_alias="MITIGATION_TEXT_CHARACTERS")
 
     @model_validator(mode="after")
     def refuse_unreadable_mitre_ranges(self) -> "MitreScenarioSettings":

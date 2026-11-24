@@ -1184,6 +1184,20 @@ def systems_targeted(
     return targeted
 
 
+def technique_mitigations(technique: dict[str, Any], index: MitreIndex) -> dict[str, Any]:
+    """A technique's MITRE mitigations as the card keeps them; a sub-technique with none of its own carries its
+    parent's, naming the parent in inherited_from (owner 2026-11-24)."""
+    entry = {
+        "technique": technique["mitre_id"],
+        "technique_name": index["objects"][technique["stix_id"]]["name"],
+        "mitigations": index["mitigations_by_technique"][technique["stix_id"]],
+    }
+    parent = index.get("mitigations_inherited_from", {}).get(technique["stix_id"])
+    if parent is not None:
+        entry["inherited_from"] = parent
+    return entry
+
+
 def add_mitre_evidence_to_scenario(
     scenario: dict[str, Any],
     procedures: list[dict[str, Any]],
@@ -1210,13 +1224,7 @@ def add_mitre_evidence_to_scenario(
     for technique in scenario["attack_techniques"]:
         technique["url"] = get_mitre_url(index["objects"][technique["stix_id"]])
         kept_ids.add(technique["mitre_id"])
-        mitigations.append(
-            {
-                "technique": technique["mitre_id"],
-                "technique_name": index["objects"][technique["stix_id"]]["name"],
-                "mitigations": index["mitigations_by_technique"][technique["stix_id"]],
-            }
-        )
+        mitigations.append(technique_mitigations(technique, index))
     kept_procedures = [procedure for procedure in procedures if procedure["technique"] in kept_ids]
     targeted = systems_targeted(scenario, index, system_mitre_assets)
     return {**scenario, "systems_targeted": targeted, "procedures": kept_procedures, "mitigations": mitigations}

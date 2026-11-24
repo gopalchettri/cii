@@ -4,9 +4,9 @@
     monitoring tools.
 
 .DESCRIPTION
-    .\run.ps1            start everything, wait until /ready answers, open Grafana
-    .\run.ps1 stop       stop everything this script started (or .\stop.ps1, the same)
-    .\run.ps1 status     what is running, and what /ready says
+    .\run_uat.ps1        start everything, wait until /ready answers, open Grafana
+    .\run_uat.ps1 stop   stop everything this script started (or .\stop.ps1, the same)
+    .\run_uat.ps1 status what is running, and what /ready says
 
     The API, the worker and beat each get their own window ("TSG api", "TSG worker", "TSG beat"). A window stays
     open when its program stops, so an error stays readable. The monitoring tools (Grafana, Prometheus,
@@ -31,10 +31,10 @@
     How long stop waits for the worker to finish its running jobs before it closes the window. Default 60.
 
 .EXAMPLE
-    .\run.ps1
+    .\run_uat.ps1
 
 .EXAMPLE
-    .\run.ps1 stop
+    .\run_uat.ps1 stop
 #>
 #Requires -PSEdition Desktop
 # Windows PowerShell 5.1 only: PowerShell 7 reads the saved start times as dates, and stop then finds no
@@ -299,11 +299,34 @@ function Assert-CanStart {
 function Assert-StoresAnswer {
     # The same MongoDB / SQL Server / Redis checks /ready runs, before any window opens: a stopped store is named
     # now, instead of three windows retrying it and /ready saying 503 after 90 s.
+    # The settings are read first: every store check reads them, so one missing .env key made all three stores
+    # look down ("Not reachable: mongo, sql, redis") on a server that reached each of them.
     Write-Host 'Checking MongoDB, SQL Server and Redis...' -ForegroundColor Cyan
-    $check = 'import json; from app.core.readiness import check_readiness; print(json.dumps(check_readiness()[0]))'
+    $check = @'
+import json
+from pydantic import ValidationError
+from app.core.config import get_settings
+
+def env_key(error):
+    if not error['loc']:
+        return error['msg']
+    name = str(error['loc'][0])
+    return name if name.isupper() else 'CII_' + name.upper()
+
+try:
+    get_settings()
+except ValidationError as failure:
+    print(json.dumps({'settings': [env_key(error) for error in failure.errors()]}))
+    raise SystemExit(0)
+from app.core.readiness import check_readiness
+print(json.dumps(check_readiness()[0]))
+'@
     $answer = Invoke-Native { & $Python -c $check } | Select-Object -Last 1
     try { $stores = $answer | ConvertFrom-Json } catch { $stores = $null }
-    if ($null -eq $stores) { throw "Could not check the stores. Run this to see why: $Python -c `"$check`"" }
+    if ($null -eq $stores) { throw "Could not check the stores: $answer" }
+    if ($stores.PSObject.Properties.Name -contains 'settings') {
+        throw ".env is missing a setting or has a wrong value for: $($stores.settings -join ', '). See .env.example."
+    }
     $down = @($stores.PSObject.Properties | Where-Object { -not $_.Value } | ForEach-Object { $_.Name })
     if ($down) {
         throw ("Not reachable: $($down -join ', '). Start it first; a Windows service " +
@@ -361,7 +384,7 @@ function Show-Ready($Ready) {
 function Invoke-Start {
     $state = Read-State
     $alive = @($state.Keys | Where-Object { Get-Owned $state[$_] })
-    if ($alive) { throw "Already running ($($alive -join ', ')). See .\run.ps1 status, or stop it with .\stop.ps1." }
+    if ($alive) { throw "Already running ($($alive -join ', ')). See .\run_uat.ps1 status, or stop it with .\stop.ps1." }
     Assert-CanStart
     # Grafana's logs and audit panels read the log files (scripts\monitoring_commands.py: Alloy reads logs\).
     $setLogDir = -not (Get-EnvValue 'CII_LOG_DIR') -and -not $env:CII_LOG_DIR

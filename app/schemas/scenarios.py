@@ -239,6 +239,9 @@ class PromotedThreat(BaseModel):
     threat_type_id: int | None  # None when nothing was written (curator_rejected)
     threat_catalogue_id: int | None
     outcome: c.PromotionOutcome
+    # IT or OT saved with the new threat (where the scenario attacks); a threat the library held already shows its
+    # own (None while pending); None when nothing was written (owner 2026-11-24)
+    asset_type: str | None = None
 
 
 class PromotionResult(BaseModel):
@@ -357,6 +360,32 @@ class TechniqueLinkView(BaseModel):
     via_software: str | None = None  # a group's technique MITRE documents through its software
 
 
+class ProcedureView(BaseModel):
+    """A MITRE procedure example: how a group, campaign or software MITRE documents used one technique."""
+
+    technique: str  # the technique's ATT&CK ID
+    actor: str
+    actor_mitre_id: str | None = None  # G..., C... or S...
+    actor_type: str | None = None  # intrusion-set, campaign, malware or tool
+    via_software: str | None = None  # the group's software MITRE documents it through
+    text: str  # MITRE's own words
+
+
+class MitigationLinkView(BaseModel):
+    mitre_id: str  # M...
+    name: str
+    text: str | None = None  # MITRE's own words on how this mitigation defends the technique
+
+
+class TechniqueMitigationsView(BaseModel):
+    """The MITRE mitigations recorded for one technique of the scenario."""
+
+    technique: str  # the technique's ATT&CK ID
+    technique_name: str | None = None
+    mitigations: list[MitigationLinkView] = Field(default_factory=list)
+    inherited_from: str | None = None  # MITRE lists none of its own: these are this parent technique's (T1070)
+
+
 class ActorView(BaseModel):
     actor_id: int | None
     actor_name: str | None
@@ -473,6 +502,8 @@ class ScenarioView(BaseModel):
     evidence: list[EvidenceView] = Field(default_factory=list)
     evidence_search: dict[str, Any] | None = None
     attack_techniques: list[TechniqueLinkView] = Field(default_factory=list)  # a MITRE run's, with their pages
+    procedures: list[ProcedureView] = Field(default_factory=list)  # a MITRE run's procedure examples; [] on others
+    mitigations: list[TechniqueMitigationsView] = Field(default_factory=list)  # a MITRE run's, per technique
 
 
 class ScenarioList(BaseModel):

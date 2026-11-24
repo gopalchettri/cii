@@ -90,7 +90,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: The scheduler (Celery beat) has not run the reaper for 15 minutes; stuck jobs are not repaired.
-          description: "Laptop: .\\run.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
+          description: "Laptop: .\\run_dev.ps1 status, then start again. UAT: check the beat pod (oc get pods)."
 
       # Each process measures its clock against MongoDB's and corrects itself (app/core/clock.py), so jobs still
       # start. A pod far off means its node's time sync is broken: before the shared clock, a worker 76 s behind
@@ -131,7 +131,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: No worker is taking {{ $labels.queue }} jobs; they wait until one starts.
-          description: "Laptop: .\\run.ps1 start (or check the worker's window). UAT: check the worker pods."
+          description: "Laptop: .\\run_dev.ps1 start (or check the worker's window). UAT: check the worker pods."
 
   # Jobs that never ran or never ended: the job outcomes alone cannot show them.
   - name: tsg-jobs-unfinished
@@ -339,7 +339,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: No API instance is running and answering.
-          description: "Nobody can use the app. Laptop: .\\run.ps1 start. UAT: check the api pods."
+          description: "Nobody can use the app. Laptop: .\\run_dev.ps1 start. UAT: check the api pods."
 
       - alert: WorkerNotRunning
         expr: absent(up{job="worker"} == 1)
@@ -347,7 +347,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: No worker process is running and answering.
-          description: "No background job runs. Laptop: .\\run.ps1 start. UAT: check the worker pods."
+          description: "No background job runs. Laptop: .\\run_dev.ps1 start. UAT: check the worker pods."
 
       - alert: PodNotStarting
         expr: >

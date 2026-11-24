@@ -332,6 +332,10 @@ class LogEvent(StrEnum):
     CONTROLS_PICKED = "controls.picked"  # a written set's controls picked per sentence
     CONTROLS_PICK_DROPPED = "controls.pick_dropped"  # a pick code refused, with its reason
     CONTROLS_PICK_UNUSABLE = "controls.pick_unusable"  # the answer could not be used: the search maps the set
+    CONTROLS_PICKED_BY_TECHNIQUE = "controls.picked_by_technique"  # MITRE cards' controls picked per technique
+    CONTROLS_LINK_FALLBACK = "controls.link_fallback"  # unreadable answer: each technique's best MITRE link kept
+    CONTROLS_EFFECT_CORRECTED = "controls.effect_corrected"  # an effect the control's domain cannot have, corrected
+    CONTROLS_TOPPED_UP_BY_SEARCH = "controls.topped_up_by_search"  # a MITRE card short of MIN_CONTROLS, topped up
     MITRE_RUN_PLANNED = "mitre.run_planned"  # a MITRE run's actors selected and paths planned and stored
     MITRE_FURTHER_PATHS_PLANNED = "mitre.further_paths_planned"  # an "all paths" run's "any others?" round
     MITRE_SET_WRITTEN = "mitre.set_written"  # one set of a MITRE run: written, dropped, seconds

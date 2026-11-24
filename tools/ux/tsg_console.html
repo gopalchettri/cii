@@ -310,6 +310,19 @@
   .scn-d .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
   .scn-d p { margin: 4px 0; }
 
+  /* ---------- module: mitre ---------- */
+  .layout.no-rail { grid-template-columns: 1fr; }
+  .layout.no-rail .rail { display: none; }
+  #mtrCards > .empty { grid-column: 1 / -1; }
+  .mtr-run { padding: 12px 16px; margin: 14px 0; box-shadow: none; }
+  .mtr-run .kv { grid-template-columns: 170px 1fr; }
+  .mtr-run details { margin-top: 10px; font-size: 13px; }
+  .mtr-run summary { cursor: pointer; font-weight: 600; color: var(--primary); }
+  .mtr-run .tbl { margin-top: 8px; }
+  .sc .ctl a, .mtr-d a, .mtr-run a { color: var(--primary); text-decoration: none; font-weight: 600; }
+  .mtr-d .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  .mtr-d p { margin: 4px 0; }
+
   /* ---------- module: plans ---------- */
   /* ---------- remediation plans (plans module) ---------- */
   .pd-spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent;
@@ -371,6 +384,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab active" data-pane="setup">Setup</button>
       <button class="tab" data-pane="scenarios">Scenarios <span class="count" id="cntScen">0</span></button>
+      <button class="tab" data-pane="mitre">MITRE TSG <span class="count" id="cntMitre">0</span></button>
       <button class="tab" data-pane="plans">Remediation plans <span class="count" id="cntPlans">0</span></button>
       <button class="tab" data-pane="register">Plan register</button>
       <button class="tab" data-pane="manual">Manual scenario</button>
@@ -425,6 +439,42 @@
       <div class="card meter-card"><div class="meter" id="scenMeter"></div></div>
       <div id="scenNote"></div>
       <div class="cards" id="cards"></div>
+    </section>
+
+    <!-- ---------- MITRE TSG: its own run (the other tabs keep their session) ---------- -->
+    <section class="pane" id="pane-mitre">
+      <div class="callout info">The MITRE pipeline: the AI picks the MITRE groups that fit the asset, plans attack paths from the
+        MITRE Enterprise and ICS techniques and writes each scenario; code checks every quote, technique and group against MITRE.
+        This tab runs its own session (<code>/v1/mitre_sessions/{id}</code>): the other tabs stay on theirs.</div>
+      <div class="section-title">Connection &middot; sent as headers on every call</div>
+      <div class="grid">
+        <div class="field"><label for="mtrApiKey">X-API-Key</label><input id="mtrApiKey" type="password" autocomplete="off">
+          <div class="hint">Never saved; the same field as on Setup.</div></div>
+        <div class="field"><label for="mtrUserId">X-User-Id</label><input id="mtrUserId" type="text"></div>
+        <div class="field"><label for="mtrEntityId">X-Entity-Id</label><input id="mtrEntityId" type="text">
+          <div class="hint">Owns the asset; a run is read with the entity that made it.</div></div>
+        <div class="field"><label for="mtrTenantId">X-Tenant-Id</label><input id="mtrTenantId" type="text"></div>
+      </div>
+      <div class="section-title">Create MITRE threat scenarios &middot; POST /v1/mitre_create_session</div>
+      <div class="grid" id="mtrForm"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="btnMtrCreate">Create MITRE scenarios</button>
+        <div class="field" style="flex:1;min-width:240px"><input id="mtrOpenSid" type="text" placeholder="MITRE session id"></div>
+        <button class="btn" id="btnMtrOpen">Open session</button>
+        <button class="btn ghost" id="btnMtrLast">Reopen the last one</button>
+      </div>
+      <div id="mtrRun"></div>
+      <div class="toolbar">
+        <div class="filters" id="mtrFilter">
+          <button class="on" data-f="all">All</button><button data-f="pending">To review</button>
+          <button data-f="accepted">Accepted</button><button data-f="rejected">Rejected</button>
+        </div>
+        <div style="flex:1"></div>
+        <button class="btn" id="btnMtrRefresh">Refresh</button>
+        <button class="btn" id="btnMtrAcceptAll">Accept all to review</button>
+        <button class="btn primary" id="btnMtrNextSet">Generate next set</button>
+      </div>
+      <div class="cards" id="mtrCards"></div>
     </section>
 
     <!-- ---------- remediation plans ---------- -->
@@ -728,6 +778,7 @@ $(function () {
     $(".tab").removeClass("active"); $(this).addClass("active");
     $(".pane").removeClass("active"); $("#pane-" + $(this).data("pane")).addClass("active");
     if ($(this).data("pane") === "register") loadRegister();
+    $(".layout").toggleClass("no-rail", $(this).data("pane") === "mitre");   // the seven steps follow the TSG run only
   });
   function gotoTab(p) { $('.tab[data-pane="' + p + '"]').trigger("click"); }
   function openModal(title, bodyHtml, buttons) {
@@ -961,19 +1012,28 @@ $(function () {
   createFields.forEach(function (f) { $("#" + f.id).on("change", function () { store.set(env + "." + f.id, $(this).val().trim()); }); });
   var intOrNull = function (v) { v = String(v || "").trim(); return v === "" ? null : (/^\d+$/.test(v) ? parseInt(v, 10) : NaN); };
 
-  $("#btnCreate").on("click", function () {
-    var asset = intOrNull($("#cAsset").val());
-    var systems = String($("#cSystems").val() || "").split(/[\s,;]+/).filter(Boolean).map(function (x) { return /^\d+$/.test(x) ? parseInt(x, 10) : NaN; });
-    var opt = { subsector_id: intOrNull($("#cSubsector").val()), sector_id: intOrNull($("#cSector").val()),
-                service_id: intOrNull($("#cService").val()) };
-    if (!$("#apiKey").val() || !$("#entityId").val()) { toast("Connection details missing", "Fill in X-API-Key and X-Entity-Id.", "warn"); return; }
-    if (asset == null || isNaN(asset)) { toast("Asset id needed", "Enter the numeric asset id.", "warn"); return; }
-    if (!systems.length || systems.some(isNaN)) { toast("Supporting systems needed", "Enter one or more numeric ids, comma separated.", "warn"); return; }
-    // StartRunRequest (app/models/scenario/views.py): extra="forbid", so only these keys; the entity comes from X-Entity-Id.
+  // The StartRunRequest of a create form: "c" is this one, "mc" the MITRE TSG tab's (both routes take the same body).
+  // null once a toast has said what is missing.
+  function readStartRunBody(prefix) {
+    var field = function (name) { return $("#" + prefix + name).val(); };
+    var asset = intOrNull(field("Asset"));
+    var systems = String(field("Systems") || "").split(/[\s,;]+/).filter(Boolean).map(function (x) { return /^\d+$/.test(x) ? parseInt(x, 10) : NaN; });
+    var opt = { subsector_id: intOrNull(field("Subsector")), sector_id: intOrNull(field("Sector")),
+                service_id: intOrNull(field("Service")) };
+    if (!$("#apiKey").val() || !$("#entityId").val()) { toast("Connection details missing", "Fill in X-API-Key and X-Entity-Id.", "warn"); return null; }
+    if (asset == null || isNaN(asset)) { toast("Asset id needed", "Enter the numeric asset id.", "warn"); return null; }
+    if (!systems.length || systems.some(isNaN)) { toast("Supporting systems needed", "Enter one or more numeric ids, comma separated.", "warn"); return null; }
+    // StartRunRequest (app/schemas/scenarios.py): extra="forbid", so only these keys; the entity comes from X-Entity-Id.
     var body = { asset_id: asset, supporting_system_id: systems };
     var bad = false;
     $.each(opt, function (k, v) { if (v === null) return; if (isNaN(v)) bad = true; else body[k] = v; });
-    if (bad) { toast("Check the optional ids", "They must be whole numbers.", "warn"); return; }
+    if (bad) { toast("Check the optional ids", "They must be whole numbers.", "warn"); return null; }
+    return body;
+  }
+
+  $("#btnCreate").on("click", function () {
+    var body = readStartRunBody("c");
+    if (!body) return;
     withBusy($(this), api("POST", "/v1/sessions", body, { quiet: true }))
       .done(function (r) {
         toast("Assessment started", "Session " + short(r.session_id) + "… · " + r.session_status + " · " + overallText(prog(r).overall), "ok");
@@ -2197,6 +2257,375 @@ $(function () {
           });
       }
     });
+
+  // ==================== module: mitre ====================
+  // ====================================================================================
+  // MITRE TSG (app/api/routes/mitre_scenarios.py, ADR-010): its own run in `mtr`, never `state` (the other tabs'
+  // session). Every action is /v1/mitre_sessions/{id} plus v1's tail, with v1's bodies and answers.
+  //   mtr.status  = MitreSessionStatus (GET /v1/mitre_sessions/{id}: the board plus `mitre`)
+  //   mtr.results = RunResults (GET /v1/mitre_sessions/{id}/results: decisions, versions, failures)
+  // A card is its RunResults row joined by scenario_id with its MITRE scenario (mitre.result.scenarios once the run
+  // is complete, mitre.partial_scenarios while it runs). Private names start with "mtr".
+  // ponytail: polled every 3 s while a job runs, no SSE (the events stream sends v1's board, without `mitre`).
+  // ====================================================================================
+  var mtr = { sid: null, status: null, results: null, filter: "all", busy: {}, regen: {}, done: null };
+  var MTR_STAGES = { queued: "Queued", selecting_actors: "Selecting MITRE actors", planning: "Planning attack paths",
+                     writing: "Writing scenarios", complete: "Complete" };
+  var MTR_PAGES = { G: "groups", C: "campaigns", S: "software", T: "techniques", M: "mitigations" };
+
+  $("#mtrForm").html(createFields.map(function (f) {
+    return '<div class="field"><label for="m' + f.id + '">' + esc(f.label) + '</label><input id="m' + f.id + '" type="text">' +
+           '<div class="hint">' + esc(f.hint) + "</div></div>";
+  }).join(""));
+  // The connection fields here are Setup's own (authHeaders reads Setup's): each pair is kept the same both ways.
+  var MTR_CONNECTION = { mtrApiKey: "apiKey", mtrUserId: "userId", mtrEntityId: "entityId", mtrTenantId: "tenantId" };
+  $.each(MTR_CONNECTION, function (mine, setup) {
+    $("#" + mine).on("input change", function () { $("#" + setup).val($(this).val()).trigger("change"); });
+    $("#" + setup).on("input change", function () { $("#" + mine).val($(this).val()); });
+  });
+  function mtrLoadForm() {   // the MITRE form's own values, else the TSG form's; the connection as Setup has it
+    createFields.forEach(function (f) { $("#m" + f.id).val(store.get(env + ".m" + f.id, store.get(env + "." + f.id, ""))); });
+    $.each(MTR_CONNECTION, function (mine, setup) { $("#" + mine).val($("#" + setup).val()); });
+    $("#btnMtrLast").toggle(!!store.get(env + ".lastMitreSid", ""));
+  }
+  createFields.forEach(function (f) { $("#m" + f.id).on("change", function () { store.set(env + ".m" + f.id, $(this).val().trim()); }); });
+  $("#envSel").on("change", function () { mtrLoadForm(); mtrOpen(null); });
+
+  function mtrPath(rest) { return "/v1/mitre_sessions/" + encodeURIComponent(mtr.sid) + (rest || ""); }
+  function mtrInfo() { return (mtr.status && mtr.status.mitre) || {}; }
+  function mtrRunning() { return runActive(mtr.status); }
+  function mtrList() { return (mtr.results && mtr.results.scenarios) || []; }
+  function mtrFind(id) { return mtrList().filter(function (s) { return s.scenario_id === id; })[0] || null; }
+  function mtrDetail(id) {
+    var m = mtrInfo(), all = (m.result && m.result.scenarios) || m.partial_scenarios || [];
+    return all.filter(function (x) { return x.scenario_id === id; })[0] || {};
+  }
+  function mtrTitle(s) { return mtrDetail(s.scenario_id).scenario_title || scnText(s).scenario_title || "Untitled scenario"; }
+  // attack.mitre.org's page of a group, campaign, software, technique (a sub-technique T1234.001 as T1234/001) or mitigation.
+  function mtrLink(id, url) {
+    id = String(id || "");
+    var page = MTR_PAGES[id.charAt(0)];
+    url = url || (page ? "https://attack.mitre.org/" + page + "/" + id.replace(".", "/") : "");
+    return url ? '<a href="' + attr(url) + '" target="_blank" rel="noopener">' + esc(id) + "</a>" : esc(id);
+  }
+
+  function mtrOpen(sid) {
+    mtr.sid = sid || null; mtr.status = mtr.results = mtr.done = null; mtr.busy = {}; mtr.regen = {};
+    if (sid) { store.set(env + ".lastMitreSid", sid); $("#btnMtrLast").show(); $("#mtrOpenSid").val(sid); }
+    mtrRender();
+    if (!sid) return;
+    if (!$("#apiKey").val()) {
+      toast("API key needed", "Enter X-API-Key under Connection, then open the MITRE session again.", "warn");
+      $("#mtrApiKey").trigger("focus"); return;
+    }
+    mtrRefresh(true);
+  }
+  // Both reads; each drops its answer if the tab moved to another run meanwhile.
+  function mtrRefresh(loud) {
+    if (!mtr.sid) return NONE;
+    var sid = mtr.sid;
+    var board = api("GET", mtrPath(), undefined, { quiet: !loud }).done(function (b) {
+      if (sid !== mtr.sid) return;
+      var was = mtr.status;
+      mtr.status = b; mtrRender();
+      if (runActive(was) && !runActive(b)) {
+        var why = runErrors(b), failed = b.session_status === "failed";
+        toast(failed ? "MITRE run failed" : why ? "MITRE run finished: partial" : "MITRE run finished",
+              why || overallText(prog(b).overall), failed ? "err" : why ? "warn" : "ok");
+      }
+    });
+    var cards = api("GET", mtrPath("/results?limit=500&include_replaced=true"), undefined, { quiet: true }).done(function (r) {
+      if (sid === mtr.sid) { mtr.results = r; mtrRender(); }
+    });
+    return $.when(board, cards);
+  }
+  var mtrTick = 0;
+  setInterval(function () {
+    if (!mtr.sid || !$("#apiKey").val() || ++mtrTick % 3) return;
+    if (mtrRunning() || prog(mtr.status).controls === "RUNNING") mtrRefresh();
+  }, 1000);
+
+  // ---------------- the run panel: stage, counts, times, and once complete the plan's metadata ----------------
+  function mtrStageBadge(s) {
+    var stage = (s.mitre || {}).stage || "queued", failed = s.session_status === "failed";
+    var cls = failed ? "red" : stage === "complete" ? "green" : "blue";
+    return '<span class="badge ' + cls + '" title="mitre.stage: ' + attr(stage) + '">' +
+           (!failed && runActive(s) ? '<span class="scn-spin"></span>' : "") + esc(failed ? "Failed" : MTR_STAGES[stage] || stage) + "</span>";
+  }
+  function mtrCount(o) { var n = 0; $.each(o || {}, function (k, v) { n += Number(v) || 0; }); return n; }
+  function mtrActorsTable(actors) {
+    if (!actors.length) return "";
+    return "<details><summary>Relevant MITRE actors (" + actors.length + ")</summary>" +
+      '<table class="tbl"><thead><tr><th>ID</th><th>Name</th><th>Relevance</th><th>MITRE quote</th></tr></thead><tbody>' +
+      actors.map(function (a) {
+        return "<tr><td>" + mtrLink(a.mitre_id, a.url) + "</td><td>" + esc(a.name) + "</td><td>" + esc(a.relevance) +
+               "</td><td>" + esc(a.evidence_quote) + "</td></tr>";
+      }).join("") + "</tbody></table></details>";
+  }
+  function mtrRenderRun() {
+    var $r = $("#mtrRun"), s = mtr.status;
+    if (!mtr.sid) { $r.empty(); return; }
+    if (!s) { $r.html('<div class="card mtr-run muted">Loading MITRE session ' + esc(short(mtr.sid)) + "…</div>"); return; }
+    var p = prog(s), m = s.mitre || {}, t = p.timings || {}, c = p.scenario_count || {}, em = p.error_message || {};
+    var meta = (m.result && m.result.metadata) || null;
+    var secs = function (v) { return v == null ? "-" : Number(v).toFixed(1) + " s"; };
+    var rows = [
+      ["Session", '<span class="mono">' + esc(mtr.sid) + '</span> <button class="btn ghost sm" data-mtr-act="copy-sid">Copy</button>'],
+      ["Asset", esc(s.asset_name || s.asset_id)],
+      ["Status", esc(s.session_status) + " " + overallBadge(p.overall) + " " + mtrStageBadge(s)],
+      ["Scenarios", esc(m.written) + " written of " + esc(m.run_target) + " planned · " + esc(m.scenarios_left) + " left · " +
+                    esc(c.accepted || 0) + " accepted · " + esc(c.rejected || 0) + " rejected · " + esc(c.pending_review || 0) + " to review"],
+      ["Times", "threats " + secs(t.threats) + " · scenarios " + secs(t.scenarios) + " · controls " + secs(t.controls) +
+                " · elapsed " + secs(m.elapsed_seconds)]
+    ];
+    Object.keys(em).forEach(function (k) { rows.push(["Note · " + esc(k), esc(em[k])]); });
+    if (p.last_next_set) rows.push(["Last next set", esc(lastText(p.last_next_set, "delivered"))]);
+    if (p.last_regen) rows.push(["Last regenerate", esc(lastText(p.last_regen, "replaced"))]);
+    if (mtr.done) rows.push(["Next set", esc(mtr.done.message)]);
+    if (meta) {
+      rows.push(["Attack paths", esc(meta.valid_paths_found) + " valid · " + mtrCount(meta.invalid_paths) + " rejected by the MITRE checks · " +
+                                 esc(meta.planner_calls) + " planner call(s)"]);
+      rows.push(["IT/OT crossing", meta.it_ot_crossing_required ? "required · " + (meta.it_ot_crossing_met ? "met" : "not met") +
+                                   (meta.it_ot_crossing_reason ? " · " + esc(meta.it_ot_crossing_reason) : "") : "not required"]);
+      rows.push(["Groups", esc(meta.relevant_actors_selected) + " actors selected (" + esc(meta.relevant_actor_selection) + ") · " +
+                           esc(meta.distinct_relevant_groups) + " groups on the cards · " + esc(meta.groups_removed_over_share) +
+                           " removed over the share cap"]);
+    }
+    $r.html('<div class="card mtr-run"><dl class="kv">' + rows.map(function (r) { return "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>"; }).join("") +
+            "</dl>" + (meta ? mtrActorsTable(meta.relevant_actors || []) : "") + "</div>");
+  }
+
+  // ---------------- the cards ----------------
+  function mtrClamp(text) {
+    return text ? '<p class="clamp">' + esc(text) + '</p><span class="more">Show more</span>' : '<p class="faint">—</p>';
+  }
+  function mtrChips(items, chip) { return '<div class="controls">' + (items.length ? items.map(chip).join("") : '<span class="faint">—</span>') + "</div>"; }
+  function mtrControls(s, d) {
+    var st = d.controls_status || s.controls_status, list = d.controls || s.controls || [];
+    if (st === "queued" || st === "running") return '<div class="scn-st"><span class="scn-spin"></span>Mapping controls from the MITRE mitigations…</div>';
+    if (!list.length) return '<p class="faint">No controls mapped' + (st ? " (" + esc(st) + ")" : "") + "</p>";
+    return mtrChips(list, function (x) {
+      return '<span class="ctl scn-chip" title="' + attr(x.control_description || "") + '">' + esc(x.control_code) + " " + esc(x.control_name) + "</span>";
+    });
+  }
+  function mtrFooter(s, st) {
+    var id = s.scenario_id;
+    var lock = mtr.busy[id] || mtr.regen[id] ? " disabled"
+             : mtrRunning() ? ' disabled title="Wait until the run finishes (409 generation_in_progress)"' : "";
+    function b(act, cls, text, extra) {
+      return '<button class="btn sm ' + cls + '" data-mtr-act="' + act + '" data-id="' + attr(id) + '"' + (extra || "") + ">" + text + "</button>";
+    }
+    var gap = '<span class="scn-gap"></span>', det = b("details", "ghost", "Details"), regen = b("regen", "", "Regenerate", lock);
+    if (st === "failed") return ((s.failure || {}).reason ? regen : "") + gap + det;
+    if (st === "rejected") return regen + gap + det;
+    if (st === "accepted") return b("promote", "", "Promote to library", mtr.busy[id] ? " disabled" : "") + regen + gap + det;
+    return b("accept", "success", scnReplacesAccepted(s) ? "Accept as replacement" : "Accept", lock) + b("reject", "danger", "Reject", lock) +
+           regen + gap + det;
+  }
+  function mtrCard(s) {
+    var id = s.scenario_id, st = scnStatus(s), d = mtrDetail(id), x = scnText(s), body;
+    if (st === "failed") {
+      var f = s.failure || {};
+      body = '<p class="muted">The writer could not produce a scenario for this MITRE attack path.</p>' +
+             '<div class="callout warn"><code>' + esc(f.code || "failed") + "</code> " + esc(f.message || "") + "</div>";
+    } else {
+      var prev = scnPrev(s);
+      body = (prev ? '<div class="callout info">Version ' + esc(s.version) + " of this scenario (replaces version " + esc(prev.version) + ").</div>" : "") +
+             (s.regenerate_error ? '<div class="callout warn">Last regenerate failed: <code>' + esc(s.regenerate_error.code) + "</code> " +
+               esc(s.regenerate_error.message || "") + "</div>" : "") +
+             '<div class="lbl">Threat scenario description</div><p>' + esc(d.threat_scenario_description || x.threat_scenario_description || "—") + "</p>" +
+             '<div class="lbl">Threat Scenario</div>' + mtrClamp(d.threat_scenario || x.scenario_statement) +
+             '<div class="lbl">Risk Statement</div>' + mtrClamp(d.risk_statement || x.risk_statement) +
+             '<div class="lbl">Relevant groups</div>' + mtrChips(d.relevant_groups || [], function (g) {
+               return '<span class="ctl" title="' + attr(g.relevance || "") + '">' + mtrLink(g.mitre_id) + " " + esc(g.name) + "</span>";
+             }) +
+             '<div class="lbl">Attack techniques</div>' + mtrChips(d.attack_techniques || [], function (t) {   // no domain (owner, 2026-11-24)
+               return '<span class="ctl">' + mtrLink(t.mitre_id, t.url) + " " + esc(t.name) + "</span>";
+             }) +
+             '<div class="lbl">Supporting Systems</div><p>' + esc((d.supporting_systems || []).join(", ") || "—") + "</p>" +
+             '<div class="lbl">Controls</div>' + mtrControls(s, d);
+    }
+    var L = { pending: ["blue", "To review"], accepted: ["green", "Accepted"], rejected: ["red", "Rejected"], failed: ["amber", "Failed"] }[st];
+    var badges = '<span class="badge ' + L[0] + '">' + L[1] + "</span>" + (d.category ? '<span class="badge">' + esc(d.category) + "</span>" : "") +
+                 (d.threat_type ? '<span class="badge cyan">' + esc(d.threat_type) + "</span>" : "") +
+                 (mtr.regen[id] ? '<span class="badge blue"><span class="scn-spin"></span>Regenerating…</span>' : "");
+    var cls = "sc" + ({ accepted: " accepted", rejected: " rejected", failed: " scn-failed" }[st] || "") + (mtr.regen[id] ? " scn-regen" : "");
+    return '<div class="' + cls + '" data-id="' + attr(id) + '"><div class="sc-h"><h3>' +
+           esc(st === "failed" ? "Scenario could not be written" : mtrTitle(s)) + '</h3><div class="meta">' + badges + "</div></div>" +
+           '<div class="sc-b">' + body + '</div><div class="sc-f">' + mtrFooter(s, st) + "</div></div>";
+  }
+  function mtrDetails(s) {
+    var d = mtrDetail(s.scenario_id), x = scnText(s);
+    function sec(title, html) { return '<div class="section-title">' + title + "</div>" + html; }
+    function tbl(head, rows) {
+      if (!rows.length) return '<p class="faint">None</p>';
+      return '<table class="tbl"><thead><tr><th>' + head.join("</th><th>") + "</th></tr></thead><tbody>" +
+             rows.map(function (r) { return "<tr><td>" + r.join("</td><td>") + "</td></tr>"; }).join("") + "</tbody></table>";
+    }
+    var html = '<div class="mtr-d">' +
+      sec("Threat scenario description", "<p>" + esc(d.threat_scenario_description || "—") + "</p>") +
+      sec("Scenario", '<p style="white-space:pre-line">' + esc(d.threat_scenario || x.scenario_statement || "—") + "</p>") +
+      sec("Risk", "<p>" + esc(d.risk_statement || x.risk_statement || "—") + "</p>") +
+      sec("Relevant groups", tbl(["ID", "Group", "Why it is listed (MITRE's words)"], (d.relevant_groups || []).map(function (g) {
+        return [mtrLink(g.mitre_id), esc(g.name), esc(g.relevance)];
+      }))) +
+      sec("Attack techniques", tbl(["ID", "Technique"], (d.attack_techniques || []).map(function (t) {
+        return [mtrLink(t.mitre_id, t.url), esc(t.name)];
+      }))) +
+      // Procedure examples, systems targeted, assumptions and MITRE mitigations are not shown here (owner, 2026-11-24).
+      sec("Controls", tbl(["Code", "Control", "Domain"], (d.controls || s.controls || []).map(function (y) {
+        return ['<span class="mono">' + esc(y.control_code) + "</span>", '<span title="' + attr(y.control_description || "") + '">' + esc(y.control_name) + "</span>",
+                esc(y.domain || "")];
+      }))) +
+      scnHistory(s, sec) + "</div>";
+    openModal(mtrTitle(s), html);
+  }
+  function mtrShown() {
+    return mtrList().filter(function (s) {
+      var st = scnStatus(s), f = mtr.filter;
+      return !s.replaced_by && (f === "all" || st === f || (f === "pending" && st === "failed"));
+    });
+  }
+  function mtrRenderCards() {
+    var $c = $("#mtrCards"), list = mtrList(), current = list.filter(function (s) { return !s.replaced_by; });
+    var pending = current.filter(function (s) { return scnStatus(s) === "pending"; }).length;
+    $("#mtrFilter button").each(function () { $(this).toggleClass("on", $(this).attr("data-f") === mtr.filter); });
+    $("#cntMitre").text(current.length);
+    // A regenerating mark ends when its card is superseded, or once the run no longer runs (5 s grace, as the Scenarios tab).
+    $.each(mtr.regen, function (id, m) {
+      var s = mtrFind(id);
+      if (!s || s.replaced_by || (!mtrRunning() && Date.now() - m.t > 5000)) delete mtr.regen[id];
+    });
+    var none = mtr.sid ? "" : "Open or create a MITRE session first", wait = mtrRunning() ? "Wait until the run finishes" : "";
+    var acceptWhy = none || (!pending ? "Nothing is waiting for review" : wait);
+    $("#btnMtrAcceptAll").prop("disabled", !!acceptWhy).attr("title", acceptWhy || 'Accept every scenario waiting for review ({"scenario_ids": "all"})');
+    var nextWhy = none || wait || (mtr.done ? mtr.done.message : "");
+    $("#btnMtrNextSet").prop("disabled", !!nextWhy).attr("title", nextWhy || "POST /v1/mitre_sessions/{id}/scenarios/next-set");
+    $("#btnMtrRefresh").prop("disabled", !!none);
+    if (!mtr.sid) { $c.html(scnEmpty("&#9881;", "Create MITRE scenarios above, or open a MITRE session")); return; }
+    if (!mtr.results) { $c.html(scnEmpty('<span class="scn-spin scn-big"></span>', "Loading scenarios…")); return; }
+    var shown = mtrShown();
+    $c.html(shown.length ? shown.map(mtrCard).join("")
+      : current.length ? scnEmpty("&#8709;", "No scenarios in this view.")
+      : scnEmpty("&#9678;", mtrRunning() ? "The first scenarios are being written…" : "No scenarios in this session yet."));
+  }
+  function mtrRender() { mtrRenderRun(); mtrRenderCards(); }
+
+  // ---------------- actions ----------------
+  function mtrAccept(s, replace, $btn) {
+    var id = s.scenario_id, body = replace ? { scenario_ids: [id], replace_accepted: true } : { scenario_ids: [id] };
+    mtr.busy[id] = 1;
+    withBusy($btn, api("POST", mtrPath("/accept"), body, { quiet: true })).always(function () { delete mtr.busy[id]; })
+      .done(function (r) {
+        var sk = (r && r.skipped) || [];
+        if (sk.length) toast("Not accepted", sk.map(function (x) { return x.reason; }).join(", "), "warn");
+        else toast("Accepted", mtrTitle(s) + ((r.controls_pending || []).length ? ". Its controls are still being mapped." : ""), "ok");
+        mtrRefresh();
+      })
+      .fail(function (e) {
+        if (e.reason === "duplicate_version" && !replace) {
+          openModal("Another version is already accepted",
+            "<p>Only one version of a scenario can be accepted. Accept this version <b>as its replacement</b>? " +
+            "The other one goes back to pending (<code>replace_accepted: true</code>).</p>",
+            [{ text: "Accept as replacement", cls: "success", click: function ($m) { closeModal(); mtrAccept(s, true, $m); } }]);
+        } else toast(e.reason || e.code || "Accept failed", e.message, "err");
+      })
+      .always(mtrRenderCards);
+  }
+  function mtrReject(s) {
+    openModal("Reject this scenario?",
+      "<p><b>" + esc(mtrTitle(s)) + "</b></p><p class=\"muted\">Decisions are final: there is no un-reject. " +
+      "To get a fresh version from the same MITRE attack path, use Regenerate afterwards.</p>",
+      [{ text: "Reject", cls: "danger", click: function ($m) {
+        withBusy($m, api("POST", mtrPath("/scenarios/reject"), { scenario_ids: [s.scenario_id] })).done(function (r) {
+          closeModal();
+          var sk = (r && r.skipped) || [];
+          toast(sk.length ? "Not rejected" : "Rejected", sk.length ? sk.map(function (x) { return x.reason; }).join(", ") : mtrTitle(s), sk.length ? "warn" : "ok");
+          mtrRefresh();
+        });
+      } }]);
+  }
+  function mtrAct(act, id, $btn) {
+    var s = mtrFind(id);
+    if (!s || !mtr.sid) return;
+    if (act === "details") return mtrDetails(s);
+    if (act === "reject") return mtrReject(s);
+    if (act === "accept") return mtrAccept(s, !!scnReplacesAccepted(s), $btn);
+    if (act === "promote") {
+      mtr.busy[id] = 1;
+      withBusy($btn, api("POST", mtrPath("/scenarios/" + encodeURIComponent(id) + "/promote-to-library")))
+        .always(function () { delete mtr.busy[id]; })
+        .done(function (r) {
+          toast("Sent to the library curators", ((r && r.results) || []).map(function (x) { return x.threat + ": " + x.outcome; }).join(" · "), "ok");
+        }).always(mtrRenderCards);
+      return;
+    }
+    if (act !== "regen") return;
+    mtr.busy[id] = 1;
+    withBusy($btn, api("POST", mtrPath("/regenerate/scenarios"), { scenario_ids: [id] })).always(function () { delete mtr.busy[id]; })
+      .done(function () {
+        mtr.regen[id] = { t: Date.now() };
+        toast("Regenerating…", "A new version is written from the same MITRE attack path; it appears as its own card.");
+        mtrRefresh();
+      }).always(mtrRenderCards);
+  }
+
+  $("#btnMtrCreate").on("click", function () {
+    var body = readStartRunBody("mc");
+    if (!body) return;
+    withBusy($(this), api("POST", "/v1/mitre_create_session", body, { quiet: true }))
+      .done(function (r, code) {
+        toast(code === 200 ? "MITRE run already started" : "MITRE run started", "Session " + short(r.session_id) + "… · " + r.session_status, "ok");
+        mtrOpen(r.session_id);
+      })
+      .fail(function (e) {
+        var list = (e.errors || []).map(function (x) { return (x.field || "") + ": " + (x.message || ""); }).join(" · ");
+        toast(e.reason || e.code || "Could not start", e.message + (list ? " — " + list : ""), "err");
+      });
+  });
+  $("#btnMtrOpen").on("click", function () {
+    var sid = String($("#mtrOpenSid").val() || "").trim();
+    if (!/^[0-9a-fA-F-]{32,36}$/.test(sid)) { toast("Not a session id", "Paste the MITRE session id (32 hex characters).", "warn"); return; }
+    mtrOpen(sid);
+  });
+  $("#btnMtrLast").on("click", function () {
+    var sid = store.get(env + ".lastMitreSid", "");
+    if (sid) mtrOpen(sid); else toast("No previous MITRE session", "", "warn");
+  });
+  $(document)
+    .on("click", "#mtrFilter button", function () { mtr.filter = $(this).attr("data-f") || "all"; mtrRenderCards(); })
+    .on("click", "#btnMtrRefresh", function () { withBusy($(this), mtrRefresh(true)); })
+    .on("click", "#mtrRun [data-mtr-act=copy-sid]", function () { if (mtr.sid) copy(mtr.sid); })
+    .on("click", "#mtrCards [data-mtr-act]", function () { mtrAct($(this).attr("data-mtr-act"), $(this).attr("data-id"), $(this)); })
+    .on("click", "#mtrCards .more", function () {
+      var on = $(this).prev(".clamp").toggleClass("open").hasClass("open");
+      $(this).text(on ? "Show less" : "Show more");
+    })
+    .on("click", "#btnMtrNextSet", function () {
+      var $b = $(this);
+      if (!mtr.sid) return;
+      // 202 generating; 200 nothing_left or target_reached: nothing started (the answer's message says why).
+      withBusy($b, api("POST", mtrPath("/scenarios/next-set"))).done(function (r, code) {
+        if (code === 200) { mtr.done = r; toast(r.status === "target_reached" ? "Target reached" : "Nothing left to write", r.message, "warn"); }
+        else toast("Writing the next set…", r.message, "ok");
+        mtrRefresh();
+      });
+    })
+    .on("click", "#btnMtrAcceptAll", function () {
+      if (!mtr.sid) return;
+      openModal("Accept all MITRE scenarios to review?",
+        "<p>This sends <code>{\"scenario_ids\": \"all\"}</code>: every current written, not rejected version is accepted. " +
+        "A scenario whose other version is already accepted is skipped (<code>duplicate_version</code>).</p>",
+        [{ text: "Accept all", cls: "success", click: function ($m) {
+          withBusy($m, api("POST", mtrPath("/accept"), { scenario_ids: "all" })).done(function (r) {
+            closeModal();
+            toast("Accepted", ((r && r.accepted) || []).length + " accepted · " + ((r && r.skipped) || []).length + " skipped", "ok");
+            mtrRefresh();
+          });
+        } }]);
+    });
+  mtrLoadForm();
+  mtrRender();
 
   // ==================== start ====================
   renderAll();

@@ -290,9 +290,13 @@
  "ControlPickDrop": {
   "BAD_EFFECT": "its effect is not prevent, detect, contain or recover",
   "NOT_LISTED": "names no control of this scenario's list",
+  "NOT_THIS_TECHNIQUE": "names no control linked to this technique's MITRE mitigations",
   "NO_SENTENCE": "names no sentence of this scenario",
+  "NO_TECHNIQUE": "names no technique of this scenario that has controls to choose from",
   "TOO_MANY": "more than {most} controls on one sentence",
+  "TOO_MANY_FOR_TECHNIQUE": "more than {most} controls on one technique",
   "TWICE": "the control is already picked for another sentence of this scenario",
+  "TWICE_FOR_TECHNIQUE": "the control is already picked for this technique",
   "WRONG_TYPE": "the control's IT/OT type does not fit the scenario's systems"
  },
  "ControlType": {
@@ -792,6 +796,7 @@
  },
  "TechniqueControlState": {
   "MATCHED": "matched",
+  "NEAREST": "nearest",
   "NOT_OFFERED": "not_offered",
   "NOT_PICKED": "not_picked",
   "NOT_PREPARED": "not_prepared",
