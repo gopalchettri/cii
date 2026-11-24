@@ -18,7 +18,7 @@ from app.core.logging import configure_logging
 
 REPO = Path(__file__).resolve().parents[1]
 #: Keys an env file may hold besides the Settings fields: the laptop monitoring script reads this one.
-EXTRA_ENV_KEYS = {"GRAFANA_ADMIN_PASSWORD", "CII_WORKER_THREADS"}  # the last is read by run.ps1 only
+EXTRA_ENV_KEYS = {"GRAFANA_ADMIN_PASSWORD", "CII_WORKER_THREADS"}  # the last is read by run_dev.ps1 only
 
 
 def _settings(**changes: object) -> Settings:
@@ -90,10 +90,14 @@ def test_every_setting_in_env_example_says_what_it_does() -> None:
 
 def test_the_ai_tuning_defaults_are_the_values_env_example_shows() -> None:
     """config.py and .env.example agree: each AI tuning setting's default is the value .env.example writes,
-    and each module's model limits are blank there (the model's own, app/ai/profiles.py)."""
+    and each module's model limits are blank there (the model's own, app/ai/profiles.py). A setting with no
+    default (the MITRE run's answer rooms, ADR-010) only needs its line."""
     lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
     written = {key: value for key, _, value in (line.partition("=") for line in lines if line.startswith("CII_"))}
     for field, info in AiTuningSettings.model_fields.items():
+        if info.is_required():
+            assert written[f"CII_{field.upper()}"], field
+            continue
         assert written[f"CII_{field.upper()}"] == str(info.default).lower(), field  # a bool is "false"
     limits = [f for f in ChatModelSettings.model_fields if f.endswith(("_tokens", "_timeout_seconds"))]
     limits = [f for f in limits if not f.endswith("tokens_per_minute")]

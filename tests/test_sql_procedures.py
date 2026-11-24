@@ -202,6 +202,28 @@ def test_a_proposal_from_an_unknown_source_is_refused(procedures: StoredProcedur
     assert "manual or ai" in str(refused.value.__cause__)
 
 
+def test_a_new_threat_is_saved_with_its_asset_type_and_an_existing_one_keeps_its_own(
+    procedures: StoredProcedureClient, sql_test_engine: Engine
+) -> None:
+    """Owner 2026-11-24: promote sends where the scenario attacks (IT or OT). Mutation: drop AssetType from the
+    INSERT and the new row is untyped; let a repeat write it and the first type is overwritten."""
+    asset_type_of = "SELECT AssetType FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = ?"
+    jamming = {"TypeName": "Drone intrusion", "ThreatName": "Drone jamming of field radios"}
+    created = _propose(procedures, **jamming, AssetType="OT")
+    assert _rows(sql_test_engine, asset_type_of, created["threat_catalogue_id"]) == [{"AssetType": "OT"}]
+    again = _propose(procedures, **jamming, AssetType="IT")
+    assert again["outcome"] == "existing_pending"
+    assert _rows(sql_test_engine, asset_type_of, created["threat_catalogue_id"]) == [{"AssetType": "OT"}]
+    untyped = _propose(procedures, TypeName="Drone intrusion", ThreatName="Drone landing on a substation roof")
+    assert _rows(sql_test_engine, asset_type_of, untyped["threat_catalogue_id"]) == [{"AssetType": None}]
+
+
+def test_a_proposal_with_an_unknown_asset_type_is_refused(procedures: StoredProcedureClient) -> None:
+    with pytest.raises(SetupError, match=ErrorMessage.SQL_PROCEDURE_BROKEN) as refused:
+        _propose(procedures, TypeName="X", ThreatName="Y", AssetType="IT\\OT")
+    assert "IT, OT or NULL" in str(refused.value.__cause__)
+
+
 def test_pending_threats_are_listed_oldest_first_with_a_total(procedures: StoredProcedureClient) -> None:
     page, total = procedures.execute_procedure(StoredProcedure.LIST_PENDING_THREATS, Offset=0, Limit=2)
     assert len(page) == 2 and total[0]["total"] >= 2

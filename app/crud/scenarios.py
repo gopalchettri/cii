@@ -154,6 +154,10 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "content.evidence.mitigations",
         "content.evidence.facts",  # the about-AI check leaves the cited attackers' names out
         "content.attack",  # POST /v1/create_session's card: its controls are picked from its mitigations' links
+        # A MITRE card's controls are picked per technique (owner 2026-11-24): its mitigations' names and the
+        # systems each technique targets; their presence marks the card as a MITRE one.
+        "content.mitre.mitigations",
+        "content.mitre.systems_targeted",
     ),
     1,
 )

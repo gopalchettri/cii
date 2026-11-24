@@ -108,6 +108,10 @@ class PlanWarning(StrEnum):
     )
     GAP_NOT_ADDRESSED = "scenario control {code} is {status} but the plan does not recommend it — this gap stays open"
     CONTROL_UNMATCHED = "control {reference!r} matches no active library control — it covers no scenario control"
+    EXISTING_CONTROL_NOT_FOR_THIS_RISK = (
+        "existing control {reference!r} is not one of this scenario's library controls or their alternatives — "
+        "the plan does not count it against this risk"
+    )
     CONTROL_LISTED_TWICE = "recommended control {code!r} is listed more than once — the repeat was removed"
     DURATION_REPAIRED = (
         "{action}.duration_days {value} is not a whole number of days of at least 1 — scheduled as 1 day"

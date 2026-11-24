@@ -8,17 +8,7 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from app.core.clock import utc_now
-from app.core.config import get_settings
-from app.core.constants import (
-    AuditAction,
-    AuditTarget,
-    IntelDocId,
-    IntelRefreshMessage,
-    IntelSchedule,
-    LogEvent,
-    ScheduleFrequency,
-)
-from app.core.exceptions import Conflict
+from app.core.constants import AuditAction, AuditTarget, IntelDocId, IntelSchedule, LogEvent, ScheduleFrequency
 from app.crud.audit import get_audit_repository
 from app.crud.intel import get_intel_schedule_repository
 from app.domain.shared.audit import admin_actor, audit_target
@@ -50,10 +40,8 @@ def find_next_run(schedule: Mapping[str, Any], after: datetime) -> datetime:
 
 
 def read_schedule(now: datetime | None = None) -> dict[str, Any]:
-    """The saved schedule; a database holding none stores the default one, due at `now` (master off: nothing is)."""
+    """The saved schedule; a database holding none stores the default one, due at `now` (the switch off too)."""
     never_run = _DEFAULT | {"next_run_at": None, "last_run_at": None, "updated_at": None}
-    if not get_settings().external_intelligence_enabled:
-        return never_run
     repository = get_intel_schedule_repository()
     # Due at the check that creates it (its own `now`, not a later clock read): a new or upgraded system imports
     # at beat's first check, not up to a week later at its slot.
@@ -62,9 +50,7 @@ def read_schedule(now: datetime | None = None) -> dict[str, Any]:
 
 
 def save_schedule(body: IntelScheduleBody, actor: str) -> dict[str, Any]:
-    """Store the admin's schedule with its next run (none while disabled), audited; 409 with the master off."""
-    if not get_settings().external_intelligence_enabled:  # nothing of the feature is written while off
-        raise Conflict(IntelRefreshMessage.SWITCH_OFF)
+    """Store the admin's schedule with its next run (none while disabled), audited; the switch off too."""
     before, now = read_schedule(), utc_now()
     chosen = body.model_dump(mode="json")
     next_run_at = find_next_run(chosen, now) if body.enabled else None

@@ -205,6 +205,7 @@ class ThreatRepository:
             "Source": proposal.source,
             "CreatedBy": proposal.created_by,
             "ActorIDs": json.dumps(list(proposal.actor_ids)),
+            "AssetType": proposal.asset_type,
         }
         result_sets, applied_now = self._operations.run_sql_operation(
             operation_id, StoredProcedure.RESOLVE_THREAT, parameters

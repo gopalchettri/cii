@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from app.core import constants as c
+from app.core.asset_types import place_asset_label
 from app.core.config import get_settings
 from app.core.exceptions import Conflict, Forbidden, Invalid, NotFound, SetupError
 from app.domain.shared.names import name_match_key, threat_name_key
@@ -570,6 +571,20 @@ def _summarise_last_action(
     return summary
 
 
+def scenario_asset_type(content: dict[str, Any], context: FrozenContext | None) -> str | None:
+    """IT or OT for a scenario's threat in the library (owner 2026-11-24: the scenario's own). A MITRE scenario is OT
+    when one of its techniques is ICS (a path that attacks OT carries one), else IT; any other is the type of the
+    place it attacks: its systems, or the asset when it names none (None without the run's asset facts)."""
+    techniques = (content.get("mitre") or {}).get("attack_techniques")
+    if techniques:
+        attacks_ot = any(technique.get("domain") == "ics" for technique in techniques)
+        return c.AssetType.OT.value if attacks_ot else c.AssetType.IT.value
+    if context is None:
+        return None
+    systems = context.find_systems(system["id"] for system in content.get("systems") or [])
+    return place_asset_label(context.asset.get("category_code"), (system.get("category_code") for system in systems))
+
+
 def build_scenario_view(
     record: dict[str, Any], accepted_elsewhere: str | None = None, older: list[dict[str, Any]] | None = None
 ) -> views.ScenarioView:
@@ -578,12 +593,15 @@ def build_scenario_view(
     generated = record.get("source") != c.RunKind.MANUAL
     failed = record.get("status") == c.ScenarioStatus.FAILED
     controls_fields = _build_controls_fields(controls, generated, failed)
-    match_status = controls_fields["control_match_status"]
+    match_status, mitre = controls_fields["control_match_status"], content.get("mitre") or {}
     return views.ScenarioView(
         scenario_id=record["_id"],
         scenario=None if failed else _build_scenario_text(content),
         threat=_build_threat_block(content),
-        actors=[_build_actor_view(actor) for actor in content.get("actors") or []],
+        actors=views.actor_views(content),
+        attack_techniques=mitre.get("attack_techniques") or [],
+        procedures=mitre.get("procedures") or [],
+        mitigations=mitre.get("mitigations") or [],
         controls=[control_view(item) for item in controls.get("items") or []],
         replaces_accepted_version=accepted_elsewhere,
         scenario_source=record["source"],
@@ -736,6 +754,7 @@ def _build_scenario_text(content: dict[str, Any]) -> views.ScenarioText:
         assumptions=assumptions,
         route_status=c.ROUTE_WORDS.get(str(status), str(status).upper()) if status else None,
         also_applies=content.get("also_applies") or [],
+        threat_scenario_description=(content.get("mitre") or {}).get("threat_scenario_description"),
     )
 
 
@@ -747,7 +766,7 @@ def _build_threat_block(content: dict[str, Any]) -> views.ThreatBlock:
     verified = library_id is not None and threat.get("library_status") in (None, c.LibraryStatus.ACTIVE)
     grounding = None if not threat else c.GroundingStatus.VERIFIED if verified else c.GroundingStatus.UNVERIFIED
     return views.ThreatBlock(
-        threat_id=threat.get("key"),
+        threat_id=None if threat.get("ai_generated") else threat.get("key"),  # owner 2026-11-23: no id for an AI one
         threat_category=name,
         threat_category_id=own_id if own_id is not None else kinds_id,
         threat_type=threat.get("type"),
@@ -762,17 +781,6 @@ def _build_threat_block(content: dict[str, Any]) -> views.ThreatBlock:
         grounding_score=confidence,
         score=confidence,
         scope_rank=threat.get("rank"),
-    )
-
-
-def _build_actor_view(actor: dict[str, Any]) -> views.ActorView:
-    return views.ActorView(
-        actor_id=actor.get("id"),
-        actor_name=actor.get("name"),
-        role=actor.get("role"),
-        closest_match=bool(actor.get("closest")),
-        selection=actor.get("selection"),
-        selection_reason=actor.get("reason"),
     )
 
 

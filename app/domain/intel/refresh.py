@@ -16,8 +16,14 @@ from app.crud.intel import (
     get_intel_feed_repository,
     get_intel_record_repository,
 )
+from app.crud.mitre.mitre_stix import (
+    MitreStixRepository,
+    get_mitre_enterprise_stix_repository,
+    get_mitre_ics_stix_repository,
+)
 from app.domain.intel.index import EvidenceIndexRefused, get_evidence_index_keeper
 from app.domain.intel.sources.attack import MitreAttackSource
+from app.domain.intel.switch import get_intelligence_switch
 from app.schemas.intel_records import (
     FetchResult,
     RefreshResult,
@@ -89,6 +95,8 @@ def _prepare_sources() -> None:
 
 def _finish(outcomes: tuple[SourceRefresh, ...]) -> RefreshSummary:
     graph_changed = any(outcome.graph_changed for outcome in outcomes)
+    if not get_intelligence_switch().is_on():  # the import always runs (ADR-010); evidence only while on
+        return RefreshSummary(outcomes, False, graph_changed=graph_changed)
     try:
         get_evidence_index_keeper().rebuild_index().result()
     except EvidenceIndexRefused as exc:  # nothing current to index yet: its message says so
@@ -121,8 +129,10 @@ def _refresh(source: IntelSource, now: datetime) -> SourceRefresh:
 
 def _download_and_store(source: IntelSource, claim: str, health: SourceHealth, now: datetime) -> SourceRefresh:
     feeds, records, attack = get_intel_feed_repository(), get_intel_record_repository(), get_attack_repository()
-    version = health.source_version  # the checkpoint is trusted only with its version and that release's graph
-    checkpoint = health.checkpoint if version is not None and attack.is_release_stored(source, version) else None
+    version = health.source_version  # the checkpoint is trusted only with its version, that release's graph
+    trusted = version is not None and attack.is_release_stored(source, version)  # and that release's STIX objects
+    trusted = trusted and _scenario_stix_repository(source).stored_versions() == [version]
+    checkpoint = health.checkpoint if trusted else None
     result = MitreAttackSource(source).download_changes(checkpoint)
     if result is None:  # the source's version marker is the one already stored
         return _nothing_new(source, claim, health, now)
@@ -135,6 +145,7 @@ def _download_and_store(source: IntelSource, claim: str, health: SourceHealth, n
             records, source, result, now, lambda: feeds.renew_intel_feed_refresh(source, claim, utc_now())
         )
         graph_changed = _store_graph(source, claim, result)
+        _store_scenario_stix(source, claim, result)
     except ClaimLost:
         log.warning(LogEvent.EXTERNAL_INTELLIGENCE_CLAIM_LOST, source=source)
         return SourceRefresh(source, RefreshResult.CLAIM_LOST)
@@ -158,6 +169,27 @@ def _store_graph(source: IntelSource, claim: str, result: FetchResult) -> bool:
     stored = attack.replace_source(source, result.graph, version)
     log.info(LogEvent.ATTACK_GRAPH_STORED, source=source, source_version=result.source_version, records=stored)
     return True
+
+
+def _scenario_stix_repository(source: IntelSource) -> MitreStixRepository:
+    if source == IntelSource.ATTACK_ICS:
+        return get_mitre_ics_stix_repository()
+    return get_mitre_enterprise_stix_repository()
+
+
+def _store_scenario_stix(source: IntelSource, claim: str, result: FetchResult) -> None:
+    """Replaces the source's STIX objects the MITRE run reads, unless that release is stored whole already.
+    An empty result writes nothing, so the stored objects stay."""
+    if not result.raw_stix:
+        return
+    stix = _scenario_stix_repository(source)
+    stored_whole = stix.stored_versions() == [result.source_version] and stix.count() == len(result.raw_stix)
+    if stored_whole:
+        return
+    if not get_intel_feed_repository().renew_intel_feed_refresh(source, claim, utc_now()):
+        raise ClaimLost
+    stored = stix.replace_stix_objects(result.raw_stix, result.source_version)
+    log.info(LogEvent.MITRE_STIX_STORED, source=source, source_version=result.source_version, records=stored)
 
 
 def _nothing_new(source: IntelSource, claim: str, health: SourceHealth, now: datetime) -> SourceRefresh:

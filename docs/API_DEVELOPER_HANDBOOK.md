@@ -8,7 +8,7 @@ The target is the current **CII Threat Scenario Generator v2** API: FastAPI, Mon
 
 The API cannot be implemented correctly from a route name alone. Obtain the approved endpoint contract, SQL schema/data ownership, local store addresses, and AI credentials from the feature or environment owner. For an existing endpoint, `tests/contract/openapi.json` and its route/schema/tests are the approved contract. For a new endpoint, record method, path, caller, owner, request, response, errors, retry behavior, persistence, and background work before editing. Do not guess these values.
 
-All commands below use **Windows PowerShell** from the repository root. Use Windows PowerShell **5.1** for `run.ps1`; the script rejects PowerShell 7. Work in the current checkout without discarding unrelated uncommitted changes. A failed build or test command is a gate: fix its stated problem before moving on.
+All commands below use **Windows PowerShell** from the repository root. Use Windows PowerShell **5.1** for `run_dev.ps1` and `run_uat.ps1`; the scripts reject PowerShell 7. Work in the current checkout without discarding unrelated uncommitted changes. A failed build or test command is a gate: fix its stated problem before moving on.
 
 Set up once: Python 3.12, and development SQL Server, MongoDB, and Redis. Use `.[dev,local]` instead of `.[dev]` when the local reranker model is needed (`CII_RERANK_BASE_URL` empty). Fill `.env` from `.env.example` and `app/core/config.py` with real development values; never run with `<secret>` or `<resource>` placeholders, and never print or commit secrets.
 
@@ -191,7 +191,7 @@ def read_embeddings_build(job_id: Annotated[str, Path(max_length=64)]) -> dict:
     return {"job_id": record.pop("_id"), **record}
 ```
 
-**B6. Register the worker in three places, in order.** In `app/core/constants/jobs.py`, route `TaskName.BUILD_LIBRARY_INDEXES` to `Queue.MAINTENANCE`. In `app/worker/celery_app.py:TASK_MODULES`, include `app.worker.admin.library_indexes`. In `app/worker/admin/library_indexes.py`, decorate `build_library_indexes` with that task name. The task calls the getters inside the function, claims the saved job with `update_admin_job_running`, builds the snapshot/vectors, then saves `DONE` and counts or `FAILED` and an error. `run.ps1` already starts a `tsg_maintenance` worker. `/ready` should see that worker.
+**B6. Register the worker in three places, in order.** In `app/core/constants/jobs.py`, route `TaskName.BUILD_LIBRARY_INDEXES` to `Queue.MAINTENANCE`. In `app/worker/celery_app.py:TASK_MODULES`, include `app.worker.admin.library_indexes`. In `app/worker/admin/library_indexes.py`, decorate `build_library_indexes` with that task name. The task calls the getters inside the function, claims the saved job with `update_admin_job_running`, builds the snapshot/vectors, then saves `DONE` and counts or `FAILED` and an error. `run_dev.ps1` and `run_uat.ps1` already start a `tsg_maintenance` worker. `/ready` should see that worker.
 
 ```python
 @celery_app.task(name=TaskName.BUILD_LIBRARY_INDEXES)
@@ -401,15 +401,15 @@ Run `.\.venv\Scripts\python.exe -m ruff check app tests scripts` and `.\.venv\Sc
 Ensure SQL Server, MongoDB, Redis, and required AI endpoints work, then use **Windows PowerShell 5.1**:
 
 ```powershell
-.\run.ps1 -NoBrowser
-.\run.ps1 status
+.\run_dev.ps1 -NoBrowser
+.\run_dev.ps1 status
 Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
 The admin web page is then at `http://127.0.0.1:8000/ui/`: the files in `app/ui`, mounted by `app/api/ui.py` in `create_app()`. It is a mount, not a router, so it is not in the OpenAPI document; a page may call only routes that exist (`tests/test_admin_ui.py` checks every path it names).
 
-`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). The local script starts the API; one worker on `tsg_threats,tsg_scenarios,tsg_controls` (plus `tsg_remediation`, which gets a worker of its own when `CII_RERANK_BASE_URL` points to a remote reranker); one each on `tsg_servicemapper`, `tsg_maintenance` and `tsg_reaper` (`reaper@`, metrics port 9104); and beat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run.ps1 stop`.
+`/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). The local script starts the API; one worker on `tsg_threats,tsg_scenarios,tsg_controls` (plus `tsg_remediation`, which gets a worker of its own when `CII_RERANK_BASE_URL` points to a remote reranker); one each on `tsg_servicemapper`, `tsg_maintenance` and `tsg_reaper` (`reaper@`, metrics port 9104); and beat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run_dev.ps1 stop`.
 
 ### Run tests without touching application data
 
@@ -478,7 +478,7 @@ At each step, check the actual response model, `X-Request-Id`, audit entry for a
 - [ ] Every new SQL procedure has its `scripts/sql/tsg_<Name>.sql` file, `StoredProcedure` member, grant in `scripts/sql/grants.sql`, repository call, and test schema coverage; every new MongoDB collection has indexes at startup.
 - [ ] Ruff and convention tests pass; mypy has no new errors relative to the recorded baseline; relevant tests and the full suite pass against disposable stores.
 - [ ] Any OpenAPI/stored-name/Celery/index pin change is intentional and reviewed; local startup and the manual smoke pass.
-- [ ] Update `debug/tsg.http`, `.env.example`, `run.ps1`, and `deploy/` manifests if the contract, configuration, task routes, or workers changed; update `observability/` (shipped with `oc apply -k observability`) if a metric, alert, or dashboard changed.
+- [ ] Update `debug/tsg.http`, `.env.example`, `run_dev.ps1` and `run_uat.ps1`, and `deploy/` manifests if the contract, configuration, task routes, or workers changed; update `observability/` (shipped with `oc apply -k observability`) if a metric, alert, or dashboard changed.
 
 If a gate is blocked, hand over the exact command, sanitized error, and missing environment dependency. A route-level test is not proof that the job, storage, and worker path works end to end.
 

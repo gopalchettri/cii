@@ -9,11 +9,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -32,6 +37,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -76,6 +83,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -126,11 +134,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": {
@@ -151,6 +164,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -195,6 +210,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -245,11 +261,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -268,6 +289,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -312,6 +335,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -362,11 +386,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -395,6 +424,8 @@
     "status": "not_proposed"
    }
   },
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -439,6 +470,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -481,11 +513,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -514,6 +551,8 @@
     "status": "not_proposed"
    }
   },
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -558,6 +597,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -596,6 +636,7 @@
   "accepted_by": null,
   "actor": null,
   "actors": [],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": null,
@@ -618,6 +659,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -675,11 +718,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -698,6 +746,8 @@
   "gen_started_at": "2026-11-01T09:30:00Z",
   "generation_epoch": 4,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -742,6 +792,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -792,11 +843,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": null,
   "controls": [],
   "controls_error": {
@@ -817,6 +873,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": "2026-11-01T09:30:00Z",
   "rejected_by": "u-3",
@@ -861,6 +919,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -911,11 +970,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "NEAREST_ONLY",
   "controls": [
    {
@@ -985,6 +1049,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -1032,6 +1098,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1084,11 +1151,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -1107,6 +1179,8 @@
   "gen_started_at": "2026-11-01T09:30:00Z",
   "generation_epoch": 4,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -1122,11 +1196,16 @@
       "actor_id": 3,
       "actor_name": "Malicious insider",
       "closest_match": false,
+      "documented_techniques": [],
+      "mitre_id": null,
+      "relevance": null,
       "role": "acting",
       "selection": "chosen",
-      "selection_reason": "It could reach SCADA server from the office network."
+      "selection_reason": "It could reach SCADA server from the office network.",
+      "url": null
      }
     ],
+    "attack_techniques": [],
     "control_match_status": "PENDING",
     "controls": [],
     "controls_error": null,
@@ -1145,6 +1224,8 @@
     "gen_started_at": null,
     "generation_epoch": null,
     "library": null,
+    "mitigations": [],
+    "procedures": [],
     "regenerate_error": null,
     "rejected_at": null,
     "rejected_by": null,
@@ -1189,6 +1270,7 @@
      ],
      "threat_category": "Tampering",
      "threat_name": "Ransomware encrypts backup servers",
+     "threat_scenario_description": null,
      "threat_type": "Malware"
     },
     "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1269,6 +1351,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",
@@ -1319,11 +1402,16 @@
     "actor_id": 3,
     "actor_name": "Malicious insider",
     "closest_match": false,
+    "documented_techniques": [],
+    "mitre_id": null,
+    "relevance": null,
     "role": "acting",
     "selection": "chosen",
-    "selection_reason": "It could reach SCADA server from the office network."
+    "selection_reason": "It could reach SCADA server from the office network.",
+    "url": null
    }
   ],
+  "attack_techniques": [],
   "control_match_status": "PENDING",
   "controls": [],
   "controls_error": null,
@@ -1342,6 +1430,8 @@
   "gen_started_at": null,
   "generation_epoch": null,
   "library": null,
+  "mitigations": [],
+  "procedures": [],
   "regenerate_error": null,
   "rejected_at": null,
   "rejected_by": null,
@@ -1389,6 +1479,7 @@
    ],
    "threat_category": "Tampering",
    "threat_name": "Ransomware encrypts backup servers",
+   "threat_scenario_description": null,
    "threat_type": "Malware"
   },
   "scenario_id": "bd0ad25f-ad9f-56c2-94bb-75af9ebefc07",

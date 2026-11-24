@@ -23,7 +23,7 @@ V1_KEYS = [
 V2_EXTRAS = [
     "session_id", "version", "status", "failure", "regenerate_error", "created_at", "controls_status",
     "controls_error", "replaced_by",
-    "evidence_mode", "evidence", "evidence_search",
+    "evidence_mode", "evidence", "evidence_search", "attack_techniques", "procedures", "mitigations",
 ]  # fmt: skip
 WRITTEN_AT = datetime(2026, 10, 16, 3, 24, 57, tzinfo=UTC)
 
@@ -84,12 +84,15 @@ def _content(**changes: Any) -> dict[str, Any]:
 def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
     shown = build_scenario_view(_record()).model_dump()
     assert list(shown) == V1_KEYS + V2_EXTRAS
+    assert shown["attack_techniques"] == [] and shown["actors"][0]["mitre_id"] is None  # not a MITRE card
+    assert shown["procedures"] == [] and shown["mitigations"] == []
     assert list(shown["scenario"]) == [
         "threat_category", "contributing_categories", "threat_type", "threat_name",
         "supporting_systems_involved",
         "scenario_title", "scenario_statement", "risk_statement", "assumptions", "route_status",
-        "also_applies",
+        "also_applies", "threat_scenario_description",
     ]  # fmt: skip
+    assert shown["scenario"]["threat_scenario_description"] is None  # not a MITRE card: its writer has no such line
     assert list(shown["scenario"]["supporting_systems_involved"][0]) == [
         "supporting_system_id", "supporting_system", "is_entry_point", "justification", "is_applicable",
     ]  # fmt: skip
@@ -101,6 +104,17 @@ def test_a_scenario_is_shown_in_v1s_order_then_v2s_extras() -> None:
     for dropped in ("requires", "produces", "moderation_checked", "moderation_flagged", "moderation_categories"):
         assert dropped not in shown and dropped not in shown["scenario"]
     assert "standards" not in shown["controls"][0]
+
+
+def test_a_library_threat_shows_its_lib_id_and_an_ai_written_one_none() -> None:
+    """threat_id names a library threat only (owner 2026-11-23); the AI-written one keeps its stored key for the
+    run's own checks. Mutation: show the stored key and the AI card reads 'ai:...'."""
+    assert build_scenario_view(_record()).threat.threat_id == "lib:568"
+    record = _record()
+    ai_threat = {"key": "ai:loss of grid control", "library_id": None, "ai_generated": True}
+    record["content"]["threat"] |= ai_threat
+    threat = build_scenario_view(record).threat
+    assert (threat.threat_id, threat.is_threat_ai_generated, threat.threat_catalogue_id) == (None, True, None)
 
 
 def test_a_written_scenario_carries_v1s_fields_with_their_values() -> None:

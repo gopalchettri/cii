@@ -487,6 +487,48 @@
   },
   "options": {}
  },
+ "tsg_mitre_enterprise_stix": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "by_version": {
+    "key": [
+     [
+      "version",
+      1
+     ]
+    ]
+   }
+  },
+  "options": {}
+ },
+ "tsg_mitre_ics_stix": {
+  "indexes": {
+   "_id_": {
+    "key": [
+     [
+      "_id",
+      1
+     ]
+    ]
+   },
+   "by_version": {
+    "key": [
+     [
+      "version",
+      1
+     ]
+    ]
+   }
+  },
+  "options": {}
+ },
  "tsg_query_vectors": {
   "indexes": {
    "_id_": {

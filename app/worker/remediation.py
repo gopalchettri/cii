@@ -45,10 +45,12 @@ from app.domain.remediation.write import (
     active_mapped_controls,
     assess_controls,
     build_snapshot,
+    existing_controls_not_for_this_risk,
     list_affected_systems,
     write_plan,
 )
 from app.domain.scenario.attack_controls import is_attack_scenario, pick_set_controls
+from app.domain.scenario.session import scenario_asset_type
 from app.domain.scenario.write import find_alternative_controls, map_controls
 from app.domain.shared.audit import audit_target
 from app.realtime.publisher import publish_session_status
@@ -117,7 +119,8 @@ def _save_snapshot(lease: JobLease, search: LibrarySearch, rerank: RerankModel, 
         actors = pick_manual_attacker(library, scenario)
         changes: Doc = {"content.actors": actors}
         if pending.get("proposal"):
-            changes |= _propose_while_held(threats, lease, scenario, tuple(actor["id"] for actor in actors))
+            asset_type = scenario_asset_type(scenario["content"], context)
+            changes |= _propose_while_held(threats, lease, scenario, tuple(actor["id"] for actor in actors), asset_type)
         scenario = scenarios.update_manual_scenario_findings(scenario["_id"], changes, PLANNED_SCENARIO_FIELDS)
         if scenario is None:  # deleted with its run meanwhile
             raise LeaseLost(lease.record_id)
@@ -131,6 +134,8 @@ def _save_snapshot(lease: JobLease, search: LibrarySearch, rerank: RerankModel, 
     found = find_alternative_controls(rerank, scenario, context, library, [i["control_id"] for i in items], 5, mapped)
     offered = [{"control_id": c.control_id, "code": c.code, "score": s, "match": "alternative"} for c, s in found]
     alternatives = assess_controls(offered, register, controls, affected, categories)[0]
+    considered = [row["control_id"] for row in library_mapped + alternatives]
+    warnings = warnings + existing_controls_not_for_this_risk(register, controls, considered)
     snapshot = build_snapshot(scenario, context, register, library_mapped, warnings, affected, alternatives)
     seconds = {"controls_s": time.perf_counter() - started}
     get_remediation_repository().update_remediation_plan_version(lease, {"snapshot": snapshot}, timings=seconds)
@@ -240,14 +245,16 @@ def _freed_controls(claimed: Doc, exc: Exception, run_cancelled: bool) -> tuple[
     return (Status.FAILED if manual else Status.QUEUED), error
 
 
-def _propose_while_held(threats: ThreatRepository, lease: JobLease, scenario: Doc, actor_ids: tuple[int, ...]) -> Doc:
+def _propose_while_held(
+    threats: ThreatRepository, lease: JobLease, scenario: Doc, actor_ids: tuple[int, ...], asset_type: str | None
+) -> Doc:
     # ponytail: a cancel and delete landing between this renewal and the proposal still propose; closing that
     # needs one transaction across MongoDB and SQL Server.
     if not lease.renew_job():
         raise LeaseLost(lease.record_id)
     content, by = scenario["content"], scenario["pending"]["by"]
     audit = get_audit_repository()
-    return _propose_manual_threat(threats, audit, scenario["_id"], content, actor_ids, by)
+    return _propose_manual_threat(threats, audit, scenario["_id"], content, actor_ids, by, asset_type)
 
 
 def _propose_manual_threat(
@@ -257,7 +264,10 @@ def _propose_manual_threat(
     content: Doc,
     actor_ids: tuple[int, ...],
     by: Doc,
+    asset_type: str | None = None,
 ) -> Doc:
+    """The hand-written threat proposed, linked to the attackers when its type is new and typed IT or OT by where
+    the scenario attacks (owner 2026-11-24)."""
     threat = content["threat"]
     proposal = ThreatProposal(
         content.get("category"),
@@ -266,6 +276,7 @@ def _propose_manual_threat(
         LibrarySource.MANUAL,
         by["user_id"],
         actor_ids if threat.get("type_id") is None else (),  # a new type is linked to the attackers
+        asset_type,
     )
     proposed, applied_now = threats.propose_threat(f"propose:{scenario_id}", proposal)
     if applied_now:  # audited once, as the person who asked, by the attempt that applied it

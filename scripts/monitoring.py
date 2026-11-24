@@ -7,7 +7,7 @@ paths, no login.
     python scripts/monitoring.py stop      stop them all
 
 Then open http://localhost:3000/grafana/ — the TSG dashboard is the home page.
-For logs in Grafana, run the API and the worker with CII_LOG_DIR=logs (run.ps1 sets it).
+For logs in Grafana, run the API and the worker with CII_LOG_DIR=logs (run_dev.ps1 sets it).
 Grafana's admin password (user admin, only needed to change Grafana): a GRAFANA_ADMIN_PASSWORD line in .env;
 without one, a random one kept in grafana-admin-password.txt next to the tools.
 Versions come from the `image:` lines of deploy/deploy_common.yaml, so the laptop runs what UAT runs.

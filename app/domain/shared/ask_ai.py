@@ -45,16 +45,21 @@ def call_tokens(prompt: ChatPrompt, chat: ChatModel, task: AiTask) -> int:
 
 
 def within_call_limit[Item](
-    items: Sequence[Item], prompt_of: Callable[[Sequence[Item]], ChatPrompt], chat: ChatModel, task: AiTask
+    items: Sequence[Item],
+    prompt_of: Callable[[Sequence[Item]], ChatPrompt],
+    chat: ChatModel,
+    task: AiTask,
+    limit: int | None = None,
 ) -> list[Sequence[Item]]:
-    """`items` as one batch, or halved, again where needed, until each batch's call fits
-    AiLimits.CALL_TOKENS_LIMIT; one item is never split (the gateway judges it)."""
-    if len(items) <= 1 or call_tokens(prompt_of(items), chat, task) <= AiLimits.CALL_TOKENS_LIMIT:
+    """`items` as one batch, or halved, again where needed, until each batch's call fits `limit`
+    (None: AiLimits.CALL_TOKENS_LIMIT); one item is never split (the gateway judges it)."""
+    limit = AiLimits.CALL_TOKENS_LIMIT if limit is None else limit
+    if len(items) <= 1 or call_tokens(prompt_of(items), chat, task) <= limit:
         return [items]
     half = (len(items) + 1) // 2
     return [
-        *within_call_limit(items[:half], prompt_of, chat, task),
-        *within_call_limit(items[half:], prompt_of, chat, task),
+        *within_call_limit(items[:half], prompt_of, chat, task, limit),
+        *within_call_limit(items[half:], prompt_of, chat, task, limit),
     ]
 
 

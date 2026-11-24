@@ -18,15 +18,22 @@ class CreateMappingRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     service_description: str = Field(min_length=1, max_length=4_000)
     sector: str = Field(min_length=1, max_length=255, validation_alias=AliasChoices("sector", "sector_name"))
-    subsector: str = Field(min_length=1, max_length=255, validation_alias=AliasChoices("subsector", "sub_sector_name"))
+    # "": none given; the service is then found in the catalog by its name and sector only
+    subsector: str = Field(default="", max_length=255, validation_alias=AliasChoices("subsector", "sub_sector_name"))
     entity_names: list[str] = Field(min_length=1, max_length=20)
 
-    @field_validator("service_name", "service_description", "sector", "subsector")
+    @field_validator("service_name", "service_description", "sector")
     def strip_required_text(cls, value: str) -> str:
         stripped = " ".join(value.split())
         if not stripped:
             raise ValueError(BLANK)
         return stripped
+
+    @field_validator("subsector", mode="before")
+    def blank_is_no_subsector(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        return " ".join(value.split()) if isinstance(value, str) else value
 
     @field_validator("entity_names")
     def check_entities(cls, values: list[str]) -> list[str]:

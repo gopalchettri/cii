@@ -32,6 +32,7 @@ SERVICES = OBS.parent / "app" / "services"
 #: The module whose API calls each service folder holds (app/services/<folder>).
 SERVICE_FOLDER_MODULES = {
     "scenario": Module.THREAT_SCENARIOS,
+    "mitre_scenario": Module.THREAT_SCENARIOS,
     "remediation": Module.REMEDIATION,
     "service_mapper": Module.SERVICE_MAPPER,
 }

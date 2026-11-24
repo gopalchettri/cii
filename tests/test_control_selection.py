@@ -2,6 +2,8 @@
 nearest to MIN_CONTROLS; none strong: the NEAREST_CONTROLS nearest, so controls are never zero; each control
 carries its tier and its reason; how many candidates are searched is CONTROL_CANDIDATES."""
 
+import os
+
 import pytest
 from pydantic import ValidationError
 
@@ -89,13 +91,15 @@ def test_the_candidates_come_only_from_the_env_file_and_start_up_stops_without_t
 ) -> None:
     """No CONTROL_CANDIDATES in code; the env file's value is the one searched."""
     assert Settings.model_fields["control_candidates"].is_required()
-    # No env file is read: the other required settings get placeholders, and dev keeps prod's checks (admin
-    # key, CORS) out of the way, so only CONTROL_CANDIDATES decides.
-    others = {
-        name: "placeholder"
-        for name, field in Settings.model_fields.items()
-        if field.is_required() and name != "control_candidates"
-    } | {"env": "dev"}
+    # No env file is read: the other required settings get placeholders (the MITRE sizes keep the values
+    # tests/conftest.py sets), and dev keeps prod's checks (admin key, CORS) out of the way, so only
+    # CONTROL_CANDIDATES decides.
+    others = {"env": "dev"}
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias
+        env_name = alias if isinstance(alias, str) else f"CII_{name.upper()}"
+        if field.is_required() and name != "control_candidates" and env_name not in os.environ:
+            others[name] = "placeholder"
     monkeypatch.setenv("CONTROL_CANDIDATES", "12")
     assert Settings(_env_file=None, **others).control_candidates == 12  # type: ignore[call-arg]
     monkeypatch.delenv("CONTROL_CANDIDATES")

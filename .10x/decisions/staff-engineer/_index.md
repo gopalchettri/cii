@@ -4,3 +4,4 @@
 
 Active features: `simplify-codebase`.
 - `scenario-simple` (17 Nov 2026): see scenario-simple.md
+- `mitre-pipeline` (19 Nov 2026): see mitre-pipeline.md

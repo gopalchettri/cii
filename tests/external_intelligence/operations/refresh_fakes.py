@@ -2,8 +2,9 @@
 fails once the claim is taken over, and a record store that knows the ids it
 holds. Built on the shared doubles (tests/external_intelligence/evidence_fakes.py)."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,10 +22,36 @@ class StoredGraph:
         return True
 
 
+class StoredStix:
+    """A MITRE STIX store that holds the release of its source's stored checkpoint (as StoredGraph does), so a
+    stored checkpoint is trusted; what a refresh writes is kept in `written`."""
+
+    def __init__(self, feeds: Any, source: IntelSource) -> None:
+        self.feeds, self.source = feeds, source
+        self.written: list[tuple[tuple[dict, ...], str]] = []
+
+    def stored_versions(self) -> list[str]:
+        health = self.feeds.health.get(self.source)
+        return [health.source_version] if health is not None and health.source_version else []
+
+    def count(self, **where: Any) -> int:
+        return 0
+
+    def replace_stix_objects(self, objects: Iterable[dict], version: str) -> int:
+        self.written.append((tuple(objects), version))
+        return len(self.written[-1][0])
+
+
 def use_refresh_parts(monkeypatch: pytest.MonkeyPatch, fetchers: dict[IntelSource, StubFetcher], **parts: Any) -> Any:
     """The refresh module over the given `records`, `feeds` and `keeper` (and `attack`, the graph store: by
-    default one that holds every release, so a stored checkpoint is trusted), each source read by its fetcher."""
+    default one that holds every release, so a stored checkpoint is trusted), each source read by its fetcher.
+    The MITRE STIX stores hold every stored checkpoint's release too; `switch_on` (default True) is the
+    external-intelligence switch the evidence-index rebuild follows."""
     attack = parts.get("attack") or StoredGraph()
+    stix = {source: StoredStix(parts["feeds"], source) for source in IntelSource}
+    switch = SimpleNamespace(is_on=lambda: parts.get("switch_on", True))
+    monkeypatch.setattr(refresh, "_scenario_stix_repository", stix.__getitem__)
+    monkeypatch.setattr(refresh, "get_intelligence_switch", lambda: switch)
     monkeypatch.setattr(refresh, "get_attack_repository", lambda: attack)
     monkeypatch.setattr(refresh, "get_intel_record_repository", lambda: parts["records"])
     monkeypatch.setattr(refresh, "get_intel_feed_repository", lambda: parts["feeds"])

@@ -152,6 +152,7 @@ class ApiTag(StrEnum):
     EMBEDDINGS = "3. Set-up: library embeddings"
     INTELLIGENCE = "4. Set-up: external intelligence"
     RUNS = "5. Threat scenarios: runs"
+    MITRE = "5b. MITRE threat scenarios"
     REVIEW = "6. Threat scenarios: review"
     REMEDIATION = "7. Remediation plans"
     JOBS = "8. My jobs"

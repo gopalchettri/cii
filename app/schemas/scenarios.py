@@ -239,6 +239,9 @@ class PromotedThreat(BaseModel):
     threat_type_id: int | None  # None when nothing was written (curator_rejected)
     threat_catalogue_id: int | None
     outcome: c.PromotionOutcome
+    # IT or OT saved with the new threat (where the scenario attacks); a threat the library held already shows its
+    # own (None while pending); None when nothing was written (owner 2026-11-24)
+    asset_type: str | None = None
 
 
 class PromotionResult(BaseModel):
@@ -326,10 +329,11 @@ class ScenarioText(BaseModel):
     assumptions: list[str]
     route_status: str | None
     also_applies: list[str]  # other threats of the same kind of attack on the same system, strongest first
+    threat_scenario_description: str | None = None  # a MITRE card's writer's threat line; null on other cards
 
 
 class ThreatBlock(BaseModel):
-    threat_id: str | None  # the plan's key: "lib:<catalogue id>" or "ai:<name>"
+    threat_id: str | None  # "lib:<catalogue id>" for a library threat; null for an AI-written one
     threat_category: str | None
     threat_category_id: int | None
     threat_type: str | None
@@ -346,6 +350,42 @@ class ThreatBlock(BaseModel):
     scope_rank: int | None  # the path's rank in the plan, 1 = most relevant
 
 
+class TechniqueLinkView(BaseModel):
+    """A MITRE ATT&CK technique with its attack.mitre.org page."""
+
+    mitre_id: str
+    name: str
+    domain: str | None = None  # enterprise or ics
+    url: str | None = None
+    via_software: str | None = None  # a group's technique MITRE documents through its software
+
+
+class ProcedureView(BaseModel):
+    """A MITRE procedure example: how a group, campaign or software MITRE documents used one technique."""
+
+    technique: str  # the technique's ATT&CK ID
+    actor: str
+    actor_mitre_id: str | None = None  # G..., C... or S...
+    actor_type: str | None = None  # intrusion-set, campaign, malware or tool
+    via_software: str | None = None  # the group's software MITRE documents it through
+    text: str  # MITRE's own words
+
+
+class MitigationLinkView(BaseModel):
+    mitre_id: str  # M...
+    name: str
+    text: str | None = None  # MITRE's own words on how this mitigation defends the technique
+
+
+class TechniqueMitigationsView(BaseModel):
+    """The MITRE mitigations recorded for one technique of the scenario."""
+
+    technique: str  # the technique's ATT&CK ID
+    technique_name: str | None = None
+    mitigations: list[MitigationLinkView] = Field(default_factory=list)
+    inherited_from: str | None = None  # MITRE lists none of its own: these are this parent technique's (T1070)
+
+
 class ActorView(BaseModel):
     actor_id: int | None
     actor_name: str | None
@@ -353,6 +393,45 @@ class ActorView(BaseModel):
     closest_match: bool  # no actor is linked to the threat's type: the nearest library actor acts
     selection: str | None = None  # the acting attacker only: how it was chosen (chosen, balanced ...)
     selection_reason: str | None = None
+    # A MITRE run's groups (each one listed, the lead first); null or empty on the other runs' actors.
+    mitre_id: str | None = None
+    url: str | None = None  # its attack.mitre.org page
+    relevance: str | None = None  # why it is listed, in MITRE's own words
+    documented_techniques: list[TechniqueLinkView] = Field(default_factory=list)
+
+
+def actor_views(content: dict[str, Any]) -> list[ActorView]:
+    """A stored card's actors as every view shows them: a MITRE card's every relevant group, the lead first, each
+    acting with its MITRE page; else the card's own actors."""
+    mitre_groups = (content.get("mitre") or {}).get("relevant_groups")
+    if not mitre_groups:
+        return [_actor_view(actor) for actor in content.get("actors") or []]
+    actors: list[ActorView] = []
+    for group in mitre_groups:
+        actors.append(
+            ActorView(
+                actor_id=None,
+                actor_name=group["name"],
+                role=c.ActorRole.ACTING,
+                closest_match=False,
+                mitre_id=group["mitre_id"],
+                url=group.get("url"),
+                relevance=group.get("relevance"),
+                documented_techniques=group.get("documented_techniques") or [],
+            )
+        )
+    return actors
+
+
+def _actor_view(actor: dict[str, Any]) -> ActorView:
+    return ActorView(
+        actor_id=actor.get("id"),
+        actor_name=actor.get("name"),
+        role=actor.get("role"),
+        closest_match=bool(actor.get("closest")),
+        selection=actor.get("selection"),
+        selection_reason=actor.get("reason"),
+    )
 
 
 class ScopeView(BaseModel):
@@ -422,6 +501,9 @@ class ScenarioView(BaseModel):
     evidence_mode: str | None = None
     evidence: list[EvidenceView] = Field(default_factory=list)
     evidence_search: dict[str, Any] | None = None
+    attack_techniques: list[TechniqueLinkView] = Field(default_factory=list)  # a MITRE run's, with their pages
+    procedures: list[ProcedureView] = Field(default_factory=list)  # a MITRE run's procedure examples; [] on others
+    mitigations: list[TechniqueMitigationsView] = Field(default_factory=list)  # a MITRE run's, per technique
 
 
 class ScenarioList(BaseModel):

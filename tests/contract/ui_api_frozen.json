@@ -5311,7 +5311,9 @@
    "enum": [
     "generating",
     "regenerating",
-    "mapping_controls"
+    "mapping_controls",
+    "nothing_left",
+    "target_reached"
    ],
    "title": "ActionStatus",
    "type": "string"
@@ -5343,6 +5345,35 @@
     "closest_match": {
      "title": "Closest Match",
      "type": "boolean"
+    },
+    "documented_techniques": {
+     "items": {
+      "$ref": "#/components/schemas/TechniqueLinkView"
+     },
+     "title": "Documented Techniques",
+     "type": "array"
+    },
+    "mitre_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Mitre Id"
+    },
+    "relevance": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Relevance"
     },
     "role": {
      "anyOf": [
@@ -5376,6 +5407,17 @@
       }
      ],
      "title": "Selection Reason"
+    },
+    "url": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Url"
     }
    },
    "required": [
@@ -5959,8 +6001,8 @@
      "type": "string"
     },
     "subsector": {
+     "default": "",
      "maxLength": 255,
-     "minLength": 1,
      "title": "Subsector",
      "type": "string"
     }
@@ -5969,7 +6011,6 @@
     "service_name",
     "service_description",
     "sector",
-    "subsector",
     "entity_names"
    ],
    "title": "CreateMappingRequest",
@@ -7802,6 +7843,35 @@
    "title": "MintedApiClient",
    "type": "object"
   },
+  "MitigationLinkView": {
+   "properties": {
+    "mitre_id": {
+     "title": "Mitre Id",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "text": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Text"
+    }
+   },
+   "required": [
+    "mitre_id",
+    "name"
+   ],
+   "title": "MitigationLinkView",
+   "type": "object"
+  },
   "Module": {
    "description": "The product module a job works for: on every job.started/job.finished log line and every\nGET /v1/admin/jobs row, so a job is traced to its module without knowing task names.",
    "enum": [
@@ -9022,8 +9092,76 @@
    "title": "PlanView",
    "type": "object"
   },
+  "ProcedureView": {
+   "description": "A MITRE procedure example: how a group, campaign or software MITRE documents used one technique.",
+   "properties": {
+    "actor": {
+     "title": "Actor",
+     "type": "string"
+    },
+    "actor_mitre_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Actor Mitre Id"
+    },
+    "actor_type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Actor Type"
+    },
+    "technique": {
+     "title": "Technique",
+     "type": "string"
+    },
+    "text": {
+     "title": "Text",
+     "type": "string"
+    },
+    "via_software": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Via Software"
+    }
+   },
+   "required": [
+    "technique",
+    "actor",
+    "text"
+   ],
+   "title": "ProcedureView",
+   "type": "object"
+  },
   "PromotedThreat": {
    "properties": {
+    "asset_type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Asset Type"
+    },
     "outcome": {
      "$ref": "#/components/schemas/PromotionOutcome"
     },
@@ -10198,6 +10336,17 @@
      ],
      "title": "Threat Name"
     },
+    "threat_scenario_description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Threat Scenario Description"
+    },
     "threat_type": {
      "anyOf": [
       {
@@ -10272,6 +10421,13 @@
       "$ref": "#/components/schemas/ActorView"
      },
      "title": "Actors",
+     "type": "array"
+    },
+    "attack_techniques": {
+     "items": {
+      "$ref": "#/components/schemas/TechniqueLinkView"
+     },
+     "title": "Attack Techniques",
      "type": "array"
     },
     "control_match_status": {
@@ -10438,6 +10594,20 @@
        "type": "null"
       }
      ]
+    },
+    "mitigations": {
+     "items": {
+      "$ref": "#/components/schemas/TechniqueMitigationsView"
+     },
+     "title": "Mitigations",
+     "type": "array"
+    },
+    "procedures": {
+     "items": {
+      "$ref": "#/components/schemas/ProcedureView"
+     },
+     "title": "Procedures",
+     "type": "array"
     },
     "regenerate_error": {
      "anyOf": [
@@ -11031,6 +11201,101 @@
     "reason"
    ],
    "title": "TargetSkipped",
+   "type": "object"
+  },
+  "TechniqueLinkView": {
+   "description": "A MITRE ATT&CK technique with its attack.mitre.org page.",
+   "properties": {
+    "domain": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Domain"
+    },
+    "mitre_id": {
+     "title": "Mitre Id",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "url": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Url"
+    },
+    "via_software": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Via Software"
+    }
+   },
+   "required": [
+    "mitre_id",
+    "name"
+   ],
+   "title": "TechniqueLinkView",
+   "type": "object"
+  },
+  "TechniqueMitigationsView": {
+   "description": "The MITRE mitigations recorded for one technique of the scenario.",
+   "properties": {
+    "inherited_from": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Inherited From"
+    },
+    "mitigations": {
+     "items": {
+      "$ref": "#/components/schemas/MitigationLinkView"
+     },
+     "title": "Mitigations",
+     "type": "array"
+    },
+    "technique": {
+     "title": "Technique",
+     "type": "string"
+    },
+    "technique_name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "title": "Technique Name"
+    }
+   },
+   "required": [
+    "technique"
+   ],
+   "title": "TechniqueMitigationsView",
    "type": "object"
   },
   "ThreatBlock": {

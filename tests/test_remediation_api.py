@@ -404,6 +404,50 @@ def test_an_identified_control_replaced_by_a_library_alternative_shows_both_thro
     assert (rows["CII-CID-5"]["match"], rows["CII-CID-5"]["replaces"]) == ("alternative", ["CII-CID-1"])
 
 
+def test_the_plans_scenario_shows_controls_and_actors_with_their_old_and_results_keys(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The reviewer's scenario keeps its stored keys (code, rank, name) and adds the same control and actor as
+    /results shows them (control_code, map_rank, actor_name); a MITRE card lists every MITRE group. Mutation:
+    drop either merge and a key set is missing."""
+    groups = [
+        {"name": "Zeta", "mitre_id": "G0101", "url": "https://attack.mitre.org/groups/G0101", "relevance": "r"},
+        {"name": "Alpha", "mitre_id": "G0102", "url": "https://attack.mitre.org/groups/G0102", "relevance": "r"},
+    ]
+    for content, names in (
+        (SCENARIO_CONTENT, ["Cybercriminal"]),
+        (SCENARIO_CONTENT | {"mitre": {"relevant_groups": groups, "attack_techniques": []}}, ["Zeta", "Alpha"]),
+    ):
+        answer = _request(client, api_key, generated(_scenario(content=content)))
+        assert answer.status_code == 202, answer.text
+        world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+        deliver(answer.json()["remediation_id"])
+        shown = _result(client, api_key, answer.json()["remediation_id"]).json()["scenario"]
+        control = shown["controls"][0]
+        assert (control["code"], control["control_code"], control["score"]) == ("CII-CID-1", "CII-CID-1", 87.4)
+        assert control["mapping_relevance"] == 87.4 and "map_rank" in control  # the /results keys beside them
+        assert control["control_id"] == 1 and control["match_type"] == "EXACT"  # the library row, as /results
+        assert [actor["name"] for actor in shown["actors"]] == names
+        assert [actor["actor_name"] for actor in shown["actors"]] == names and shown["actors"][0]["role"] == "acting"
+
+
+def test_an_existing_control_outside_the_scenarios_controls_is_named_in_a_warning(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The register says CII-CID-1 (a scenario control) and CII-CID-2 (a library control this scenario does not
+    use) are in place: only CII-CID-2 is reported as not counted against this risk. Mutation: drop the warning
+    and the person never learns CII-CID-2 was ignored."""
+    request = generated(_scenario(), supporting_systems_applicable_to_risk=[321], **_on(322))
+    request["existing_controls"] = ["CII-CID-1", "CII-CID-2"]
+    answer = _request(client, api_key, request)
+    assert answer.status_code == 202, answer.text
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    deliver(answer.json()["remediation_id"])
+    warnings = _result(client, api_key, answer.json()["remediation_id"]).json()["warnings"]
+    ignored = [warning for warning in warnings if "does not count it against this risk" in warning]
+    assert len(ignored) == 1 and "CII-CID-2" in ignored[0], warnings
+
+
 def test_a_request_made_at_the_same_moment_gets_409_with_the_winner(
     client: TestClient, api_key: str, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

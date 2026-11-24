@@ -18,6 +18,15 @@ API_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
     ),
     (Module.THREAT_SCENARIOS, AiApi.NEXT_SET): ("Next set", "Writes the next set of scenarios for the run"),
     (Module.THREAT_SCENARIOS, AiApi.REGENERATE): ("Regenerate scenarios", "Rewrites the chosen scenarios"),
+    (Module.THREAT_SCENARIOS, AiApi.MITRE_CREATE_SESSION): (
+        "Create MITRE session",
+        "Starts a run from MITRE data: selects actors, plans attack paths, writes the first set",
+    ),
+    (Module.THREAT_SCENARIOS, AiApi.MITRE_NEXT_SET): ("MITRE next set", "Writes the next set of a MITRE run"),
+    (Module.THREAT_SCENARIOS, AiApi.MITRE_REGENERATE): (
+        "MITRE regenerate",
+        "Writes chosen scenarios of a MITRE run again",
+    ),
     (Module.REMEDIATION, AiApi.CREATE_PLAN): ("Create remediation plan", "Writes a treatment plan for one scenario"),
     (Module.REMEDIATION, AiApi.REGENERATE): ("Regenerate plan", "Writes a new version of the plan"),
     (Module.SERVICE_MAPPER, AiApi.CREATE_MAPPING): (
@@ -67,6 +76,22 @@ ACTIVITY_INFO: Final[dict[tuple[str, str], tuple[str, str]]] = {
     ),
     (AiBucket.SCENARIO, AiTask.EMBED): ("Evidence search", "Searches threat intelligence for a scenario's evidence"),
     (AiBucket.SCENARIO, AiTask.RERANK): ("Evidence ranking", "Ranks the evidence found for a scenario"),
+    (AiBucket.SCENARIO, AiTask.MITRE_ACTOR_SELECTION): (
+        "MITRE group selection",
+        "AI picks the MITRE groups and campaigns whose documented targets fit the asset",
+    ),
+    (AiBucket.SCENARIO, AiTask.MITRE_PLAN): (
+        "MITRE attack planning",
+        "AI plans the attack paths over every MITRE Enterprise and ICS technique",
+    ),
+    (AiBucket.SCENARIO, AiTask.MITRE_DUPLICATE_CHECK): (
+        "MITRE duplicate check",
+        "AI drops planned paths with the same target and result as another",
+    ),
+    (AiBucket.SCENARIO, AiTask.MITRE_WRITE): (
+        "MITRE scenario writing",
+        "AI writes a set's scenarios from their MITRE techniques, procedures and groups",
+    ),
     (AiBucket.CONTROLS, AiTask.EMBED): ("Control search", "Turns the scenario into a vector to search the controls"),
     (AiBucket.CONTROLS, AiTask.RERANK): ("Control ranking", "Ranks candidate controls by how well they fit"),
     (AiBucket.CONTROLS, AiTask.LINK_CONTROLS): (

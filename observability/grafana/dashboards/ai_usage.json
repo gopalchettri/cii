@@ -184,7 +184,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) or vector(0)",
+          "expr": "sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"threat_scenarios/mitre_create_session\", \"route\", \"/v1/mitre_create_session\"),\n  \"call\", \"threat_scenarios/mitre_next_set\", \"route\", \"/v1/mitre_sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/mitre_regenerate\", \"route\", \"/v1/mitre_sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) or vector(0)",
           "legendFormat": "API calls that started AI work",
           "instant": true,
           "range": false,
@@ -504,7 +504,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)) / (sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0)",
+          "expr": "(sum((((tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} - tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"} offset $__range) and resets(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) == 0) or (round(increase(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range])) and last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)) or (max_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[$__range]) unless last_over_time(tsg_ai_usage_calls_total{module=~\"$module\", api=~\"$api\", api!=\"none\", outcome!=\"reused\"}[1h] offset $__range)))) or vector(0)) / (sum(label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"threat_scenarios/mitre_create_session\", \"route\", \"/v1/mitre_create_session\"),\n  \"call\", \"threat_scenarios/mitre_next_set\", \"route\", \"/v1/mitre_sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/mitre_regenerate\", \"route\", \"/v1/mitre_sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0)",
           "legendFormat": "AI calls per API call",
           "instant": true,
           "range": false,
@@ -700,7 +700,7 @@
       "id": 112,
       "type": "table",
       "title": "AI calls per API call and part",
-      "description": "One line per API call that starts AI work: how often it started work, then the AI calls its jobs made in each part, in total and failed. Create scenario: Starts a run: finds threats, writes the first set, picks controls. Create session: Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it. Next set: Writes the next set of scenarios for the run. Regenerate scenarios: Rewrites the chosen scenarios. Create remediation plan: Writes a treatment plan for one scenario. Regenerate plan: Writes a new version of the plan. Map services: Finds upstream and downstream services for a service. Regenerate mapping: Runs the mapping again to add new services. 'No API call' lines: shared work, and jobs started without one. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
+      "description": "One line per API call that starts AI work: how often it started work, then the AI calls its jobs made in each part, in total and failed. Create scenario: Starts a run: finds threats, writes the first set, picks controls. Create session: Starts a run: the AI writes the first set from MITRE ATT&CK, the stored ATT&CK data confirms it. Next set: Writes the next set of scenarios for the run. Regenerate scenarios: Rewrites the chosen scenarios. Create MITRE session: Starts a run from MITRE data: selects actors, plans attack paths, writes the first set. MITRE next set: Writes the next set of a MITRE run. MITRE regenerate: Writes chosen scenarios of a MITRE run again. Create remediation plan: Writes a treatment plan for one scenario. Regenerate plan: Writes a new version of the plan. Map services: Finds upstream and downstream services for a service. Regenerate mapping: Runs the mapping again to add new services. 'No API call' lines: shared work, and jobs started without one. Prometheus counts over the chosen time, from every pod's counters (a pod's first calls and a restarted pod's count too); the exact numbers, per request and per session, come from GET /v1/ai-usage (no key).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -712,7 +712,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (call) (label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0",
+          "expr": "sum by (call) (label_replace(\n  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(\n    (((tsg_http_requests_total{method=\"POST\", status=\"202\"} - tsg_http_requests_total{method=\"POST\", status=\"202\"} offset $__range) and resets(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) == 0) or (round(increase(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range])) and last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range)) or (max_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[$__range]) unless last_over_time(tsg_http_requests_total{method=\"POST\", status=\"202\"}[1h] offset $__range))),\n  \"call\", \"threat_scenarios/create_scenario\", \"route\", \"/v1/sessions\"),\n  \"call\", \"threat_scenarios/create_session\", \"route\", \"/v1/create_session\"),\n  \"call\", \"threat_scenarios/next_set\", \"route\", \"/v1/sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/regenerate\", \"route\", \"/v1/sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"threat_scenarios/mitre_create_session\", \"route\", \"/v1/mitre_create_session\"),\n  \"call\", \"threat_scenarios/mitre_next_set\", \"route\", \"/v1/mitre_sessions/[^/]+/scenarios/next-set\"),\n  \"call\", \"threat_scenarios/mitre_regenerate\", \"route\", \"/v1/mitre_sessions/[^/]+/regenerate/scenarios\"),\n  \"call\", \"remediation/create_plan\", \"route\", \"/v1/remediation\"),\n  \"call\", \"remediation/regenerate\", \"route\", \"/v1/sessions/[^/]+/scenarios/[^/]+/treatment-plan/regenerate\"),\n  \"call\", \"service_mapper/create_mapping\", \"route\", \"/v1/service-mapper\"),\n  \"call\", \"service_mapper/regenerate\", \"route\", \"/v1/service-mapper/[^/]+/regenerate\"),\n\"picked\", \"1\", \"call\", \"($module)/($api)\")\nand on (picked) label_replace(vector(1), \"picked\", \"1\", \"\", \"\")) > 0",
           "legendFormat": "__auto",
           "instant": true,
           "range": false,
@@ -910,49 +910,61 @@
                         "text": "Regenerate scenarios",
                         "index": 3
                       },
+                      "threat_scenarios/mitre_create_session": {
+                        "text": "Create MITRE session",
+                        "index": 4
+                      },
+                      "threat_scenarios/mitre_next_set": {
+                        "text": "MITRE next set",
+                        "index": 5
+                      },
+                      "threat_scenarios/mitre_regenerate": {
+                        "text": "MITRE regenerate",
+                        "index": 6
+                      },
                       "remediation/create_plan": {
                         "text": "Create remediation plan",
-                        "index": 4
+                        "index": 7
                       },
                       "remediation/regenerate": {
                         "text": "Regenerate plan",
-                        "index": 5
+                        "index": 8
                       },
                       "service_mapper/create_mapping": {
                         "text": "Map services",
-                        "index": 6
+                        "index": 9
                       },
                       "service_mapper/regenerate": {
                         "text": "Regenerate mapping",
-                        "index": 7
+                        "index": 10
                       },
                       "none/none": {
                         "text": "Shared work (no API call)",
-                        "index": 8
+                        "index": 11
                       },
                       "threat_scenarios/none": {
                         "text": "Threat scenarios: no API call recorded",
-                        "index": 9
+                        "index": 12
                       },
                       "remediation/none": {
                         "text": "Remediation: no API call recorded",
-                        "index": 10
+                        "index": 13
                       },
                       "service_mapper/none": {
                         "text": "Service mapper: no API call recorded",
-                        "index": 11
+                        "index": 14
                       },
                       "external_intelligence/none": {
                         "text": "External intelligence import (no API call)",
-                        "index": 12
+                        "index": 15
                       },
                       "library_embeddings/none": {
                         "text": "Library indexing job (no API call)",
-                        "index": 13
+                        "index": 16
                       },
                       "maintenance/none": {
                         "text": "Maintenance job (no API call)",
-                        "index": 14
+                        "index": 17
                       }
                     }
                   }
@@ -1099,49 +1111,61 @@
                         "text": "Regenerate scenarios",
                         "index": 3
                       },
+                      "threat_scenarios/mitre_create_session": {
+                        "text": "Create MITRE session",
+                        "index": 4
+                      },
+                      "threat_scenarios/mitre_next_set": {
+                        "text": "MITRE next set",
+                        "index": 5
+                      },
+                      "threat_scenarios/mitre_regenerate": {
+                        "text": "MITRE regenerate",
+                        "index": 6
+                      },
                       "remediation/create_plan": {
                         "text": "Create remediation plan",
-                        "index": 4
+                        "index": 7
                       },
                       "remediation/regenerate": {
                         "text": "Regenerate plan",
-                        "index": 5
+                        "index": 8
                       },
                       "service_mapper/create_mapping": {
                         "text": "Map services",
-                        "index": 6
+                        "index": 9
                       },
                       "service_mapper/regenerate": {
                         "text": "Regenerate mapping",
-                        "index": 7
+                        "index": 10
                       },
                       "none/none": {
                         "text": "Shared work (no API call)",
-                        "index": 8
+                        "index": 11
                       },
                       "threat_scenarios/none": {
                         "text": "Threat scenarios: no API call recorded",
-                        "index": 9
+                        "index": 12
                       },
                       "remediation/none": {
                         "text": "Remediation: no API call recorded",
-                        "index": 10
+                        "index": 13
                       },
                       "service_mapper/none": {
                         "text": "Service mapper: no API call recorded",
-                        "index": 11
+                        "index": 14
                       },
                       "external_intelligence/none": {
                         "text": "External intelligence import (no API call)",
-                        "index": 12
+                        "index": 15
                       },
                       "library_embeddings/none": {
                         "text": "Library indexing job (no API call)",
-                        "index": 13
+                        "index": 16
                       },
                       "maintenance/none": {
                         "text": "Maintenance job (no API call)",
-                        "index": 14
+                        "index": 17
                       }
                     }
                   }
@@ -1484,41 +1508,57 @@
                         "text": "Evidence ranking",
                         "index": 9
                       },
+                      "scenario/mitre_actor_selection": {
+                        "text": "MITRE group selection",
+                        "index": 10
+                      },
+                      "scenario/mitre_plan": {
+                        "text": "MITRE attack planning",
+                        "index": 11
+                      },
+                      "scenario/mitre_duplicate_check": {
+                        "text": "MITRE duplicate check",
+                        "index": 12
+                      },
+                      "scenario/mitre_write": {
+                        "text": "MITRE scenario writing",
+                        "index": 13
+                      },
                       "controls/embed": {
                         "text": "Control search",
-                        "index": 10
+                        "index": 14
                       },
                       "controls/rerank": {
                         "text": "Control ranking",
-                        "index": 11
+                        "index": 15
                       },
                       "controls/link_controls": {
                         "text": "Link mitigation to controls",
-                        "index": 12
+                        "index": 16
                       },
                       "controls/pick_controls": {
                         "text": "Pick controls",
-                        "index": 13
+                        "index": 17
                       },
                       "remediation/remediation_plan": {
                         "text": "Write remediation plan",
-                        "index": 14
+                        "index": 18
                       },
                       "service_mapper/service_mapper": {
                         "text": "Map services",
-                        "index": 15
+                        "index": 19
                       },
                       "service_mapper/embed": {
                         "text": "Service search",
-                        "index": 16
+                        "index": 20
                       },
                       "shared/embed": {
                         "text": "Library indexing",
-                        "index": 17
+                        "index": 21
                       },
                       "shared/rerank": {
                         "text": "Shared ranking",
-                        "index": 18
+                        "index": 22
                       }
                     }
                   }
@@ -1582,41 +1622,57 @@
                         "text": "Ranks the evidence found for a scenario",
                         "index": 9
                       },
+                      "scenario/mitre_actor_selection": {
+                        "text": "AI picks the MITRE groups and campaigns whose documented targets fit the asset",
+                        "index": 10
+                      },
+                      "scenario/mitre_plan": {
+                        "text": "AI plans the attack paths over every MITRE Enterprise and ICS technique",
+                        "index": 11
+                      },
+                      "scenario/mitre_duplicate_check": {
+                        "text": "AI drops planned paths with the same target and result as another",
+                        "index": 12
+                      },
+                      "scenario/mitre_write": {
+                        "text": "AI writes a set's scenarios from their MITRE techniques, procedures and groups",
+                        "index": 13
+                      },
                       "controls/embed": {
                         "text": "Turns the scenario into a vector to search the controls",
-                        "index": 10
+                        "index": 14
                       },
                       "controls/rerank": {
                         "text": "Ranks candidate controls by how well they fit",
-                        "index": 11
+                        "index": 15
                       },
                       "controls/link_controls": {
                         "text": "AI says which library controls do what one MITRE ATT&CK mitigation describes (once per data load)",
-                        "index": 12
+                        "index": 16
                       },
                       "controls/pick_controls": {
                         "text": "AI picks, in one call, the controls that reduce each sentence of a set's scenarios",
-                        "index": 13
+                        "index": 17
                       },
                       "remediation/remediation_plan": {
                         "text": "AI writes the treatment plan for the scenario's controls",
-                        "index": 14
+                        "index": 18
                       },
                       "service_mapper/service_mapper": {
                         "text": "AI lists upstream and downstream services for a service",
-                        "index": 15
+                        "index": 19
                       },
                       "service_mapper/embed": {
                         "text": "Searches the service catalog for candidates",
-                        "index": 16
+                        "index": 20
                       },
                       "shared/embed": {
                         "text": "Embeds new or changed library and evidence rows",
-                        "index": 17
+                        "index": 21
                       },
                       "shared/rerank": {
                         "text": "A ranking no single request asked for",
-                        "index": 18
+                        "index": 22
                       }
                     }
                   }
@@ -1968,49 +2024,61 @@
                         "text": "Regenerate scenarios",
                         "index": 3
                       },
+                      "threat_scenarios/mitre_create_session": {
+                        "text": "Create MITRE session",
+                        "index": 4
+                      },
+                      "threat_scenarios/mitre_next_set": {
+                        "text": "MITRE next set",
+                        "index": 5
+                      },
+                      "threat_scenarios/mitre_regenerate": {
+                        "text": "MITRE regenerate",
+                        "index": 6
+                      },
                       "remediation/create_plan": {
                         "text": "Create remediation plan",
-                        "index": 4
+                        "index": 7
                       },
                       "remediation/regenerate": {
                         "text": "Regenerate plan",
-                        "index": 5
+                        "index": 8
                       },
                       "service_mapper/create_mapping": {
                         "text": "Map services",
-                        "index": 6
+                        "index": 9
                       },
                       "service_mapper/regenerate": {
                         "text": "Regenerate mapping",
-                        "index": 7
+                        "index": 10
                       },
                       "none/none": {
                         "text": "Shared work (no API call)",
-                        "index": 8
+                        "index": 11
                       },
                       "threat_scenarios/none": {
                         "text": "Threat scenarios: no API call recorded",
-                        "index": 9
+                        "index": 12
                       },
                       "remediation/none": {
                         "text": "Remediation: no API call recorded",
-                        "index": 10
+                        "index": 13
                       },
                       "service_mapper/none": {
                         "text": "Service mapper: no API call recorded",
-                        "index": 11
+                        "index": 14
                       },
                       "external_intelligence/none": {
                         "text": "External intelligence import (no API call)",
-                        "index": 12
+                        "index": 15
                       },
                       "library_embeddings/none": {
                         "text": "Library indexing job (no API call)",
-                        "index": 13
+                        "index": 16
                       },
                       "maintenance/none": {
                         "text": "Maintenance job (no API call)",
-                        "index": 14
+                        "index": 17
                       }
                     }
                   }

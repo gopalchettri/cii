@@ -77,16 +77,14 @@ def update_intelligence_switch_state(enabled: bool, changed_by: str) -> dict[str
     try:
         refresh = {"refresh_job_id": create_intelligence_refresh(changed_by)["job_id"]}
     except Conflict:
-        refresh = {"refresh_job_id": None}  # one is already queued or running, or the switch is off
+        refresh = {"refresh_job_id": None}  # one is already queued or running
     except Unavailable:
         refresh = {"refresh_job_id": None, "refresh_not_queued": IntelRefreshMessage.NOT_SENT.value}
     return after.as_doc() | refresh
 
 
 def create_intelligence_refresh(requested_by: str, source: IntelSource | None = None) -> dict[str, Any]:
-    """Queue a refresh and return its id."""
-    if not get_intelligence_switch().is_on():
-        raise Conflict(IntelRefreshMessage.SWITCH_OFF)
+    """Queue a refresh and return its id (with the switch off too: the MITRE run reads the import, ADR-010)."""
     job_id = uuid.uuid4().hex
     job: dict[str, Any] = {
         "_id": job_id,
@@ -120,9 +118,8 @@ def get_intelligence_refresh(job_id: str) -> dict[str, Any]:
 
 
 def create_control_links_job(requested_by: str) -> dict[str, Any]:
-    """Queue a control-links preparation and return its id; 409 while the switch is off (it spends AI calls)."""
-    if not get_intelligence_switch().is_on():
-        raise Conflict(ControlLinkMessage.SWITCH_OFF)
+    """Queue a control-links preparation and return its id (with the switch off too: the MITRE run's controls
+    start from these links, ADR-010)."""
     job_id = uuid.uuid4().hex
     kind = {"kind": CONTROL_LINKS_JOB_KIND}
     queue_admin_job(
@@ -155,25 +152,20 @@ def get_control_links_summary() -> dict[str, Any]:
 
 
 def get_intelligence_health() -> dict[str, Any]:
-    """The health report with the evidence settings."""
+    """The health report with the evidence settings. The sources are shown with the switch off too: the MITRE
+    import runs whatever the switch says (ADR-010); only the evidence part stays unread while off."""
     settings = get_settings()
     evidence = evidence_settings(settings.rerank_model, settings.evidence_similarity_threshold)
-    if not settings.external_intelligence_enabled:
-        state = SwitchState(env_enabled=False).as_doc()  # no store is read while off
-        return {
-            "switch": state,
-            "snapshot_id": None,
-            "sources": [],
-            "pending_sources": [],
-            "no_data": False,
-            "evidence": evidence,
-        }
     sources = source_health_in_registry_order(get_intel_feed_repository().list(sources=True))
     pending = [health.source for health in sources if health.is_pending]  # first data awaited
-    active = get_intel_snapshot_repository().get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
-    snapshot_id = active.get("snapshot_id") if active else get_evidence_index_keeper().peek_index().snapshot_id
+    if settings.external_intelligence_enabled:
+        switch = get_intelligence_switch().state().as_doc()
+        active = get_intel_snapshot_repository().get("description", _id=IntelDocId.ACTIVE_SNAPSHOT)
+        snapshot_id = active.get("snapshot_id") if active else get_evidence_index_keeper().peek_index().snapshot_id
+    else:
+        switch, snapshot_id = SwitchState(env_enabled=False).as_doc(), None
     return {
-        "switch": get_intelligence_switch().state().as_doc(),
+        "switch": switch,
         "snapshot_id": snapshot_id,
         "pending_sources": pending,
         "no_data": len(pending) == len(sources),

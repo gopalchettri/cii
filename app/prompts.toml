@@ -1,5 +1,5 @@
 # Every AI prompt the app sends, one table per prompt: raise version when any prompt below changes.
-version = 2
+version = 1
 
 [scenario.gate]
 text = '''

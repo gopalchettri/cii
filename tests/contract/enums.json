@@ -13,7 +13,9 @@
  "ActionStatus": {
   "GENERATING": "generating",
   "MAPPING_CONTROLS": "mapping_controls",
-  "REGENERATING": "regenerating"
+  "NOTHING_LEFT": "nothing_left",
+  "REGENERATING": "regenerating",
+  "TARGET_REACHED": "target_reached"
  },
  "ActorRole": {
   "ACTING": "acting"
@@ -27,6 +29,9 @@
   "CREATE_PLAN": "create_plan",
   "CREATE_SCENARIO": "create_scenario",
   "CREATE_SESSION": "create_session",
+  "MITRE_CREATE_SESSION": "mitre_create_session",
+  "MITRE_NEXT_SET": "mitre_next_set",
+  "MITRE_REGENERATE": "mitre_regenerate",
   "NEXT_SET": "next_set",
   "REGENERATE": "regenerate"
  },
@@ -59,6 +64,10 @@
   "EMBED": "embed",
   "GAP_FILL": "gap_fill",
   "LINK_CONTROLS": "link_controls",
+  "MITRE_ACTOR_SELECTION": "mitre_actor_selection",
+  "MITRE_DUPLICATE_CHECK": "mitre_duplicate_check",
+  "MITRE_PLAN": "mitre_plan",
+  "MITRE_WRITE": "mitre_write",
   "PICK_CONTROLS": "pick_controls",
   "PLAN_CHECK": "plan_check",
   "RELEVANCE_GATE": "relevance_gate",
@@ -117,6 +126,7 @@
   "INTELLIGENCE": "4. Set-up: external intelligence",
   "JOBS": "8. My jobs",
   "LIVE_UPDATES": "9. Live updates",
+  "MITRE": "5b. MITRE threat scenarios",
   "REMEDIATION": "7. Remediation plans",
   "REVIEW": "6. Threat scenarios: review",
   "RUNS": "5. Threat scenarios: runs",
@@ -211,6 +221,8 @@
   "EXTERNAL_FEED_STATUS": "tsg_external_feed_status",
   "EXTERNAL_INTELLIGENCE_SNAPSHOTS": "tsg_external_intelligence_snapshots",
   "INTEL": "tsg_intel",
+  "MITRE_ENTERPRISE_STIX": "tsg_mitre_enterprise_stix",
+  "MITRE_ICS_STIX": "tsg_mitre_ics_stix",
   "QUERY_VECTORS": "tsg_query_vectors",
   "REMEDIATIONS": "tsg_remediations",
   "SCENARIOS": "tsg_scenarios",
@@ -278,9 +290,13 @@
  "ControlPickDrop": {
   "BAD_EFFECT": "its effect is not prevent, detect, contain or recover",
   "NOT_LISTED": "names no control of this scenario's list",
+  "NOT_THIS_TECHNIQUE": "names no control linked to this technique's MITRE mitigations",
   "NO_SENTENCE": "names no sentence of this scenario",
+  "NO_TECHNIQUE": "names no technique of this scenario that has controls to choose from",
   "TOO_MANY": "more than {most} controls on one sentence",
+  "TOO_MANY_FOR_TECHNIQUE": "more than {most} controls on one technique",
   "TWICE": "the control is already picked for another sentence of this scenario",
+  "TWICE_FOR_TECHNIQUE": "the control is already picked for this technique",
   "WRONG_TYPE": "the control's IT/OT type does not fit the scenario's systems"
  },
  "ControlType": {
@@ -444,7 +460,6 @@
  "IntelWorkEvent": {
   "FOLLOW_FAILED": "external_intelligence.follow_failed",
   "REFRESH_JOB_FAILED": "external_intelligence.refresh_job_failed",
-  "REFRESH_SKIPPED": "external_intelligence.refresh_skipped",
   "WARM_UP_FAILED": "external_intelligence.warm_up_failed",
   "WARM_UP_SKIPPED": "external_intelligence.warm_up_skipped"
  },
@@ -490,6 +505,44 @@
   "DONE": "done",
   "FAILED": "failed",
   "GENERATING": "generating"
+ },
+ "MitreProblem": {
+  "ANSWER_LAYOUT": "the reply must be {{\"{key}\": [...]}}",
+  "CROSSING_JUDGED_BY_PLANNER": "judged relevant by the planner",
+  "CROSSING_MIXED_TYPES": "the asset and its supporting systems mix IT and OT",
+  "CROSSING_TECHNIQUES_DROPPED": "The plan crosses between IT and OT: keep both its Enterprise and ICS techniques",
+  "DROPPED_ITEM_IN_TEXT": "the scenario text names {name}, which is not a planned technique or a verified group: leave it out",
+  "DUPLICATE_OF_UNKNOWN": "{id}: duplicate_of {duplicate_of} must be a planned id or a new id listed before it",
+  "DUPLICATE_PATH": "duplicate of a higher-ranked path",
+  "GROUP_NOT_A_CANDIDATE": "relevant group {name} ({mitre_id}) must be one of the supplied candidate_actors",
+  "GROUP_NOT_DOCUMENTED": "MITRE does not document {name} for any technique of this scenario",
+  "INVENTED_ID": "Invented MITRE ID {mitre_id}",
+  "INVENTED_ID_IN_REASON": "invented MITRE ID in the reason",
+  "NOT_AN_OBJECT": "not an object",
+  "NO_DOCUMENTED_GROUP": "no MITRE group documented for these techniques",
+  "NO_ICS_TECHNIQUE": "no ICS technique although the path attacks OT",
+  "NO_REASON": "no reason",
+  "NO_SCENARIO_FOR_PATH": "no scenario was returned for this path (slot)",
+  "NO_STRIDE_CATEGORY": "no STRIDE category",
+  "QUOTE_NOT_IN_DESCRIPTION": "quote not in the actor's MITRE description",
+  "QUOTE_TOO_SHORT": "quote shorter than {words} words",
+  "RELEVANCE_OUT_OF_RANGE": "relevance not {least}-{most}",
+  "SAME_SCENARIO": "the same target and result as a higher-ranked path",
+  "SCHEMA_FAILED": "Schema validation failed: {location}: {error_type}",
+  "SYSTEM_NOT_THE_ASSETS": "supporting system {name} is not one of the asset supporting systems",
+  "TECHNIQUE_NOT_PLANNED": "attack technique {mitre_id} is not one of the planned techniques (stix_id and mitre_id must match)",
+  "THREAT_TYPE_NOT_LISTED": "threat_type must be one of threat_types, copied exactly",
+  "TOO_FEW_TECHNIQUES": "fewer than {count} techniques",
+  "TOO_MANY_TECHNIQUES": "more than {count} techniques",
+  "UNKNOWN_ACTOR": "unknown actor id",
+  "WORD_LIMIT": "{field} exceeds the word limit: {words} words, the maximum is {maximum}; shorten it"
+ },
+ "MitreStage": {
+  "COMPLETE": "complete",
+  "PLANNING": "planning",
+  "QUEUED": "queued",
+  "SELECTING_ACTORS": "selecting_actors",
+  "WRITING": "writing"
  },
  "Module": {
   "EXTERNAL_INTELLIGENCE": "external_intelligence",
@@ -550,6 +603,7 @@
   "DEPENDENCY_NOT_EARLIER": "{action}.depends_on {reference!r} is not an earlier action \u2014 ignored",
   "DURATION_CAPPED": "{action}.duration_days {days} exceeds {limit} \u2014 capped",
   "DURATION_REPAIRED": "{action}.duration_days {value} is not a whole number of days of at least 1 \u2014 scheduled as 1 day",
+  "EXISTING_CONTROL_NOT_FOR_THIS_RISK": "existing control {reference!r} is not one of this scenario's library controls or their alternatives \u2014 the plan does not count it against this risk",
   "GAP_NOT_ADDRESSED": "scenario control {code} is {status} but the plan does not recommend it \u2014 this gap stays open",
   "IMPLEMENTS_UNKNOWN": "{action}.implements_controls names {code!r}, which is not a recommended control of this plan \u2014 removed",
   "NO_WINDOW": "no mitigation window supplied \u2014 the {total}-day schedule is not bounded by a register deadline",
@@ -631,7 +685,8 @@
   "PENDING": "pending"
  },
  "RunPipeline": {
-  "ATTACK": "attack"
+  "ATTACK": "attack",
+  "MITRE": "mitre"
  },
  "ScenarioOutcome": {
   "ABANDONED": "abandoned",
@@ -735,11 +790,13 @@
   "REFRESH_EXTERNAL_INTELLIGENCE": "tsg_refresh_external_intelligence",
   "RETRY_CONTROLS": "tsg_retry_controls",
   "ROLL_UP_AI_USAGE": "tsg_roll_up_ai_usage",
+  "WRITE_MITRE_SCENARIOS": "tsg_write_mitre_scenarios",
   "WRITE_PLAN": "tsg_write_plan",
   "WRITE_SCENARIOS": "tsg_write_scenarios"
  },
  "TechniqueControlState": {
   "MATCHED": "matched",
+  "NEAREST": "nearest",
   "NOT_OFFERED": "not_offered",
   "NOT_PICKED": "not_picked",
   "NOT_PREPARED": "not_prepared",

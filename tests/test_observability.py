@@ -278,7 +278,7 @@ def test_laptop_grafana_takes_its_settings_from_env_but_never_the_fixed_ones(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Owner, 2026-10-09: every GF_ line of .env goes to Grafana; the address, port, /grafana path, paths,
-    admin password and home dashboard stay the scripts' own (run.ps1's links and the dashboards need them)."""
+    admin password and home dashboard stay the scripts' own (run_dev.ps1's links and the dashboards need them)."""
     _monitoring_script()
     commands = sys.modules["monitoring_commands"]
     lines = "GF_USERS_DEFAULT_THEME=light\nGF_SERVER_HTTP_PORT=9999\nGF_PATHS_DATA=C:/x\nCII_LOG_LEVEL=INFO\n"
@@ -604,7 +604,7 @@ def test_a_setting_missing_for_a_later_program_starts_nothing(monkeypatch: pytes
 
 @pytest.mark.skipif(sys.platform != "win32", reason="reads Windows process start times")
 def test_a_process_start_time_tells_a_reused_id_apart() -> None:
-    """monitoring.py and run.ps1 stop a process only when its id AND start time match what they started: a
+    """monitoring.py and run_dev.ps1 stop a process only when its id AND start time match what they started: a
     process started later (Windows reuses ids) reads a later time, and a live process reads one at all."""
     script = _monitoring_script()
     own = script._created_at(os.getpid())
@@ -617,7 +617,7 @@ def test_a_process_start_time_tells_a_reused_id_apart() -> None:
     assert own and started_later and started_later > own
 
 
-POWERSHELL_SCRIPTS = ["run.ps1", "stop.ps1"]
+POWERSHELL_SCRIPTS = ["run_dev.ps1", "run_uat.ps1", "stop.ps1"]
 NO_POWERSHELL = pytest.mark.skipif(
     shutil.which("powershell") is None, reason="Windows PowerShell is not installed here"
 )
@@ -626,7 +626,7 @@ NO_POWERSHELL = pytest.mark.skipif(
 @NO_POWERSHELL
 @pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
 def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
-    """run.ps1 / stop.ps1 start and stop the laptop stack: a broken edit must fail here, not at the next
+    """run_dev.ps1 / stop.ps1 start and stop the laptop stack: a broken edit must fail here, not at the next
     start. ASCII only: Windows PowerShell 5.1 reads a file without a byte-order mark as the ANSI code page."""
     script = REPO / name
     assert script.read_bytes().isascii()
@@ -641,7 +641,7 @@ def test_the_laptop_scripts_parse_and_are_plain_ascii(name: str) -> None:
 
 @pytest.mark.parametrize("name", POWERSHELL_SCRIPTS)
 def test_the_laptop_scripts_import_what_exists(name: str) -> None:
-    """Every `from app... import ...` run.ps1 / stop.ps1 pass to Python resolves: a moved module fails here."""
+    """Every `from app... import ...` run_dev.ps1 / stop.ps1 pass to Python resolves: a moved module fails here."""
     for module, attr in re.findall(r"from (app[\w.]*) import (\w+)", (REPO / name).read_text(encoding="ascii")):
         assert hasattr(importlib.import_module(module), attr), f"{name}: from {module} import {attr}"
 
@@ -716,7 +716,7 @@ def test_the_variable_rules_find_both_mistakes(tmp_path: Path) -> None:
 def test_start_fails_when_a_window_s_program_has_ended() -> None:
     """Before: start judged success by /ready and monitoring only. /ready does not cover beat, which sends the
     reaper (the only repair of lost jobs), so a beat that died at start-up still gave exit code 0."""
-    script = (REPO / "run.ps1").read_text(encoding="ascii")
+    script = (REPO / "run_dev.ps1").read_text(encoding="ascii")
     start = script[script.index("function Invoke-Start") : script.index("function Invoke-Stop")]
     assert "Get-Program" in start and "if ($ended -or" in start
 
@@ -739,14 +739,14 @@ def _run_powershell_function(script: Path, function: str, call: str) -> list[str
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
 def test_run_ps1_reads_env_values_as_the_app_does(tmp_path: Path) -> None:
-    """Before: run.ps1 cut an unquoted value at any '#', so a Redis password holding '#' broke its broker
+    """Before: run_dev.ps1 cut an unquoted value at any '#', so a Redis password holding '#' broke its broker
     check and stop killed the worker without letting it finish its jobs."""
     env = tmp_path / ".env"
     env.write_text("A=p#ss\nB=\"q # x\"\nC=plain # a comment\nD='single'\nE=\nA=last#wins\n", encoding="utf-8")
     keys = "ABCDE"
     expected = [dotenv_values(env)[key] or "" for key in keys]
     calls = "; ".join(f"Get-EnvValue '{key}'" for key in keys)
-    assert _run_powershell_function(REPO / "run.ps1", "Get-EnvValue", f"$EnvFile = '{env}'; {calls}") == expected
+    assert _run_powershell_function(REPO / "run_dev.ps1", "Get-EnvValue", f"$EnvFile = '{env}'; {calls}") == expected
 
 
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is not installed here")
@@ -766,13 +766,13 @@ def test_the_script_runs_on_env_not_on_a_copy_left_in_the_shell(tmp_path: Path) 
         'Restore-Settings $saved; "back:$env:A,$env:B,$env:E,$env:F,$env:G,$env:GF_X"'
     )
     functions = "Get-ShadowedSettings,Get-EnvValue,Hide-ShadowedSettings,Restore-Settings"
-    assert _run_powershell_function(REPO / "run.ps1", functions, call) == [
+    assert _run_powershell_function(REPO / "run_dev.ps1", functions, call) == [
         "stale:A,B,E,GF_X",  # G is the same copy as .env's: not worth a warning
         "hidden:A,B,E,G,GF_X",  # F is no key of .env's: the shell's own
         "child:[%A%,%G%,f]",  # a program started meanwhile does not inherit the copies
         "back:stale,b,e,f,same,g",
     ]
-    script = (REPO / "run.ps1").read_text(encoding="ascii")
+    script = (REPO / "run_dev.ps1").read_text(encoding="ascii")
     main = script[script.index("$exitCode = 0") :]
     assert main.index("$stale = @(Hide-ShadowedSettings $shadowed)") < main.index("switch ($Action)")
     assert main.index("Restore-Settings $shadowed") > main.index("} finally {")
@@ -795,16 +795,16 @@ def test_a_window_started_as_administrator_is_never_forgotten() -> None:
         "try { $r = Get-Owned ([pscustomobject]@{ pid = 1; started = 'x'; elevated = $case[1] }); "
         "\"returned:$r\" } catch { 'refused' } }"
     )
-    assert _run_powershell_function(REPO / "run.ps1", "Get-Owned", fake) == ["returned:", "refused", "returned:"]
+    assert _run_powershell_function(REPO / "run_dev.ps1", "Get-Owned", fake) == ["returned:", "refused", "returned:"]
 
 
 def test_each_laptop_worker_serves_metrics_on_a_port_prometheus_scrapes() -> None:
     """G198: the job worker's port (.env.example's CII_WORKER_METRICS_PORT) and the maintenance worker's (set
-    by run.ps1) are exactly the laptop Prometheus' worker targets: a worker on another port is never scraped.
-    The remediation worker, started only with a remote reranker, is read from the file run.ps1 writes.
+    by run_dev.ps1) are exactly the laptop Prometheus' worker targets: a worker on another port is never scraped.
+    The remediation worker, started only with a remote reranker, is read from the file run_dev.ps1 writes.
     """
     default = dotenv_values(REPO / ".env.example")["CII_WORKER_METRICS_PORT"]
-    script = (REPO / "run.ps1").read_text(encoding="ascii")
+    script = (REPO / "run_dev.ps1").read_text(encoding="ascii")
     started = dict(re.findall(r"(\w+) = @\{ CII_WORKER_METRICS_PORT = '(\d+)' \}", script))
     assert started.pop("remediation") == "9105"  # tests/test_run_ps1_workers.py: in the file when it runs
     local = yaml.safe_load((REPO / "observability" / "prometheus" / "prometheus.local.yml").read_text(encoding="utf-8"))

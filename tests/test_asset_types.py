@@ -5,9 +5,10 @@ OT threat never on an IT system); an empty value, or one that is not a type, fit
 import dataclasses
 from typing import Any
 
-from app.core.asset_types import asset_type_fits, asset_type_label, canonical_asset_type
+from app.core.asset_types import asset_type_fits, asset_type_label, canonical_asset_type, place_asset_label
 from app.core.constants import AiTask, AssetType, AttackerCheck, CandidateRejection, PlanLoss, PlanStage, StrideCategory
 from app.domain.scenario.plan import build_plan
+from app.domain.scenario.session import scenario_asset_type
 from app.schemas.library import LibraryThreat
 from tests.fakes import FakeRerankModel, items_in
 from tests.planner_samples import (
@@ -247,3 +248,26 @@ def test_a_dropped_kinds_attacker_never_speaks_for_the_kinds_that_stay() -> None
     assert findings.threats == []
     attacker = [(d.threat_name, d.reason) for d in findings.drops if d.stage == PlanStage.ATTACKER]
     assert attacker == [(RANSOMWARE.name, AttackerCheck.NONE_FITS)]
+
+
+def test_a_place_is_ot_when_ot_fits_it_else_it_and_none_without_a_code() -> None:
+    r"""The AssetType a promoted threat is saved with (owner 2026-11-24): an OT or IT\OT system makes the place OT."""
+    assert place_asset_label("IT", ["IT"]) == "IT"
+    assert place_asset_label("IT", ["OT"]) == "OT"
+    assert place_asset_label("IT", [r"IT\OT"]) == "OT"
+    assert place_asset_label("IT", ["IT", "OT"]) == "OT"
+    assert place_asset_label("OT", []) == "OT"  # no system named: the asset itself
+    assert place_asset_label("IT", [None]) == "IT"  # an unrecorded system takes the asset's
+    assert place_asset_label(None, []) is None and place_asset_label("XX", []) is None
+
+
+def test_a_scenarios_asset_type_is_where_it_attacks() -> None:
+    """A library-pipeline scenario takes its systems' place; a MITRE one is OT only with an ICS technique (a path
+    that attacks OT carries one). Mutation: read the asset alone and the OT system's scenario is IT."""
+    assert scenario_asset_type({"systems": [{"id": 321}]}, MIXED) == "OT"
+    assert scenario_asset_type({"systems": [{"id": 322}]}, MIXED) == "IT"
+    assert scenario_asset_type({"systems": []}, MIXED) == "IT"  # the IT asset itself
+    ics = {"mitre": {"attack_techniques": [{"mitre_id": "T1078", "domain": "enterprise"}, {"domain": "ics"}]}}
+    enterprise = {"mitre": {"attack_techniques": [{"mitre_id": "T1078", "domain": "enterprise"}]}}
+    assert scenario_asset_type(ics | {"systems": [{"id": 322}]}, MIXED) == "OT"
+    assert scenario_asset_type(enterprise | {"systems": [{"id": 321}]}, MIXED) == "IT"

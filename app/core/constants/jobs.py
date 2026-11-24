@@ -28,12 +28,14 @@ class TaskName(StrEnum):
     REFRESH_EXTERNAL_INTELLIGENCE = "tsg_refresh_external_intelligence"  # every source, then a snapshot
     LINK_MITIGATIONS = "tsg_link_mitigations"  # each ATT&CK mitigation linked to library controls
     ROLL_UP_AI_USAGE = "tsg_roll_up_ai_usage"  # AI usage rows added up per hour, for dashboards
+    WRITE_MITRE_SCENARIOS = "tsg_write_mitre_scenarios"  # a MITRE run's set: actors and plan first, then writes
 
 
 TASK_ROUTES: Final[dict[str, dict[str, str]]] = {  # each task's queue (the Celery app's task_routes)
     TaskName.MAP_SERVICES: {"queue": Queue.SERVICEMAPPER},
     TaskName.FIND_THREATS: {"queue": Queue.THREATS},
     TaskName.WRITE_SCENARIOS: {"queue": Queue.SCENARIOS},
+    TaskName.WRITE_MITRE_SCENARIOS: {"queue": Queue.SCENARIOS},
     TaskName.MAP_CONTROLS: {"queue": Queue.CONTROLS},
     TaskName.WRITE_PLAN: {"queue": Queue.REMEDIATION},
     TaskName.REAP: {"queue": Queue.REAPER},

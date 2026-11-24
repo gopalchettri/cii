@@ -383,7 +383,8 @@ Headers: identity headers.
 | `scenario.assumptions` | string[] | each "assumes ... - not recorded in the platform"; [] when none |
 | `scenario.route_status` | string or null | `STANDALONE` or `ASSUMED` |
 | `scenario.also_applies` | string[] | other threats of the same kind on the same system |
-| `threat.threat_id` | string or null | `lib:<id>` or `ai:<name>` |
+| `scenario.threat_scenario_description` | string or null | a MITRE card's threat line, as its MITRE status shows it; null on other cards |
+| `threat.threat_id` | string or null | `lib:<id>` for a library threat; null when the AI wrote the threat (`is_threat_ai_generated` true) |
 | `threat.threat_category` / `.threat_category_id` | | |
 | `threat.threat_type` / `.threat_type_id` / `.threat_name` | | |
 | `threat.library_threat_type` / `.library_threat_name` | string or null | null if not in library |
@@ -393,7 +394,7 @@ Headers: identity headers.
 | `threat.is_threat_ai_generated` | bool or null | |
 | `threat.grounding_score` / `.score` | number or null | 0-100 |
 | `threat.scope_rank` | int or null | 1 = most relevant: the highest risk (impact x likelihood), then impact and confidence |
-| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` (`selection` is `chosen` on new runs: only an attacker from the threat's own list acts) |
+| `actors[]` | object[] | `actor_id`, `actor_name`, `role`, `closest_match`, `selection`, `selection_reason` (`selection` is `chosen` on new runs: only an attacker from the threat's own list acts). On a MITRE run's card: every MITRE group, the lead first, each `acting`, with `mitre_id`, `url` (its attack.mitre.org page), `relevance` (in MITRE's own words) and `documented_techniques[]` (`mitre_id`, `name`, `domain`, `url`, `via_software`); null or empty on other runs' actors |
 | `controls[]` | object[] | `control_id`, `control_code`, `itot`, `domain`, `control_name`, `control_description`, `map_rank`, `score`, `mapping_relevance`, `match_type` (`EXACT`/`NEAREST`/`GIVEN`), `match_reason`, `tier` |
 | `accepted` | bool | |
 | `replaces_accepted_version` | string or null | another accepted version of this path; accepting this one needs `replace_accepted` |
@@ -425,6 +426,9 @@ Headers: identity headers.
 | `evidence_mode` | string or null | |
 | `evidence[]` | object[] | `n`, `ref`, `kind`, `source`, `title`, `url`, `facts`, `applicability`, `published`, `modified`, `fetched_at`, `searched_at`, `role`, `supports`, `mitigations`. `applicability` and `published` are always `null` now (the fields stay for the response shape); on a `POST /v1/create_session` scenario `modified` and `fetched_at` are `null` too |
 | `evidence_search` | object or null | |
+| `attack_techniques` | object[] | a MITRE run's techniques: `mitre_id`, `name`, `domain` (`enterprise` or `ics`), `url`; `[]` on other runs |
+| `procedures` | object[] | a MITRE run's procedure examples, in MITRE's words: `technique`, `actor`, `actor_mitre_id`, `actor_type`, `via_software`, `text`; `[]` on other runs |
+| `mitigations` | object[] | a MITRE run's mitigations per technique: `technique`, `technique_name`, `mitigations` (`mitre_id`, `name`, `text`: MITRE's own words on how it defends that technique), `inherited_from` (the parent technique, e.g. `T1070`, whose mitigations a sub-technique MITRE lists none for carries; else `null`); `[]` on other runs |
 
 There is no AI reviewer: `validation_errors` never holds "The plan check could not be made …", and
 `validation_notes` holds no reviewer notes.
@@ -481,6 +485,15 @@ There is no AI reviewer: `validation_errors` never holds "The plan check could n
 | --- | --- | --- |
 | 404 / 403 | — | as 3.2 |
 | 422 | — | `offset` / `limit` out of range |
+
+### 3.4b `GET /v1/mitre_sessions/{session_id}/results`
+
+The same page, parameters and fields as 3.4 (a MITRE card's `actors` are its MITRE groups and `attack_techniques` its
+techniques, each with its attack.mitre.org `url`; `procedures` and `mitigations` are MITRE's procedure examples and
+mitigations for those techniques, the same as the run's status shows; its threat is AI-written, so `threat.threat_id` is null, as for every AI threat in 3.4).
+A MITRE card's `controls[]` are chosen **per technique**, never per sentence: for each technique, the AI chooses (at most `CONTROLS_PER_TECHNIQUE`) among the library controls linked to that technique's own MITRE mitigations, and code refuses any other. Each control's `match_reason` names what it does and the technique and mitigation it defends against, e.g. `"prevent: T1498.001 Direct Network Flood (MITRE M1037 Filter Network Traffic)"` (one per technique, `; `-separated, when it defends several); the AI's picks come first, in the attack path's technique order, `match_type` `EXACT`. **A card never shows no control** (owner, 2026-11-24): a technique the AI finds no exact fit for, or every technique when its answer cannot be read, shows its best-linked control, `match_type` `NEAREST`, its reason ending "picked by the MITRE link score"; a card that still has fewer than `MIN_CONTROLS` is topped up with the library search's nearest controls, `NEAREST`, the reason starting "Nearest by the library search, too few MITRE-linked controls fitted". At most `MAX_CONTROLS`; a cut drops a nearest control before an exact one. The AI is given, for each mitigation, MITRE's own words on how it defends that technique, and keeps a control only when it does what MITRE says. A sub-technique MITRE gives no mitigation of its own is defended through its parent technique's mitigations, the reason saying so (`"... (MITRE M1029 Remote Data Storage, for parent T1070)"`). A backup or recovery control (library domain Business Continuity & Disaster Recovery) is always `recover` or `contain`, a monitoring control (Continuous Monitoring) always `detect`: code corrects any other effect. Each technique's outcome is in the run's status (`technique_control_states`): `matched` (an exact pick), `nearest` (its best-linked control shown as `NEAREST`), or why it has no control of its own: `no_known_defence`, `no_library_control`, `not_prepared`, `type_mismatch`.
+A MITRE next set and regenerate show their own `progress.timings.threats` and `.scenarios`, as 3.2 describes.
+`404` for a run that is not a MITRE run.
 
 ### 3.5 `POST /v1/sessions/{session_id}/accept`
 
@@ -656,6 +669,31 @@ Headers: identity headers.
 Notes:
 - When: `session_status` not `active`. You do **not** have to decide the current set first: it is allowed during `awaiting_review` too (`awaiting_next_set` only means "everything written is decided and paths remain"). `progress.scenario_count.remaining` > 0 tells you paths are left.
 - `generating`: the run is `active` until the set is written; accept/regenerate → `409 generation_in_progress` meanwhile. Done when `session_status` leaves `active` and `progress.last_next_set.outcome` is no longer `running`.
+
+### 3.7b `POST /v1/mitre_sessions/{session_id}/scenarios/next-set`
+
+As 3.7 for a MITRE run, with two differences:
+- When nothing is left to write it is **not** a 409. It answers **200** with nothing started.
+- Every answer carries the run's counts as the click finds them: `remaining` (scenarios still to write before this set), `written`, `dropped` (paths the MITRE checks dropped) and `message`.
+
+**UI rule: decide on `status`.** `generating` means a set is being written, so poll 3.2. `nothing_left` or `target_reached` means hide the next-set button; `remaining` is then 0.
+
+| HTTP | `status` | Meaning |
+| --- | --- | --- |
+| 202 | `generating` | a set is being written. With `remaining` 0, the plan is still open and the job asks the planner for further paths first |
+| 200 | `nothing_left` | the planner found every relevant path, and each is written or was dropped by the MITRE checks |
+| 200 | `target_reached` | `TOTAL_SCENARIO_COUNT` was reached, and further planned paths were left out |
+
+```json
+{ "session_id": "ead89a4d54e641438e3e50e8473cd24b", "user_id": "jane.doe@example.com", "status": "generating",
+  "epoch": 4, "remaining": 6, "written": 12, "dropped": 1,
+  "message": "Writing the next set: up to 5 of the 6 scenarios left (12 written, 1 dropped so far)." }
+```
+```json
+{ "session_id": "ead89a4d54e641438e3e50e8473cd24b", "user_id": "jane.doe@example.com", "status": "nothing_left",
+  "epoch": 3, "remaining": 0, "written": 17, "dropped": 2,
+  "message": "Every MITRE attack path of this run is done: 17 scenarios written, 2 dropped by the MITRE checks. The planner found no further relevant path." }
+```
 
 ## 4. Remediation endpoints
 
@@ -920,8 +958,8 @@ Headers: identity headers.
 | `plan.prompt_version` | string | the prompt that wrote the version, e.g. `remediation-1` |
 | `plan.control_assessment[]` | object[] | `control_id`, `control_code`, `control_name`, `domain`, `match`, `implementation_status`, `recommended`, `protected_systems[]`, `required_systems[]`, `validation` (`retained`/`replaced`/`flagged_for_review`), `validation_reason`, `replaced_by`, `replaces[]` |
 | `plan.unresolved_gaps[]` | object[] | `kind` (`flagged_control`/`no_validated_control`/`uncovered_risk`), `control_code`, `detail` |
-| `warnings` | string[] | checks on the shown version; never a block |
-| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[{name, role}]`, `controls[]` |
+| `warnings` | string[] | checks on the shown version; never a block. An existing control the request names that is a library control but none of this scenario's controls or their alternatives is named here: the plan does not count it against this risk |
+| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[]`, `controls[]`. Each actor has `name`, `role` and the 3.4 actor fields (`actor_name`; on a MITRE card every group, with `mitre_id`, `url`, `relevance`, `documented_techniques`); each control has its stored keys (`code`, `name`, `rank`, `rationale`, ...) and the 3.4 control fields (`control_code`, `control_name`, `map_rank`, `match_reason`, ...), all from the library control `control_id` |
 | `register_data` | object | the register fields as sent in 4.1 (ratings as strings; each system list with each id once, `[]` when not sent) |
 | `versions` | array or null | only with `include_history=true`: `version`, `status`, `decision`, `decided_by`, `decided_at`, `review_comment`, `requested_by`, `requested_at`, `completed_at`, `error`, `plan`, `warnings` |
 
@@ -1121,7 +1159,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | `service_name` | string 1-255 | yes | the service to map |
 | `service_description` | string 1-4000 | yes | what the service does; the AI works from this |
 | `sector` | string 1-255 | yes | sector name, e.g. `Transport`. `sector_name` is also accepted. |
-| `subsector` | string 1-255 | yes | sub-sector name, e.g. `Land`. `sub_sector_name` is also accepted. |
+| `subsector` | string 0-255 | no | sub-sector name, e.g. `Land`. `sub_sector_name` is also accepted. Left out, `null` or blank: saved as `""`, and the service is matched to the catalog by its name and sector only. |
 | `entity_names` | string[] 1-20 | yes | the entities that run the service; each 1-255 chars, no repeats in any letter case |
 
 ```json
@@ -1157,7 +1195,7 @@ Headers: identity headers, `Content-Type`, optional `Idempotency-Key`.
 | 409 | `generation_limit_reached` | the service's mapping has had its runs (`details.mapping_id`, `details.max_generations`) |
 
 Notes:
-- Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`). A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
+- Text is trimmed and runs of spaces collapsed before it is saved; a value of only spaces is blank (`A required value cannot be blank.`), except `subsector`, which is then none. A replay compares the body after this, and after `sector_name` / `sub_sector_name` are read as `sector` / `subsector`.
 - `sector`, `subsector` and `entity_names` are free text for the AI: names, not ids, and not checked against the catalog. The mapping belongs to the entity in `X-Entity-Id`, whatever `entity_names` says.
 - How many new services one run finds per direction is a server setting (default 10 upstream and 10 downstream); 5.3 shows it as `summary.max_upstream` / `summary.max_downstream`. Fewer come back when fewer are defensible.
 - The same service again (same `service_name`, `sector` and `subsector`; the other fields may differ): the next run of its mapping, with this body's details, which the mapping keeps. While its run is queued or running, the same body answers `200` with it (no second run) and another body `409 generation_in_progress`.
@@ -1631,6 +1669,7 @@ A page for operators, served by the API itself at `https://<tsg-host>/ui/` (same
 | Data ingestion | the switch; each source's state; import now (all or one source), followed until done | no |
 | Schedule | the form of 7.4, with the next and the last run | no |
 | Control links | linked, without a control, not prepared, last prepared; prepare now, followed with `judged`, `unchanged`, `failed` | no |
+| Service mapper | describe a service and generate its mapping, followed until done; upstream and downstream services; accept, reject, regenerate; recent mappings. Sends the client `X-API-Key`, `X-User-Id`, `X-Entity-Id` and `X-Tenant-Id` typed on the page | no (a client key instead) |
 | Jobs | every job, queue and worker (7.2); cancel an import or a build | yes |
 | Search vectors | build the library's search vectors now | yes |
 | API keys | list, mint (the key is shown once), revoke | yes |

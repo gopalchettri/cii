@@ -128,7 +128,12 @@ def test_with_the_bypass_off_the_ai_calls_use_the_configured_proxy_too() -> None
 def test_importing_the_ai_layer_never_copies_the_env_file_into_the_environment(tmp_path: Path) -> None:
     # G263: litellm loaded ./.env into os.environ on import. CII_AI_BYPASS_PROXY then read as a proxy variable
     # (its name ends in _PROXY), so Windows' proxy setting was ignored from start-up; every key went along.
-    (tmp_path / ".env").write_text("CII_AI_BYPASS_PROXY=true\nCII_SCENARIO_CHAT_API_KEY=must-stay-in-the-file\n")
+    # The MITRE answer rooms have no default (ADR-010): app.ai reads them from the file at import.
+    rooms = "".join(
+        f"CII_ANSWER_TOKENS_MITRE_{task}=4000\n" for task in ("ACTOR_SELECTION", "PLAN", "WRITE", "DUPLICATE_CHECK")
+    )
+    original = "CII_AI_BYPASS_PROXY=true\nCII_SCENARIO_CHAT_API_KEY=must-stay-in-the-file\n"
+    (tmp_path / ".env").write_text(original + rooms)
     probe = (
         "import json, os, urllib.request, app.ai; "
         "print(json.dumps([sorted(k for k in os.environ if k.upper().startswith('CII_')), "

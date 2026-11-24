@@ -19,8 +19,9 @@
 //   - Rows, names and states come from the API's answer; nothing about the data is written into a page.
 //
 //   `tools` holds:
-//     request(method, path, body?)       -> Promise<parsed JSON | null>; rejects with an ApiError whose message is
-//                                           ready to show; also .status, .code, .reason, .request_id, .details, .body
+//     request(method, path, body?, caller?) -> Promise<parsed JSON | null>; rejects with an ApiError whose message is
+//                                           ready to show; also .status, .code, .reason, .request_id, .details, .body.
+//                                           `caller`: a client's headers, sent instead of the admin key
 //     with_query(path, params)           -> path + "?name=value..." (arrays repeat the name, empty values left out)
 //     follow_job(read, on_change)        -> stop(); reads now and every 3 s until done, failed or cancelled;
 //                                           on_change(job, null) per change, on_change(null, error) when it gives
@@ -50,6 +51,7 @@ const PAGES = [
   { id: "ingestion", title: "Data ingestion", needs_admin_key: false, load: () => import("./pages/ingestion.js") },
   { id: "schedule", title: "Schedule", needs_admin_key: false, load: () => import("./pages/schedule.js") },
   { id: "control_links", title: "Control links", needs_admin_key: false, load: () => import("./pages/control_links.js") },
+  { id: "service_mapper", title: "Service mapper", needs_admin_key: false, load: () => import("./pages/service_mapper.js") },
   { id: "jobs", title: "Jobs", needs_admin_key: true, load: () => import("./pages/jobs.js") },
   { id: "vectors", title: "Search vectors", needs_admin_key: true, load: () => import("./pages/vectors.js") },
   { id: "api_keys", title: "API keys", needs_admin_key: true, load: () => import("./pages/api_keys.js") },

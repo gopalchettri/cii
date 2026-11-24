@@ -70,7 +70,8 @@ def _fitted_prompt(
 
 def _most_relevant_first(request: CreateMappingRequest, catalog: CatalogSnapshot) -> list[CatalogService]:
     text = redacted(request.model_dump())
-    role = f"{text['service_name']}. {text['service_description']}. {text['sector']} / {text['subsector']}"
+    group = " / ".join(filter(None, (text["sector"], text["subsector"])))
+    role = f"{text['service_name']}. {text['service_description']}. {group}"
     queries = [
         role,
         f"Direct upstream services and operational inputs needed by: {role}",
@@ -91,6 +92,8 @@ def _user_prompt(
     held: Sequence[dict],
 ) -> str:
     selected = redacted(request.model_dump())
+    if not selected["subsector"]:  # none given: the AI is not shown an empty one
+        del selected["subsector"]
     if service := selected_service(request, catalog):  # its own records: the catalog list leaves it out
         known = {"known_upstream": service.upstream_context, "known_downstream": service.downstream_context}
         selected |= {key: shorten_text(text, 1_000) for key, text in known.items() if text}
@@ -262,12 +265,18 @@ def _distinctive_words(name: str) -> set[str]:
 
 
 def selected_service(request: CreateMappingRequest, catalog: CatalogSnapshot) -> CatalogService | None:
-    """The catalog's selected service, when exactly one service has its name, sector and subsector."""
+    """The catalog's selected service, when exactly one service has its name, sector and subsector (any
+    subsector of that sector when none is given)."""
+    sector = name_match_key(request.sector)
     matches = [
         service
         for service in catalog.services
         if is_same_name(service.service_name, request.service_name)
-        and _in_group(service, request.sector, request.subsector)
+        and (
+            _in_group(service, request.sector, request.subsector)
+            if request.subsector
+            else any(name_match_key(group.sector_name) == sector for group in service.sectors)
+        )
     ]
     return matches[0] if len(matches) == 1 else None
 

@@ -3,10 +3,6 @@ default written once, the claim only one check wins (real MongoDB, threads), the
 check, which imports only when the schedule is due."""
 
 import itertools
-import json
-import os
-import subprocess
-import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,7 +24,6 @@ from app.schemas.intel_records import RefreshResult, RefreshSummary, SourceRefre
 from app.worker import intel as worker_intel
 from app.worker.celery_app import celery_app
 from app.worker.intel import refresh_external_intelligence
-from tests.checkout import REPO
 from tests.external_intelligence.conftest import Intel
 
 URL = "/v1/tsg/intel/schedule"
@@ -346,17 +341,13 @@ def test_a_time_with_anything_around_its_hour_and_minute_is_refused(api: TestCli
     assert _stored() is None
 
 
-def test_with_the_master_switch_off_the_schedule_reads_as_the_default_and_nothing_is_written(
-    client: TestClient,
-) -> None:
-    """Off equals the original: no intelligence collection appears (the suite runs off)."""
-    database = get_mongodb()
-    database.drop_collection(Collection.EXTERNAL_FEED_STATUS)
+def test_with_the_master_switch_off_the_schedule_is_read_and_saved(client: TestClient) -> None:
+    """ADR-010: the MITRE ATT&CK import runs whatever the switch says, so its schedule works off too."""
+    get_mongodb().drop_collection(Collection.EXTERNAL_FEED_STATUS)
     shown = client.get(URL)
-    assert shown.status_code == 200
-    assert shown.json() == WEEKLY | {"next_run_at": None, "last_run_at": None, "updated_at": None}
-    assert client.put(URL, json=WEEKLY).status_code == 409
-    assert Collection.EXTERNAL_FEED_STATUS not in database.list_collection_names()
+    assert shown.status_code == 200 and shown.json()["next_run_at"] is not None  # stored, due at once
+    assert client.put(URL, json=WEEKLY).status_code == 200
+    assert client.get(URL).json()["updated_at"] is not None
 
 
 @pytest.fixture
@@ -490,29 +481,22 @@ def test_a_retry_gives_a_disabled_schedule_no_next_run() -> None:
     assert _stored()["next_run_at"] is None
 
 
-def test_beats_check_asks_no_schedule_while_the_switch_is_off(
-    intel: Intel, schedule_on: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_beats_check_imports_a_due_run_while_the_switch_is_off(intel: Intel, schedule_on: None) -> None:
+    """ADR-010: the MITRE ATT&CK import runs whatever the switch says."""
     _store(next_run_at=NOW - timedelta(hours=1))
     intel.switch.enabled = False
-    monkeypatch.setattr(schedule, "get_intel_schedule_repository", lambda: 1 / 0)
     refresh_external_intelligence()
-    assert intel.refresher.calls == [] and _stored()["last_run_at"] is None  # still due once it is back on
+    assert intel.refresher.calls == [("due", None)]
 
 
-def test_beat_checks_every_minute_only_while_external_intelligence_is_on() -> None:
-    """The beat schedule is built at import, so a second interpreter reads it with the master switch on."""
-    show = (
-        "import json; from app.worker.celery_app import celery_app; "
-        f"print(json.dumps(celery_app.conf.beat_schedule.get('{TaskName.REFRESH_EXTERNAL_INTELLIGENCE.value}')))"
-    )
-    env = os.environ | {"EXTERNAL_INTELLIGENCE_ENABLED": "true"}
-    ran = subprocess.run(  # noqa: S603 - this interpreter, a fixed command
-        [sys.executable, "-c", show], cwd=REPO, env=env, check=True, timeout=120, capture_output=True, text=True
-    )
-    entry = json.loads(ran.stdout.strip().splitlines()[-1])
+def test_beat_checks_every_minute_whatever_the_switch_says() -> None:
+    """ADR-010: the MITRE ATT&CK import runs with external intelligence off too (this suite runs off)."""
+    entry = celery_app.conf.beat_schedule[TaskName.REFRESH_EXTERNAL_INTELLIGENCE]
     assert IntelLimits.CHECK_EVERY_SECONDS == 60
     # Three intervals to expire: Celery judges expiry on the worker pod's own clock, and UAT pods were 76 s
     # apart; with one interval every check arrived expired and the schedule never started an import.
-    assert entry == {"task": TaskName.REFRESH_EXTERNAL_INTELLIGENCE, "schedule": 60, "options": {"expires": 180}}
-    assert TaskName.REFRESH_EXTERNAL_INTELLIGENCE not in celery_app.conf.beat_schedule  # this suite runs off
+    assert (entry["task"], entry["schedule"], entry["options"]) == (
+        TaskName.REFRESH_EXTERNAL_INTELLIGENCE,
+        60,
+        {"expires": 180},
+    )

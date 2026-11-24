@@ -2,7 +2,6 @@
 
 from collections.abc import Iterable
 
-from app.core.config import get_settings
 from app.core.constants import Collection
 from app.core.database import get_mongodb
 from app.crud import admin as admin_crud
@@ -10,6 +9,7 @@ from app.crud import admin_jobs, ai_calls, ai_usage
 from app.crud import service_mapper as service_mapper_crud
 from app.crud.base import MongoRepository
 from app.crud.jobs import JobRepository
+from app.crud.mitre.mitre_stix import get_mitre_enterprise_stix_repository, get_mitre_ics_stix_repository
 
 
 def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
@@ -35,19 +35,18 @@ def create_all_indexes(job_collections: Iterable[str] = ()) -> None:
         ai_calls.store(get_mongodb()[Collection.AI_CALLS]),
         *(ai_usage.store(get_mongodb(), name) for name in ai_usage.INDEXES),
         get_embedding_repository(),
-    ):
-        repository.create_indexes()
-    service_mapper_crud.create_indexes(get_mongodb())
-    for repository in (
         get_query_vector_repository(),
         admin_jobs.get_admin_job_repository(),
         get_sql_operation_repository(),
+        get_mitre_enterprise_stix_repository(),
+        get_mitre_ics_stix_repository(),
     ):
         repository.create_indexes()
+    service_mapper_crud.create_indexes(get_mongodb())
     for collection in job_collections:
         JobRepository(get_mongodb()[collection]).create_indexes()
-    if get_settings().external_intelligence_enabled:  # off: no intelligence collection exists
-        get_intel_record_repository().create_indexes()
-        get_intel_snapshot_repository().create_indexes()
-        get_attack_repository().create_indexes()  # tsg_control_links is read by _id alone: no index of its own
-        get_intel_feed_repository().create_missing_intel_feeds()
+    # The MITRE ATT&CK import runs whatever the external-intelligence switch says (ADR-010).
+    get_intel_record_repository().create_indexes()
+    get_intel_snapshot_repository().create_indexes()
+    get_attack_repository().create_indexes()  # tsg_control_links is read by _id alone: no index of its own
+    get_intel_feed_repository().create_missing_intel_feeds()

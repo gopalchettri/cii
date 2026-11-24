@@ -2,6 +2,7 @@
 The library is the SQL test database (tests/sql_test_database.py); runs and scenarios are written straight
 into the test MongoDB."""
 
+import dataclasses
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -29,10 +30,17 @@ from app.crud import admin as admin_crud
 from app.crud.library import SqlOperationRepository, ThreatRepository
 from app.domain.scenario import runs as scenario_runs
 from app.schemas.library import ProposedThreat, ThreatProposal
+from tests.planner_samples import CONTEXT
 from tests.service_builders import use_scenario_parts
 
 #: The person promoting in these tests: the library rows they create carry it (CreatedBy).
 REVIEWER = f"reviewer-{uuid.uuid4().hex[:6]}"
+#: An IT asset whose system 321 is OT and 322 IT (the planner samples' systems).
+MIXED = dataclasses.replace(
+    CONTEXT,
+    asset=CONTEXT.asset | {"category_code": "IT"},
+    systems=[CONTEXT.systems[0] | {"category_code": "OT"}, CONTEXT.systems[1] | {"category_code": "IT"}],
+)
 
 
 @pytest.fixture(scope="module")
@@ -84,20 +92,30 @@ def _identity(api_key: str, entity_id: int = 86) -> dict[str, str]:
     }
 
 
-def _accepted(threat_name: str, ai_generated: bool = True, decision: Decision = Decision.ACCEPTED) -> tuple[str, str]:
-    """A run whose plan holds one threat under the live type "Malicious code", and its scenario."""
+def _accepted(
+    threat_name: str,
+    ai_generated: bool = True,
+    decision: Decision = Decision.ACCEPTED,
+    with_systems: list[int] | None = None,
+) -> tuple[str, str]:
+    """A run whose plan holds one threat under the live type "Malicious code", and its scenario. `with_systems`:
+    the run keeps its asset facts (an IT asset, system 321 OT, 322 IT) and the scenario names these systems."""
     record_id, scenario_id, key = uuid.uuid4().hex, uuid.uuid4().hex, f"ai:{uuid.uuid4().hex[:8]}"
     threat = {"key": key, "name": threat_name, "type": {"id": 2, "name": "Malicious code"}, "category": "Tampering"}
+    facts = {} if with_systems is None else {"context": MIXED.to_record()}
+    named = [system for system in MIXED.systems if system["id"] in (with_systems or [])]
+    as_saved = [{"id": system["id"], "name": system["name"], "entry_point": False} for system in named]  # as a card
+    systems = {} if with_systems is None else {"systems": as_saved}
     get_mongodb()[Collection.SESSIONS].insert_one(
         {"_id": record_id, "entity_id": 86, "asset_id": 1, "status": Status.DONE, "step": Step.SCENARIOS,
-         "job": {"epoch": 1}, "plan": {"threats": [threat]}, "updated_at": datetime.now(UTC)}
+         "job": {"epoch": 1}, "plan": {"threats": [threat]}, "updated_at": datetime.now(UTC), **facts}
     )  # fmt: skip
     get_mongodb()[Collection.SCENARIOS].insert_one(
         {"_id": scenario_id, "session_id": record_id, "entity_id": 86, "asset_id": 1, "path_id": "p1",
          "version": 1, "source": "generated", "status": ScenarioStatus.DONE, "decision": decision,
          "superseded_by": None,
          "content": {"threat": {"key": key, "ai_generated": ai_generated, "library_id": None},
-                     "actors": [{"id": 1, "name": "Insider", "role": "acting"}]},
+                     "actors": [{"id": 1, "name": "Insider", "role": "acting"}], **systems},
          "created_at": datetime.now(UTC)}
     )  # fmt: skip
     return record_id, scenario_id
@@ -132,6 +150,36 @@ def test_promoting_twice_inserts_one_pending_threat_and_audits_once(
     assert stored["results"][0]["outcome"] == PromotionOutcome.INSERTED and stored["by"] == REVIEWER
     audits = {"target.id": scenario_id, "action": AuditAction.LIBRARY_PROMOTED}
     assert get_mongodb()[Collection.AUDIT].count_documents(audits) == 1
+
+
+@pytest.mark.parametrize(("systems", "expected"), [([321], "OT"), ([322], "IT"), ([], "IT")])
+def test_a_promoted_threat_is_saved_with_where_its_scenario_attacks(
+    client: TestClient,
+    api_key: str,
+    proposals: list[ThreatProposal],
+    sql_test_engine: Engine,
+    systems: list[int],
+    expected: str,
+) -> None:
+    """Owner 2026-11-24: the new library row's AssetType is the scenario's own (its systems, or the IT asset when it
+    names none), and the answer shows it. Mutation: send the asset's type and the OT system's threat is saved IT."""
+    record_id, scenario_id = _accepted(f"Rogue logic on a control server {uuid.uuid4().hex[:6]}", with_systems=systems)
+    response = _promote(client, api_key, record_id, scenario_id)
+    assert response.status_code == 200, response.text
+    (result,) = response.json()["results"]
+    assert (result["outcome"], result["asset_type"], proposals[-1].asset_type) == (
+        PromotionOutcome.INSERTED,
+        expected,
+        expected,
+    )
+    with sql_test_engine.connect() as connection:
+        saved = connection.execute(
+            text("SELECT AssetType FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = :id"),
+            {"id": result["threat_catalogue_id"]},
+        ).scalar_one()
+    assert saved == expected
+    stored = get_mongodb()[Collection.SCENARIOS].find_one({"_id": scenario_id})["library_promotion"]
+    assert stored["results"][0]["asset_type"] == expected
 
 
 def test_a_known_or_rejected_wording_never_reaches_sql_server(

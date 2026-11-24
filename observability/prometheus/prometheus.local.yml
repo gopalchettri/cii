@@ -1,5 +1,5 @@
 # Prometheus on a developer laptop (scripts/monitoring.py). Same rules and paths as UAT (prometheus.yml);
-# only the targets differ: everything runs on this machine, on the ports run.ps1 and scripts/monitoring.py use.
+# only the targets differ: everything runs on this machine, on the ports run_dev.ps1 and scripts/monitoring.py use.
 
 global:
   scrape_interval: 30s
@@ -19,10 +19,10 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:8000"]
         labels: { ui_url: "http://localhost:8000/v1/ai-usage" } # the AI usage dashboard's report links open this
-  - job_name: worker # CII_WORKER_METRICS_PORT: the main worker, and the maintenance, mapper and reaper workers (run.ps1)
+  - job_name: worker # CII_WORKER_METRICS_PORT: the main worker, and the maintenance, mapper and reaper workers (run_dev.ps1)
     static_configs:
       - targets: ["localhost:9100", "localhost:9102", "localhost:9103", "localhost:9104"]
-    file_sd_configs: # the remediation worker, which run.ps1 starts only with a remote reranker: it writes this file
+    file_sd_configs: # the remediation worker, which run_dev.ps1 starts only with a remote reranker: it writes this file
       - files: ["../../.run/worker-targets.json"]
   - job_name: flower
     metrics_path: /flower/metrics

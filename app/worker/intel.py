@@ -30,11 +30,10 @@ log = structlog.get_logger(__name__)
 
 @celery_app.task(name=TaskName.REFRESH_EXTERNAL_INTELLIGENCE)
 def refresh_external_intelligence(job_id: str | None = None) -> None:
-    """Celery task: without `job_id` it is beat's check, importing only when the saved schedule is due."""
+    """Celery task: without `job_id` it is beat's check, importing only when the saved schedule is due (the
+    import runs with the external-intelligence switch off too: the MITRE run reads it, ADR-010)."""
     if job_id is not None:
         run_refresh_job(job_id)
-    elif not get_intelligence_switch().is_on():
-        log.debug(IntelWorkEvent.REFRESH_SKIPPED)  # every check while off: not worth a line a minute
     elif schedule.claim_due_run(now := utc_now()):
         failed = True
         try:
@@ -61,10 +60,6 @@ def run_refresh_job(job_id: str) -> None:
     record = jobs.get(("source",), _id=job_id) or {}
     source = IntelSource(record["source"]) if record.get("source") else None
     try:
-        if not get_settings().external_intelligence_enabled:
-            error = {"code": ErrorCode.CONFLICT, "message": IntelRefreshMessage.SWITCH_OFF.value}
-            jobs.update_admin_job_finished(job_id, utc_now(), error=error)
-            return
         with keep_lease_alive(job_id, lambda: jobs.renew_admin_job(job_id, utc_now()) or True):  # never lost
             if source is None:  # its cancel stops it before the next source
                 summary = refresh.refresh_all_sources(now, keep_going=lambda: jobs.is_admin_job_active(job_id))

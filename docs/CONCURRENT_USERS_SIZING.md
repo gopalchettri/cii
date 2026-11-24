@@ -10,7 +10,7 @@ N below means the number of users at the same time.
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 4 x N | 20 | 40 | 60 | threat-scenario AI calls (kimi-k2.5) at once, all users together: each Start asks about 4 threat questions at once |
 | `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS` | N | 5 | 10 | 15 | remediation plans at once (one glm-5.3 call each) |
 | `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | N | 5 | 10 | 15 | service mappings at once (one glm-5.3 call each) |
-| `CII_WORKER_THREADS` (UAT server only) | 3 x N | 15 | 30 | 45 | threads of `run.ps1`'s job worker; a thread mostly waits for the AI |
+| `CII_WORKER_THREADS` (UAT server only) | 3 x N | 15 | 30 | 45 | threads of `run_uat.ps1`'s job worker; a thread mostly waits for the AI |
 
 **Set by the reranker, not by N.** Measure it with the owner's probe (`litellm_probe_oc.py`, which steps up the calls
 sent at once):
@@ -72,8 +72,8 @@ Requests: each Start sends kimi-k2.5 about 8 requests. `CII_SCENARIO_CHAT_REQUES
 
 - **UAT server:**
   1. Edit `.env.uat` (the source, kept off GitHub) and copy it to `.env` on the server.
-  2. Run `.\run.ps1 stop`, then `.\run.ps1`.
-  3. `run.ps1` sizes the remediation worker (plans + 2 threads) and the mapper worker (mappings) by itself.
+  2. Run `.\run_uat.ps1 stop`, then `.\run_uat.ps1`.
+  3. `run_uat.ps1` sizes the remediation worker (plans + 2 threads) and the mapper worker (mappings) by itself.
   4. Keep the key-free copy `.env.uat.example` the same, with keys blank.
 - **OpenShift:**
   1. Set the settings above in `deploy/configmap.yaml` and the threads in `deploy/deploy_threatgen.yaml`.

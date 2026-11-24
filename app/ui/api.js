@@ -105,12 +105,17 @@ export function with_query(path, params) {
  * @param {string} method GET, POST, PUT or DELETE
  * @param {string} path a path of this origin, e.g. "/v1/tsg/intel/health"
  * @param {any} [body] sent as JSON when given
+ * @param {Record<string, string>} [caller] a client's own headers (X-API-Key, X-User-Id, X-Entity-Id, X-Tenant-Id):
+ *   sent instead of the admin key; their 401 or 403 leaves the admin key set
  * @returns {Promise<any>}
  */
-export async function request(method, path, body) {
+export async function request(method, path, body, caller) {
   if (!is_own_path(path)) throw new ApiError(`Not a path of this API: ${path}`);
-  const headers = { Accept: "application/json", [USER_ID_HEADER]: user_id || DEFAULT_USER_ID };
-  if (admin_key) headers[ADMIN_KEY_HEADER] = admin_key;
+  const own = Object.entries(caller ?? {}).map(([name, value]) => [name, String(value ?? "").trim()]);
+  const unsendable = own.find(([, value]) => !HEADER_SAFE.test(value));
+  if (unsendable) throw new ApiError(`Fill in ${unsendable[0]} (plain characters, no line breaks).`);
+  const headers = { Accept: "application/json", [USER_ID_HEADER]: user_id || DEFAULT_USER_ID, ...Object.fromEntries(own) };
+  if (admin_key && !caller) headers[ADMIN_KEY_HEADER] = admin_key;
   const options = { method, headers, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -125,7 +130,7 @@ export async function request(method, path, body) {
   const answer = read_json(await response.text());
   if (response.ok) return answer;
   const problem = read_problem(response, answer);
-  if (KEY_REFUSED.has(response.status)) {
+  if (KEY_REFUSED.has(response.status) && !caller) {
     admin_key = "";
     tell_key_watchers(problem.message);
   }

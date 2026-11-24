@@ -204,6 +204,8 @@ class ActionStatus(StrEnum):
     GENERATING = "generating"  # a next set: more scenarios are being written
     REGENERATING = "regenerating"  # new versions of chosen scenarios
     MAPPING_CONTROLS = "mapping_controls"  # a next set that only resumed stopped controls
+    NOTHING_LEFT = "nothing_left"  # a MITRE next set (200): the planner found every path and each is done
+    TARGET_REACHED = "target_reached"  # a MITRE next set (200): TOTAL_SCENARIO_COUNT left further paths out
 
 
 class PlanStage(StrEnum):
