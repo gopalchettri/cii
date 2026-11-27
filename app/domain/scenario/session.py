@@ -572,13 +572,14 @@ def _summarise_last_action(
 
 
 def scenario_asset_type(content: dict[str, Any], context: FrozenContext | None) -> str | None:
-    """IT or OT for a scenario's threat in the library (owner 2026-11-24: the scenario's own). A MITRE scenario is OT
-    when one of its techniques is ICS (a path that attacks OT carries one), else IT; any other is the type of the
-    place it attacks: its systems, or the asset when it names none (None without the run's asset facts)."""
+    r"""IT, OT or IT\OT for a scenario's threat in the library (owner 2026-11-24: the scenario's own; 2026-11-25:
+    IT\OT when it attacks both). A MITRE scenario is IT\OT with an ICS and an Enterprise technique, OT with ICS ones
+    only, else IT; any other is the type of the place it attacks: its systems, or the asset when it names none (None
+    without the run's asset facts)."""
     techniques = (content.get("mitre") or {}).get("attack_techniques")
     if techniques:
-        attacks_ot = any(technique.get("domain") == "ics" for technique in techniques)
-        return c.AssetType.OT.value if attacks_ot else c.AssetType.IT.value
+        sides = {c.AssetType.OT if technique.get("domain") == "ics" else c.AssetType.IT for technique in techniques}
+        return c.AssetType.IT_OT.value if len(sides) == 2 else sides.pop().value
     if context is None:
         return None
     systems = context.find_systems(system["id"] for system in content.get("systems") or [])
@@ -627,7 +628,7 @@ def _build_controls_fields(controls: dict[str, Any], generated: bool, failed: bo
     attempts_left = isinstance(attempts, int) and attempts < c.Controls.MAX_ATTEMPTS
     exhausted = status == c.Status.FAILED and not attempts_left
     matches = [item.get("match") for item in controls.get("items") or []]
-    if not generated or failed or status == c.Status.FAILED:
+    if not generated or failed or status in (None, c.Status.FAILED):  # None: no record (a MITRE card's, 2026-11-27)
         match_status: c.ControlMatchStatus | None = None
     elif status != c.Status.DONE:
         match_status = c.ControlMatchStatus.PENDING

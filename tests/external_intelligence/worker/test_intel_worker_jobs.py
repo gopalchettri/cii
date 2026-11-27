@@ -28,6 +28,8 @@ from app.core.exceptions import Unavailable
 from app.crud.admin_jobs import get_admin_job_repository
 from app.domain.intel.evidence import evidence_request
 from app.domain.intel.index import EvidenceIndexRefused
+from app.schemas.intel_records import RefreshResult, SourceRefresh
+from app.schemas.jobs import IntelRefreshResult
 from app.worker import intel as warm_up_module
 from app.worker import lifecycle
 from app.worker.intel import (
@@ -112,7 +114,7 @@ def test_an_admin_refresh_of_one_source_is_recorded_on_its_job(intel: Intel) -> 
     refresh_external_intelligence(job_id)
     assert intel.refresher.calls == [("one", IntelSource.ATTACK_ENTERPRISE)]
     stored = _admin_jobs().get(_id=job_id)
-    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "mitre_attack_enterprise"})
+    assert (stored["status"], stored["result"]) == (Status.DONE, {"source": "mitre_attack_enterprise", "sources": []})
     refresh_external_intelligence(job_id)  # a repeated message finds the job done
     assert len(intel.refresher.calls) == 1
 
@@ -127,7 +129,7 @@ def test_a_refresh_whose_index_the_ai_could_not_rebuild_is_done_and_says_why(int
     stored = _admin_jobs().get(_id=job_id)
     assert (stored["status"], stored["result"]) == (
         Status.DONE,
-        {"source": "mitre_attack_enterprise", "index_error": down},
+        {"source": "mitre_attack_enterprise", "sources": [], "index_error": down},
     )
 
 
@@ -158,6 +160,23 @@ def test_an_admin_refresh_while_the_master_switch_is_off_imports(intel: Intel, m
     job_id = _job()
     refresh_external_intelligence(job_id)
     assert _admin_jobs().get(_id=job_id)["status"] == Status.DONE and intel.refresher.calls == [("due", None)]
+
+
+def test_an_import_says_per_source_whether_anything_new_arrived(intel: Intel) -> None:
+    """Owner 2026-11-25: Import now ended "done" with nothing downloaded; the job now says which source was only
+    checked and which brought new data, in the shape the API answers."""
+    ent, ics = IntelSource.ATTACK_ENTERPRISE, IntelSource.ATTACK_ICS
+    intel.refresher.sources = (
+        SourceRefresh(ent, RefreshResult.UNCHANGED),
+        SourceRefresh(ics, RefreshResult.REFRESHED, 5, 1, new_data=True),
+    )
+    job_id = _job()
+    run_refresh_job(job_id)
+    shown = IntelRefreshResult.model_validate(_admin_jobs().get(_id=job_id)["result"])
+    assert [(item.source, item.outcome, item.new_data, item.new_versions, item.retired) for item in shown.sources] == [
+        (ent, RefreshResult.UNCHANGED, False, 0, 0),
+        (ics, RefreshResult.REFRESHED, True, 5, 1),
+    ]
 
 
 def test_a_failed_refresh_is_recorded_without_driver_details_then_raised(

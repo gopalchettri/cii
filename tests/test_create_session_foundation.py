@@ -198,7 +198,7 @@ def test_the_three_prompts_are_in_the_prompt_file_and_name_controls_by_label_onl
     )
     sentences = (c.ControlLinks.SCENARIO_SENTENCE_PREFIX, c.ControlLinks.RISK_SENTENCE_PREFIX)
     assert sentences == ("S", "R") and "S1, S2" in picks and "R1, R2" in picks
-    assert PROMPTS["version"] == 2  # no existing prompt changed
+    assert PROMPTS["version"] == 1  # no existing prompt changed
     assert not (REPO / "app" / "tsg_prompt.txt").exists()  # one copy of the owner's prompt: [scenario.attack]
 
 

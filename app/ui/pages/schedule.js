@@ -6,14 +6,14 @@ const FREQUENCIES = [
   { value: "daily", label: "Every day" },
   { value: WEEKLY, label: "Every week" },
 ];
-const SWITCH_NOTE = "The schedule starts an import only while external intelligence is on: see ";
 
 export async function show(container, tools) {
   const { build_element, build_field, build_select, format_date } = tools;
+  tools.set_subtitle("When the outside threat data is imported by itself, without anyone pressing Import now.");
   await tools.load_into(container, () => tools.request("GET", "/v1/tsg/intel/schedule"), build_page);
 
   function build_page(schedule) {
-    const summary_place = build_element("div", {}, build_summary(schedule));
+    const summary_place = build_element("div", { class: "stack" }, build_summary(schedule));
     const enabled = build_element("input", { type: "checkbox", checked: schedule.enabled });
     const frequency = build_select(FREQUENCIES, schedule.frequency, { required: true });
     const day = build_select(DAYS.map((label, value) => ({ value, label })), schedule.day_of_week ?? 0);
@@ -23,7 +23,8 @@ export async function show(container, tools) {
     const zone = zones
       ? build_select(zones, schedule.timezone, { required: true })
       : build_element("input", { type: "text", required: true, maxlength: "64", spellcheck: "false", value: schedule.timezone });
-    const day_field = build_field("Day", day);
+    // .field sets its own display, which beats [hidden]: a plain wrapper is the part hidden.
+    const day_field = build_element("div", {}, build_field("Day", day));
     const show_day = () => (day_field.hidden = frequency.value !== WEEKLY);
     frequency.addEventListener("change", show_day);
     show_day();
@@ -43,25 +44,33 @@ export async function show(container, tools) {
 
     const fields = [
       build_field("Import by itself on this schedule", enabled, { hint: "Off: nothing is imported by itself. Import now still works." }),
-      build_field("How often", frequency),
-      day_field,
-      build_field("Time", time, { hint: "24-hour, in the time zone below." }),
-      build_field("Time zone", zone, { hint: "An IANA name such as UTC or Asia/Dubai. Daylight saving is followed." }),
+      tools.build_row(build_field("How often", frequency), day_field),
+      tools.build_row(
+        build_field("Time", time, { hint: "24-hour, in the time zone beside it." }),
+        build_field("Time zone", zone, { hint: "A name such as UTC or Asia/Dubai. Daylight saving is followed." }),
+      ),
     ];
-    return [summary_place, tools.build_panel("Change the schedule", tools.build_form(fields, "Save schedule", save))];
+    const form_section = tools.build_section({ title: "Change the schedule", subtitle: "Saved at once; the next run is worked out from it." }, tools.build_form(fields, "Save schedule", save));
+    return [summary_place, form_section];
   }
 
   function build_summary(schedule) {
     const when = schedule.frequency === WEEKLY ? `Every ${DAYS[schedule.day_of_week] ?? "week"}` : "Every day";
+    const kpis = tools.build_kpis([
+      { label: "Schedule", value: schedule.enabled ? "On" : "Paused", tone: schedule.enabled ? "good" : "warn" },
+      { label: "Runs", value: `${when} at ${schedule.time}`, hint: schedule.timezone },
+      { label: "Next run", value: schedule.enabled ? format_date(schedule.next_run_at, schedule.timezone) : "Paused" },
+    ]);
     const facts = [
-      ["State", tools.build_badge(schedule.enabled ? "enabled" : "disabled", schedule.enabled ? "enabled" : "paused")],
-      ["Runs", `${when} at ${schedule.time} ${schedule.timezone}`],
-      ["Next run", schedule.enabled ? format_date(schedule.next_run_at, schedule.timezone) : "Paused"],
+      ["State", tools.build_badge(schedule.enabled ? "enabled" : "disabled", schedule.enabled ? "On" : "Paused")],
       ["Last run", schedule.last_run_at ? format_date(schedule.last_run_at, schedule.timezone) : "No scheduled run yet"],
       ["Last changed", schedule.updated_at ? format_date(schedule.updated_at) : "Never saved: the default applies"],
     ];
-    const note = build_element("p", { class: "muted" }, SWITCH_NOTE, build_element("a", { href: "#/ingestion", text: "Data ingestion" }), ".");
-    return tools.build_panel("Current schedule", tools.build_facts(facts), note);
+    const note = tools.build_callout(
+      build_element("p", {}, "The schedule starts an import only while external intelligence is on: see ", tools.build_link("Data ingestion", "#/ingestion"), "."),
+      "info",
+    );
+    return tools.build_section({ title: "Current schedule", subtitle: "What runs by itself, and when." }, kpis, note, tools.build_facts(facts));
   }
 }
 

@@ -67,9 +67,9 @@ CHAT_MODEL_PROFILES: dict[str, ChatModelProfile] = {
     # UAT, LiteLLM proxy. kimi answers in ~5 s; 120 s covers its longest answers.
     # Context: the gateway's model info (2026-10-29): max_input_tokens 114,688, plus the answer kept free.
     "litellm_proxy/kimi-k2.5": ChatModelProfile(12_288, 120, True, "none", 114_688 + 12_288),
-    # UAT's glm (remediation, service mapper): the gateway's model info (2026-10-29), max_input_tokens
-    # 262,144, plus the answer kept free. It answers in 55-99 s: 180 s keeps its longest answers from timing
-    # out (a timed-out gate batch fails the job).
+    # UAT's glm (the service mapper; remediation is on kimi-k2.5 since 2026-11-27, D91): the gateway's model
+    # info (2026-10-29), max_input_tokens 262,144, plus the answer kept free. It answers in 55-99 s: 180 s
+    # keeps its longest answers from timing out (a timed-out gate batch fails the job).
     "litellm_proxy/glm-5.3": ChatModelProfile(12_288, 180, True, "none", 262_144 + 12_288),
 }
 

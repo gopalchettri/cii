@@ -407,7 +407,7 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-The admin web page is then at `http://127.0.0.1:8000/ui/`: the files in `app/ui`, mounted by `app/api/ui.py` in `create_app()`. It is a mount, not a router, so it is not in the OpenAPI document; a page may call only routes that exist (`tests/test_admin_ui.py` checks every path it names).
+The web UI is then at `http://127.0.0.1:8000/ui/`: the files in `app/ui`, mounted by `app/api/ui.py` in `create_app()`. It is a mount, not a router, so it is not in the OpenAPI document. Plain ES modules, no build: `app.js` (shell, sign-in, routing `#/<page>/<param>`, the page table), `api.js` (every call), `session.js` (the tab's sign-in, the only file that uses browser storage), `stream.js` (live events via `fetch`), `poll.js`, `dom.js` (every builder), `export.js` (Word, print), `scenario_view.js` (the run pages' cards and drawer) and one file per page in `pages/`. A page may call only routes that exist and may hold nothing the content policy forbids (`tests/test_admin_ui.py` checks every file; `tests/admin_ui_checks.mjs` and `tests/admin_ui_shell_checks.mjs` run the modules and the shell under node).
 
 `/ready` reports the live workers on each **routed** queue (only MongoDB decides its status). The local script starts the API; one worker on `tsg_threats,tsg_scenarios,tsg_controls` (plus `tsg_remediation`, which gets a worker of its own when `CII_RERANK_BASE_URL` points to a remote reranker); one each on `tsg_servicemapper`, `tsg_maintenance` and `tsg_reaper` (`reaper@`, metrics port 9104); and beat. SQL Server health appears in the response but does not alone fail readiness. Stop with `.\run_dev.ps1 stop`.
 

@@ -240,6 +240,9 @@ While intelligence is on and nothing is imported yet, a start, a next set and a 
 > **In plain words:** the AI already knows MITRE ATT&CK. Here it writes the scenarios straight from that knowledge,
 > naming the attacker group, the techniques and the mitigations. TSG then looks every one of those names up in its
 > own stored copy of MITRE ATT&CK and shows only what the copy confirms. The controls still come from our library.
+> A run started with `POST /v1/mitre_create_session` picks no controls when it writes (owner 2026-11-27, D91):
+> its cards carry none, and each one's remediation plan (section 11) identifies them per attack step, from the
+> controls linked to the step's MITRE mitigations and those nearest it by meaning.
 
 The same body, the same answer and the same `Idempotency-Key` rules as `POST /v1/sessions`; sections 9 and 10 work on
 the run unchanged, and a treatment plan (section 11) is requested the same way. Sections 4 to 8 do not apply to it: there is no plan job, no evidence search and no control
@@ -485,7 +488,7 @@ calls'. The UAT column is the UAT server's `.env.uat` and OpenShift's `deploy/co
 | Setting | Default | UAT | What it limits |
 |---|---|---|---|
 | `CII_SCENARIO_CHAT_MODEL` | required | `kimi-k2.5` | threat finding and writing |
-| `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | required | `glm-5.3`, `glm-5.3` | treatment plans, service mapper |
+| `CII_REMEDIATION_CHAT_MODEL`, `CII_SERVICE_MAPPER_CHAT_MODEL` | required | `kimi-k2.5` (since 2026-11-27, D91), `glm-5.3` | treatment plans, service mapper |
 | `CII_SCENARIO_MAX_CONCURRENT_AI_CALLS` | 16 | 20 | threat-scenario chat calls at once, all pods |
 | `CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS`, `CII_SERVICE_MAPPER_MAX_CONCURRENT_AI_CALLS` | 16, 16 | 5, 5 | their chat calls at once, all pods |
 | `CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE` | 0 (none) | 180 | kimi-k2.5 requests a minute, retries included (its own limit is 600) |
@@ -497,7 +500,7 @@ calls'. The UAT column is the UAT server's `.env.uat` and OpenShift's `deploy/co
 | `CII_SCENARIOS_WRITTEN_AT_ONCE` | 6 | 6 | scenarios in one write call |
 | `CII_THREAT_FINDING_REUSE_HOURS` | 24 | 24 | a run reuses an earlier run's answer to the very same gate question; 0 = always ask |
 | `CII_AI_CALL_TOKENS_LIMIT` | 20,000 | 20,000 | most tokens (question estimate + answer room) one call may hold; a bigger batch goes as halves |
-| `CII_ANSWER_TOKENS_<TASK>` | gate 10,240; gap fill 1,024; write 6,144; repair 5,632; plan 3,584; mapper 3,072; link controls 2,048 (`CII_ANSWER_TOKENS_LINK_CONTROLS`); pick controls 3,072 (`CII_ANSWER_TOKENS_PICK_CONTROLS`) | gate 8,192; the rest the same | each task's answer room. Link controls: one MITRE ATT&CK mitigation judged against 15 library controls (section 2.3). Pick controls: one written set of a `POST /v1/create_session` run (section 3.1). Both use the threat-scenario chat model and count against its limits |
+| `CII_ANSWER_TOKENS_<TASK>` | gate 10,240; gap fill 1,024; write 6,144; repair 5,632; plan 6,144 (room for up to 19 added controls on a MITRE plan; model max 12,288); mapper 3,072; link controls 2,048 (`CII_ANSWER_TOKENS_LINK_CONTROLS`); pick controls 3,072 (`CII_ANSWER_TOKENS_PICK_CONTROLS`) | gate 8,192; the rest the same | each task's answer room. Link controls: one MITRE ATT&CK mitigation judged against 15 library controls (section 2.3). Pick controls: one written set of a `POST /v1/create_session` run (section 3.1). Both use the threat-scenario chat model and count against its limits |
 | `CII_AI_BUSY_MAX_WAIT_SECONDS`, `..._TOTAL_WAIT_SECONDS`, `..._LIMIT_FLOOR`, `..._LIMIT_SECONDS` | 20, 60, 4, 180 | 20, 60, 4, 60 | what a 429 ("too busy") does (below) |
 
 **How the limiters work** (shared through Redis, so they hold across every pod):
@@ -544,14 +547,14 @@ calls'. The UAT column is the UAT server's `.env.uat` and OpenShift's `deploy/co
   `request_id` of the API call that sent it. `/metrics` on the API and on each worker's port 9100; alert rules in
   `observability/prometheus/rules.yml`; Grafana's "TSG — is everything working?" and "TSG — AI usage".
   `GET /v1/admin/jobs` (admin key) lists every job, its status, error and worker, and each queue's backlog.
-- **The admin page:** the API serves it at `/ui/` (the files in `app/ui`, plain HTML, CSS and JavaScript; no build
-  step, no extra pod). Ten pages: Data ingestion, Schedule, Control links, Service mapper, Jobs, Search vectors, API
-  keys, Library curation, AI usage, System. It calls only the API's own routes. Service mapper calls them with the
-  client key and identity headers typed on that page instead. Jobs, Search vectors, API keys and Library curation
-  need the admin key, typed in the page and kept in that browser tab's memory only (gone on reload, never stored).
-  It has no login of its own: whoever can reach the API can open it. Every answer carries `Cache-Control: no-store`,
-  a `Content-Security-Policy` that allows only the page's own files, `X-Content-Type-Options: nosniff` and
-  `Referrer-Policy: no-referrer`.
+- **The web UI:** the API serves it at `/ui/` (the files in `app/ui`, plain HTML, CSS and JavaScript; no build
+  step, no extra pod), locally and on UAT at the same path (D90). A sign-in screen takes the client API key, user,
+  entity and tenant (kept for the browser tab only); its menu: Home, New run, Runs (each MITRE or standard run's
+  page), Treatment plans (register, a plan, manual scenario), Service mapper, and Administration (System health, Jobs,
+  API keys, Library curation, Search vectors, Data ingestion, Schedule, Control links, AI usage). It calls only the
+  API's own routes; the admin pages that need the admin key ask for it there and keep it in the tab's memory only.
+  Every answer carries `Cache-Control: no-store`, a `Content-Security-Policy` that allows only the page's own files,
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
 - **OpenShift:** `deploy/deploy_threatgen.yaml` runs the API, beat and one worker per queue in `ai-threatgen`;
   `deploy/deploy_common.yaml` runs `worker-reaper`, Flower and the monitoring in `ai-common`. The app's settings are
   ConfigMap `tsg-config` in `deploy/configmap.yaml`; the monitoring's config files are ConfigMaps made from

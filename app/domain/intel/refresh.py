@@ -145,15 +145,20 @@ def _download_and_store(source: IntelSource, claim: str, health: SourceHealth, n
             records, source, result, now, lambda: feeds.renew_intel_feed_refresh(source, claim, utc_now())
         )
         graph_changed = _store_graph(source, claim, result)
-        _store_scenario_stix(source, claim, result)
+        stix_stored = _store_scenario_stix(source, claim, result)
     except ClaimLost:
         log.warning(LogEvent.EXTERNAL_INTELLIGENCE_CLAIM_LOST, source=source)
         return SourceRefresh(source, RefreshResult.CLAIM_LOST)
-    _succeed(source, claim, (result.checkpoint, result.source_version), now, records.count(source=source, current=True))
+    # A full download of the same content changes nothing: only a write is new data.
+    new_data = bool(new_versions or retired or graph_changed or stix_stored)
+    marks, current = (result.checkpoint, result.source_version), records.count(source=source, current=True)
+    _succeed(source, claim, marks, now, current, new_data=new_data)
     unchanged, quarantined = len(result.records) - new_versions, len(result.rejected)
     counts = {"new_versions": new_versions, "unchanged": unchanged, "quarantined": quarantined, "retired": retired}
     log.info(LogEvent.EXTERNAL_INTELLIGENCE_REFRESHED, source=source, **counts)
-    return SourceRefresh(source, RefreshResult.REFRESHED, new_versions, retired, graph_changed=graph_changed)
+    return SourceRefresh(
+        source, RefreshResult.REFRESHED, new_versions, retired, graph_changed=graph_changed, new_data=new_data
+    )
 
 
 def _store_graph(source: IntelSource, claim: str, result: FetchResult) -> bool:
@@ -177,19 +182,20 @@ def _scenario_stix_repository(source: IntelSource) -> MitreStixRepository:
     return get_mitre_enterprise_stix_repository()
 
 
-def _store_scenario_stix(source: IntelSource, claim: str, result: FetchResult) -> None:
-    """Replaces the source's STIX objects the MITRE run reads, unless that release is stored whole already.
-    An empty result writes nothing, so the stored objects stay."""
+def _store_scenario_stix(source: IntelSource, claim: str, result: FetchResult) -> bool:
+    """Replaces the source's STIX objects the MITRE run reads, unless that release is stored whole already; True
+    when it did. An empty result writes nothing, so the stored objects stay."""
     if not result.raw_stix:
-        return
+        return False
     stix = _scenario_stix_repository(source)
     stored_whole = stix.stored_versions() == [result.source_version] and stix.count() == len(result.raw_stix)
     if stored_whole:
-        return
+        return False
     if not get_intel_feed_repository().renew_intel_feed_refresh(source, claim, utc_now()):
         raise ClaimLost
     stored = stix.replace_stix_objects(result.raw_stix, result.source_version)
     log.info(LogEvent.MITRE_STIX_STORED, source=source, source_version=result.source_version, records=stored)
+    return True
 
 
 def _nothing_new(source: IntelSource, claim: str, health: SourceHealth, now: datetime) -> SourceRefresh:
@@ -199,9 +205,11 @@ def _nothing_new(source: IntelSource, claim: str, health: SourceHealth, now: dat
     return SourceRefresh(source, RefreshResult.UNCHANGED)
 
 
-def _succeed(source: IntelSource, claim: str, marks: tuple[str, str], now: datetime, records: int) -> None:
+def _succeed(
+    source: IntelSource, claim: str, marks: tuple[str, str], now: datetime, records: int, *, new_data: bool = False
+) -> None:
     checkpoint, version = marks
-    success = refresh_success_fields(checkpoint, version, now, records=records)
+    success = refresh_success_fields(checkpoint, version, now, records=records, new_data=new_data)
     _log_if_claim_lost(get_intel_feed_repository().release_intel_feed_refresh(source, claim, success), source)
 
 

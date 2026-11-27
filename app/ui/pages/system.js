@@ -1,10 +1,16 @@
-// System (no key): is the API alive, is it ready, and the state of each store and of each queue's workers.
+// System health (no key): is the service alive and ready, and the state of each store and of each queue's workers.
+
+const REFRESH_SECONDS = 30; // two open, free reads: cheap enough to keep the page current
+const STORE_NAMES = { mongo: "MongoDB (results and jobs)", sql: "SQL Server (library and assets)", redis: "Redis (work queues)" };
 
 export async function show(container, tools) {
-  const report = tools.build_element("div", { class: "columns" });
-  const read_again = () => tools.load_into(report, () => read_state(tools), (state) => build_report(tools, state));
-  container.append(tools.build_actions(tools.build_button("Refresh", read_again)), report);
-  await read_again();
+  tools.set_subtitle("Whether the service is up, can reach its stores, and has workers to do the work.");
+  const report = tools.build_element("div", { class: "stack" });
+  const read_again = (quiet) => tools.load_into(report, () => read_state(tools), (state) => build_report(tools, state), { quiet });
+  tools.set_actions(tools.build_button("Check again", () => read_again(true), { kind: "quiet" }));
+  tools.every(REFRESH_SECONDS, () => read_again(true));
+  container.append(report);
+  await read_again(false);
 }
 
 async function read_state(tools) {
@@ -23,42 +29,57 @@ async function read_readiness(tools) {
 }
 
 function build_report(tools, { health, readiness, read_at }) {
-  const stores = Object.entries(readiness.dependencies ?? {}).map(([store, is_up]) => ({ store, is_up }));
-  const state = tools.build_facts([
-    ["Alive", tools.build_badge(health?.status)],
-    ["Ready", tools.build_badge(readiness.status)],
-    ["Read at", tools.format_date(read_at)],
+  const stores = Object.entries(readiness.dependencies ?? {}).map(([store, is_up]) => ({ store, is_up: Boolean(is_up) }));
+  const queues = Object.entries(readiness.workers ?? {}).map(([queue, online]) => ({ queue, online }));
+  const is_alive = health?.status === "ok";
+  const is_ready = readiness.status === "ready";
+  const stores_up = stores.filter((row) => row.is_up).length;
+  const workers_online = queues.reduce((sum, row) => sum + (Number(row.online) || 0), 0);
+  const idle_queues = queues.filter((row) => !(row.online > 0)).length;
+  const kpis = tools.build_kpis([
+    { label: "Service", value: is_alive ? "Alive" : "Not answering", tone: is_alive ? "good" : "bad" },
+    { label: "Ready for work", value: is_ready ? "Ready" : "Not ready", tone: is_ready ? "good" : "bad" },
+    { label: "Stores up", value: `${stores_up} of ${stores.length}`, tone: stores_up === stores.length ? "good" : "warn" },
+    { label: "Workers online", value: readiness.workers ? workers_online : "Unknown", tone: workers_online > 0 ? "good" : "warn" },
   ]);
-  const store_columns = [
-    { title: "Store", show: (row) => write_mono(tools, row.store) },
-    { title: "State", show: (row) => tools.build_badge(Boolean(row.is_up), row.is_up ? "Up" : "Down") },
-  ];
+  const not_ready = !is_ready && tools.build_callout("The service is not ready: its main database does not answer, so no new work can start.", "bad");
+  const idle_note =
+    idle_queues > 0 && tools.build_callout(`${idle_queues} ${idle_queues === 1 ? "queue has" : "queues have"} no worker: work sent there waits until one starts.`, "warn");
   return [
-    tools.build_panel("API", state),
-    tools.build_panel("Stores", tools.build_table(stores, store_columns, { empty: "No store is reported." })),
-    tools.build_panel("Workers", build_workers(tools, readiness.workers)),
-    tools.build_panel("MongoDB", build_mongodb(tools, readiness.mongodb)),
+    kpis,
+    tools.build_element("p", { class: "muted", text: `Last checked ${tools.format_date(read_at)}. Checked again every ${REFRESH_SECONDS} seconds.` }),
+    not_ready,
+    idle_note,
+    tools.build_element(
+      "div",
+      { class: "grid-2" },
+      tools.build_section({ title: "Stores", subtitle: "The databases the service needs." }, build_stores(tools, stores)),
+      tools.build_section({ title: "Workers", subtitle: "The background workers listening on each queue." }, build_workers(tools, readiness.workers, queues)),
+    ),
+    tools.build_section({ title: "Main database details", subtitle: "How MongoDB is set up, as it reports itself." }, build_mongodb(tools, readiness.mongodb)),
   ];
 }
 
-function build_workers(tools, workers) {
-  if (!workers) return tools.build_empty("The workers' heartbeats could not be read.");
-  const rows = Object.entries(workers).map(([queue, online]) => ({ queue, online }));
+function build_stores(tools, stores) {
   const columns = [
-    { title: "Queue", nowrap: true, show: (row) => write_mono(tools, row.queue) },
+    { title: "Store", show: (row) => STORE_NAMES[row.store] ?? tools.humanise(row.store) },
+    { title: "State", show: (row) => tools.build_badge(row.is_up, row.is_up ? "Up" : "Down") },
+  ];
+  return tools.build_table(stores, columns, { caption: "Each store and whether it answers", empty: "No store is reported." });
+}
+
+function build_workers(tools, workers, queues) {
+  if (!workers) return tools.build_empty("The workers' heartbeats could not be read. Check again in a moment.");
+  const columns = [
+    { title: "Queue", show: (row) => tools.humanise(row.queue) },
     { title: "Online", numeric: true, show: (row) => tools.format_count(row.online) },
     { title: "State", show: (row) => (row.online > 0 ? tools.build_badge("ready", "Online") : tools.build_badge("down", "No worker")) },
   ];
-  return tools.build_table(rows, columns, { empty: "No queue is reported." });
+  return tools.build_table(queues, columns, { caption: "Workers online per queue", empty: "No queue is reported." });
 }
 
 function build_mongodb(tools, mongodb) {
-  if (!mongodb) return tools.build_empty("Not read yet: press Refresh.");
-  const write_label = (name) => name.charAt(0).toUpperCase() + name.slice(1).replaceAll("_", " ");
+  if (!mongodb) return tools.build_empty("Not read yet. Press Check again in a moment.");
   const show_fact = (value) => (value !== null && typeof value === "object" ? JSON.stringify(value) : value);
-  return tools.build_facts(Object.entries(mongodb).map(([name, value]) => [write_label(name), show_fact(value)]));
-}
-
-function write_mono(tools, value) {
-  return tools.build_element("span", { class: "mono", text: value });
+  return tools.build_facts(Object.entries(mongodb).map(([name, value]) => [tools.humanise(name), show_fact(value)]));
 }

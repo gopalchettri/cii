@@ -41,16 +41,16 @@ items:                                           # one tsg-config per project th
       CII_SCENARIO_CHAT_MAX_OUTPUT_TOKENS: "12288"                    # kimi-k2.5: longest answer in tokens
       CII_SCENARIO_CHAT_TIMEOUT_SECONDS: "120"                        # kimi-k2.5: seconds to wait for one answer before giving up
       CII_SCENARIO_CHAT_REQUESTS_PER_MINUTE: "180"                    # kimi-k2.5 requests a minute, all pods: its own limit is 600 (Nov 2026); 180 covers up to about 20 users (about 8 a Start), up to about 570 for more
-      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "1000000"                  # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; the gateway's 2,000,000 since Nov 2026 covers every model (shared with the team), and a 30 s burst may book 1.5x: 1.5 x the scenario tokens a minute + about 21,000 x plans at once + 10,000 x mappings at once at most 2,000,000; 0 = no limit
+      CII_SCENARIO_CHAT_TOKENS_PER_MINUTE: "1000000"                  # kimi-k2.5 tokens a minute (question + answer room), all pods: calls take turns instead of drawing 429s; the gateway's 2,000,000 since Nov 2026 covers every model (shared with the team), and a 30 s burst may book 1.5x: 1.5 x the scenario tokens a minute + about 21,600 x plans at once + 10,000 x mappings at once at most 2,000,000; 0 = no limit
       CII_SCENARIO_MAX_CONCURRENT_AI_CALLS: "20"                      # its questions at the same time, all pods: 5 users x 4 threat questions (4 x users); it also backs off after a 429
       CII_REMEDIATION_CHAT_BASE_URL: "https://llmapi.govai.ae"        # remediation plans: the AI gateway its chat calls go to
-      CII_REMEDIATION_CHAT_MODEL: "litellm_proxy/glm-5.3"             # its main chat model
+      CII_REMEDIATION_CHAT_MODEL: "litellm_proxy/kimi-k2.5"           # its main chat model (owner 2026-11-27: kimi-k2.5, about 3x faster than glm-5.3 for a plan)
       CII_REMEDIATION_CHAT_MODEL_THINKING: "false"                    # false = the model's "thinking" mode off (faster)
-      CII_REMEDIATION_CHAT_MAX_INPUT_TOKENS: "262144"                 # glm-5.3: longest question in tokens (the gateway's limit)
-      CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # glm-5.3: longest answer in tokens
-      CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "180"                     # glm-5.3: seconds to wait for one answer before giving up
-      CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "0"                   # glm-5.3 requests a minute, all pods; 0 = no limit: glm-5.3 has none of its own (Nov 2026)
-      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "5"                    # its calls at once to glm-5.3, all pods: 5 users' plans at once (about one per user; each books about 10,300 tokens while it runs)
+      CII_REMEDIATION_CHAT_MAX_INPUT_TOKENS: "114688"                 # kimi-k2.5: longest question in tokens (the gateway's limit)
+      CII_REMEDIATION_CHAT_MAX_OUTPUT_TOKENS: "12288"                 # kimi-k2.5: longest answer in tokens
+      CII_REMEDIATION_CHAT_TIMEOUT_SECONDS: "120"                     # kimi-k2.5: seconds to wait for one plan answer (at most 6,144 tokens: measured 23-46 s, 2026-11-27)
+      CII_REMEDIATION_CHAT_REQUESTS_PER_MINUTE: "30"                  # kimi-k2.5 requests a minute for plans, all pods, on its own key: with the scenario's 180 within kimi-k2.5's 600
+      CII_REMEDIATION_MAX_CONCURRENT_AI_CALLS: "5"                    # its calls at once to kimi-k2.5, all pods: 5 users' plans at once (about one per user; each books about 21,600 tokens while it runs: a MITRE plan's question measured 15,500 + its 6,144 answer room, 2026-11-27)
       CII_SERVICE_MAPPER_CHAT_BASE_URL: "https://llmapi.govai.ae"     # the service mapper: the AI gateway its chat calls go to
       CII_SERVICE_MAPPER_CHAT_MODEL: "litellm_proxy/glm-5.3"          # its main chat model
       CII_SERVICE_MAPPER_CHAT_MODEL_THINKING: "false"                 # false = the model's "thinking" mode off (faster)
@@ -65,7 +65,7 @@ items:                                           # one tsg-config per project th
       CII_ANSWER_TOKENS_GAP_FILL: "1024"                              # threat finding: a threat for a STRIDE kind that found none
       CII_ANSWER_TOKENS_WRITE_SCENARIO: "6144"                        # scenario writing: one set of scenarios in one answer (at most about 780 a scenario)
       CII_ANSWER_TOKENS_REPAIR_SCENARIO: "5632"                       # scenario writing: a set's scenarios written again after a check, in one answer
-      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "3584"                      # remediation: one treatment plan (at most about 260 a control)
+      CII_ANSWER_TOKENS_REMEDIATION_PLAN: "6144"                      # remediation: one treatment plan (at most about 260 a control: up to 19 added controls; model max 12,288)
       CII_ANSWER_TOKENS_SERVICE_MAPPER: "3072"                        # service mapper: one mapping (10 + 10 services: at most about 2,000)
       CII_ANSWER_TOKENS_LINK_CONTROLS: "2048"                         # control links: which library controls do what one MITRE ATT&CK mitigation says (one answer per mitigation, at most 15 candidates)
       CII_ANSWER_TOKENS_PICK_CONTROLS: "3072"                         # POST /v1/create_session: the controls picked for one written set of scenarios, in one answer
@@ -109,6 +109,11 @@ items:                                           # one tsg-config per project th
       MIN_CONTROLS: "3"                          # fewest controls kept per scenario
       MAX_CONTROLS: "10"                         # most controls kept per scenario (the same as the UAT server)
       NEAREST_CONTROLS: "3"                      # controls kept when none is close enough
+      REMEDIATION_ALTERNATIVE_CONTROLS: "20"     # library alternatives a remediation plan is offered, at most (required: no default)
+      PLAN_LINKED_CONTROLS_PER_TECHNIQUE: "20"   # a MITRE plan: controls linked to a step's MITRE mitigations offered per step, at most (required: no default)
+      CONTROLS_PER_TECHNIQUE_BY_MEANING: "20"    # a MITRE plan: controls nearest a step by meaning offered per step, at most (required: no default)
+      PLAN_CANDIDATES_LIMIT: "120"               # a MITRE plan: candidates in all, each step's share fair (required: no default)
+      PLAN_CANDIDATE_DESCRIPTION_CHARACTERS: "400"  # a MITRE plan: each candidate's description cut to this (required: no default)
       THREAT_SCENARIO_WORD_LIMIT: "120-180"      # words asked for per scenario statement (min-max; the code's default is 150-200)
       RISK_STATEMENT_WORD_LIMIT: "80-120"        # words asked for per risk statement (min-max; the code's default is 100-150)
       EVIDENCE_STATEMENT_WORD_LIMIT: "20-60"     # words asked for per evidence passage (min-max)
@@ -152,9 +157,9 @@ items:                                           # one tsg-config per project th
       MITRE_PLAN_CALL_TOKENS_LIMIT: "60000"                             # most tokens (prompt chars/3 + answer room) one planner call holds: the POC's 34,000 input tokens x 1.5 + the 8,192 planner room (required: no default)
       MITRE_ACTOR_SLICE_TOKENS_LIMIT: "34000"                           # most tokens (prompt chars/3 + answer room) one actor-selection slice holds: two slices asked in parallel, each answer within its 8,192 room (required: no default)
       MITRE_WRITE_CALL_TOKENS_LIMIT: "60000"                            # most tokens (prompt chars/3 + answer room) one writer call holds: a set's paths are written together up to it (required: no default)
-      MITRE_CONTROLS_BY_TECHNIQUE: "true"                              # a MITRE card's controls chosen per technique among its MITRE-linked library controls (false: per sentence) (required: no default)
-      CONTROLS_PER_TECHNIQUE_CANDIDATES: "6"                           # MITRE-linked controls offered per technique, best link first (required: no default)
-      CONTROLS_PER_TECHNIQUE: "2"                                      # controls the AI keeps per technique (required: no default)
+      MITRE_CONTROLS_BY_TECHNIQUE: "true"                              # unused since 2026-11-27 (D91: a MITRE plan identifies its controls); kept for a rollback, then removed (required: no default)
+      CONTROLS_PER_TECHNIQUE_CANDIDATES: "6"                           # unused since 2026-11-27 (D91); kept for a rollback, then removed (required: no default)
+      CONTROLS_PER_TECHNIQUE: "2"                                      # unused since 2026-11-27 (D91); kept for a rollback, then removed (required: no default)
       MITIGATION_TEXT_CHARACTERS: "300"                                # MITRE's words on how a mitigation defends a technique, cut to this (required: no default)
   - apiVersion: v1                               # core API version
     kind: ConfigMap                              # plain, non-secret settings

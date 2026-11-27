@@ -269,6 +269,9 @@ class LogEvent(StrEnum):
     WRITER_SCENARIO_SAVED = "writer.scenario_saved"
     WRITER_PATH_FAILED = "writer.path_failed"
     CONTROLS_MAPPED = "controls.mapped"
+    PLAN_ALTERNATIVES_OFFERED = "plan.alternatives_offered"  # how many library alternatives a plan was offered
+    PLAN_CANDIDATES_GATHERED = "plan.candidates_gathered"  # a MITRE plan's candidates: linked, by meaning, kept
+    PLAN_TRUNCATED_ASKED_AGAIN = "plan.truncated_asked_again"  # a plan answer cut off: asked once for fewer controls
     CONTROLS_NOT_MAPPED = "controls.not_mapped"
     CONTROLS_MAP_FAILED = "controls.map_failed"
     WRITER_OUTAGE_SETTLED = "writer.outage_settled"  # an outage only some paths kept hitting: failure cards
@@ -291,6 +294,7 @@ class LogEvent(StrEnum):
     JOB_FAILED = "job.failed"
     JOB_FAILURE_NOT_SAVED = "job.failure_not_saved"  # MongoDB down: the reaper settles the job later
     JOB_UNEXPECTED_ERROR = "job.unexpected_error"  # a bug: logged with its traceback
+    JOB_KNOWN_ERROR = "job.known_error"  # an AppError (a refused procedure, a value, a missing record): its own words
     JOB_HANDED_BACK = "job.handed_back"  # a stopping worker queued its running job again, no attempt used
     JOB_REQUEUED = "job.requeued"
     JOB_SEND_FAILED = "job.send_failed"
@@ -332,10 +336,8 @@ class LogEvent(StrEnum):
     CONTROLS_PICKED = "controls.picked"  # a written set's controls picked per sentence
     CONTROLS_PICK_DROPPED = "controls.pick_dropped"  # a pick code refused, with its reason
     CONTROLS_PICK_UNUSABLE = "controls.pick_unusable"  # the answer could not be used: the search maps the set
-    CONTROLS_PICKED_BY_TECHNIQUE = "controls.picked_by_technique"  # MITRE cards' controls picked per technique
-    CONTROLS_LINK_FALLBACK = "controls.link_fallback"  # unreadable answer: each technique's best MITRE link kept
-    CONTROLS_EFFECT_CORRECTED = "controls.effect_corrected"  # an effect the control's domain cannot have, corrected
-    CONTROLS_TOPPED_UP_BY_SEARCH = "controls.topped_up_by_search"  # a MITRE card short of MIN_CONTROLS, topped up
+    CONTROLS_MITRE_CLEARED = "controls.mitre_cleared"  # once: MITRE cards' waiting controls removed, runs recounted
+    CONTROLS_MITRE_CLEAR_FAILED = "controls.mitre_clear_failed"  # that clean-up failed: start-up goes on
     MITRE_RUN_PLANNED = "mitre.run_planned"  # a MITRE run's actors selected and paths planned and stored
     MITRE_FURTHER_PATHS_PLANNED = "mitre.further_paths_planned"  # an "all paths" run's "any others?" round
     MITRE_SET_WRITTEN = "mitre.set_written"  # one set of a MITRE run: written, dropped, seconds

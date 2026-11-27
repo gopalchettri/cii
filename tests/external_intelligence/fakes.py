@@ -19,6 +19,7 @@ from app.schemas.intel_records import (
     EvidenceResult,
     EvidenceSearchRecord,
     RefreshSummary,
+    SourceRefresh,
     SwitchState,
 )
 
@@ -79,14 +80,15 @@ class FakeRefresher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.index_error: dict[str, str] | None = None  # set: the index rebuild after the refresh failed
+        self.sources: tuple[SourceRefresh, ...] = ()  # each source's outcome the refresh answers
 
     def refresh_all_sources(self, now: datetime) -> RefreshSummary:
         self.calls.append(("due", None))
-        return RefreshSummary((), self.index_error is None, self.index_error)
+        return RefreshSummary(self.sources, self.index_error is None, self.index_error)
 
     def refresh_one_source(self, source: IntelSource, now: datetime) -> RefreshSummary:
         self.calls.append(("one", source))
-        return RefreshSummary((), self.index_error is None, self.index_error)
+        return RefreshSummary(self.sources, self.index_error is None, self.index_error)
 
 
 _GETTERS = {

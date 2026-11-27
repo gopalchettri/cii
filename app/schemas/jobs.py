@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.constants import AdminJobKind, AiOutage, IntelSource, JobKind, Status, Step
+from app.schemas.intel_records import RefreshResult
 
 
 class RetryNotice(BaseModel):
@@ -119,8 +120,19 @@ class EmbeddingsBuildResult(BaseModel):
     newly_embedded: dict[str, int] = Field(description="Vectors made while the build ran, per library.")
 
 
+class IntelSourceOutcome(BaseModel):
+    """What one import did to one source."""
+
+    source: IntelSource
+    outcome: RefreshResult = Field(description="refreshed, unchanged, failed, skipped or claim_lost")
+    new_data: bool = Field(description="The stored data changed; false = MITRE had nothing new (a check only).")
+    new_versions: int = Field(description="Records stored as new or changed.")
+    retired: int = Field(description="Records MITRE no longer lists, taken out of use.")
+
+
 class IntelRefreshResult(BaseModel):
     source: IntelSource | None = Field(default=None, description="The source refreshed; none = every source due.")
+    sources: list[IntelSourceOutcome] = Field(default=[], description="Each source's outcome, in import order.")
     index_error: dict[str, str] | None = Field(
         default=None,
         description=(

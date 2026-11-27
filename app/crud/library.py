@@ -1,8 +1,10 @@
 """SQL Server library reads (threats, controls) and the SQL write-safety log, through stored procedures."""
 
+import contextlib
 import json
 import uuid
 from collections import defaultdict
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,9 +13,9 @@ from pymongo.collection import Collection as MongoCollection
 from app.core import constants as c
 from app.core.asset_types import canonical_asset_type
 from app.core.clock import utc_now
-from app.core.constants import LibraryRowKind, ResolveOutcome, StoredProcedure, StrideCategory
-from app.core.database import Row, StoredProcedureClient, get_stored_procedure_client
-from app.core.exceptions import OperationInProgress, OutcomeUnknown
+from app.core.constants import DecisionOutcome, LibraryRowKind, ResolveOutcome, StoredProcedure, StrideCategory
+from app.core.database import Row, StoredProcedureClient, get_stored_procedure_client, procedure_answer_shape
+from app.core.exceptions import OperationInProgress, OutcomeUnknown, SetupError
 from app.core.singletons import singleton
 from app.crud.base import MongoRepository
 from app.schemas import library as m
@@ -89,6 +91,18 @@ class SqlOperationRepository(MongoRepository):
     def _finish(self, operation_id: str, attempt: str, changes: dict[str, Any]) -> None:
         self.update(changes, _id=operation_id, attempt=attempt)
 
+    @contextlib.contextmanager
+    def reading_answer(self, operation_id: str, procedure: c.StoredProcedure) -> Iterator[None]:
+        """procedure_answer_shape for a write's answer. One the code cannot read is asked of SQL Server again on
+        the next try (reconciled, as a lost answer is), never replayed from its record: once the DBA installs the
+        procedure, the retry reads its answer and writes the audit (owner 2026-11-27)."""
+        try:
+            with procedure_answer_shape(procedure):
+                yield
+        except SetupError:
+            self.update({"status": c.SqlOperationStatus.REQUIRES_RECONCILIATION}, _id=operation_id)
+            raise
+
 
 class ControlRepository:
     """The control library's procedure."""
@@ -98,18 +112,19 @@ class ControlRepository:
 
     def get_control_library(self) -> tuple[LibraryControl, ...]:
         """The active controls from tsg_GetControlLibrary, in id order (a retired control is never mapped)."""
-        rows = self._procedures.execute_procedure(StoredProcedure.GET_CONTROL_LIBRARY)[0]
-        return tuple(
-            LibraryControl(
-                control_id=row["ControlLibraryID"],
-                code=row["ControlCode"],
-                asset_type=canonical_asset_type(row.get("AssetType")),
-                domain=row["Domain"],
-                name=row["ControlName"],
-                description=row.get("ControlDescription"),
+        answer = self._procedures.execute_procedure(StoredProcedure.GET_CONTROL_LIBRARY)
+        with procedure_answer_shape(StoredProcedure.GET_CONTROL_LIBRARY):
+            return tuple(
+                LibraryControl(
+                    control_id=row["ControlLibraryID"],
+                    code=row["ControlCode"],
+                    asset_type=canonical_asset_type(row.get("AssetType")),
+                    domain=row["Domain"],
+                    name=row["ControlName"],
+                    description=row.get("ControlDescription"),
+                )
+                for row in sorted(answer[0], key=lambda control: control["ControlLibraryID"])
             )
-            for row in sorted(rows, key=lambda control: control["ControlLibraryID"])
-        )
 
 
 def _stride(names: set[str]) -> tuple[StrideCategory, ...]:
@@ -189,12 +204,15 @@ class ThreatRepository:
 
     def get_library_stamp(self) -> m.LibraryStamp:
         """The fingerprint of every library table (tsg_GetLibraryStamp), in a fixed order."""
-        rows = self._procedures.execute_procedure(StoredProcedure.GET_LIBRARY_STAMP)[0]
-        return tuple(sorted((row["table_name"], row["fingerprint"]) for row in rows))  # UNION ALL: no order
+        answer = self._procedures.execute_procedure(StoredProcedure.GET_LIBRARY_STAMP)
+        with procedure_answer_shape(StoredProcedure.GET_LIBRARY_STAMP):  # UNION ALL: no order
+            return tuple(sorted((row["table_name"], row["fingerprint"]) for row in answer[0]))
 
     def get_threat_library(self) -> m.ThreatLibrary:
         """The live threat library (tsg_GetThreatLibrary)."""
-        return _threat_library(self._procedures.execute_procedure(StoredProcedure.GET_THREAT_LIBRARY))
+        answer = self._procedures.execute_procedure(StoredProcedure.GET_THREAT_LIBRARY)
+        with procedure_answer_shape(StoredProcedure.GET_THREAT_LIBRARY):  # its 8 result sets, as the code reads them
+            return _threat_library(answer)
 
     def propose_threat(self, operation_id: str, proposal: m.ThreatProposal) -> tuple[m.ProposedThreat, bool]:
         """(the library's answer, True when this call applied it) for one proposed threat."""
@@ -210,31 +228,35 @@ class ThreatRepository:
         result_sets, applied_now = self._operations.run_sql_operation(
             operation_id, StoredProcedure.RESOLVE_THREAT, parameters
         )
-        (row,) = result_sets[0]
-        return m.ProposedThreat(
-            row["threat_type_id"], row["threat_catalogue_id"], ResolveOutcome(row["outcome"])
-        ), applied_now
+        with self._operations.reading_answer(operation_id, StoredProcedure.RESOLVE_THREAT):  # one row, known outcome
+            (row,) = result_sets[0]
+            proposed = m.ProposedThreat(
+                row["threat_type_id"], row["threat_catalogue_id"], ResolveOutcome(row["outcome"])
+            )
+        return proposed, applied_now
 
     def list_pending_threats(self, offset: int, limit: int) -> tuple[list[Row], int]:
         """One page of pending threats, oldest first, and how many wait in all (tsg_ListPendingThreats)."""
-        page, total = self._procedures.execute_procedure(
-            StoredProcedure.LIST_PENDING_THREATS, Offset=offset, Limit=limit
-        )
-        # DATETIME2 holds UTC without saying so: said here, as every API time says it.
-        shown = [
-            {
-                "catalogue_id": row["catalogue_id"],
-                "threat": row["threat"],
-                "type": row["threat_type"],
-                "type_pending": bool(row["type_pending"]),
-                "categories": [category["name"] for category in json.loads(row["categories"] or "[]")],
-                "source": row["source"],
-                "created_by": row["created_by"],
-                "created_at": row["created_at"].replace(tzinfo=UTC) if row["created_at"] else None,
-            }
-            for row in page
-        ]
-        return shown, total[0]["total"]
+        answer = self._procedures.execute_procedure(StoredProcedure.LIST_PENDING_THREATS, Offset=offset, Limit=limit)
+        with procedure_answer_shape(StoredProcedure.LIST_PENDING_THREATS):
+            page, total = answer
+            # DATETIME2 holds UTC without saying so: said here, as every API time says it.
+            shown = [
+                {
+                    "catalogue_id": row["catalogue_id"],
+                    "threat": row["threat"],
+                    "type": row["threat_type"],
+                    "type_pending": bool(row["type_pending"]),
+                    # .get: the list keeps working until the DBA applies the procedure that returns it
+                    "asset_type": canonical_asset_type(row.get("asset_type")),
+                    "categories": [category["name"] for category in json.loads(row["categories"] or "[]")],
+                    "source": row["source"],
+                    "created_by": row["created_by"],
+                    "created_at": row["created_at"].replace(tzinfo=UTC) if row["created_at"] else None,
+                }
+                for row in page
+            ]
+            return shown, total[0]["total"]
 
     def decide_pending_threats(
         self, operation_id: str, approve: list[int], reject: list[int], decided_by: str
@@ -244,7 +266,12 @@ class ThreatRepository:
         result_sets, applied_now = self._operations.run_sql_operation(
             operation_id, StoredProcedure.DECIDE_PENDING_THREATS, parameters
         )
-        return result_sets[0], applied_now
+        with self._operations.reading_answer(operation_id, StoredProcedure.DECIDE_PENDING_THREATS):
+            decided = [
+                {"catalogue_id": row["catalogue_id"], "outcome": DecisionOutcome(row["outcome"])}
+                for row in result_sets[0]
+            ]
+        return decided, applied_now
 
 
 @singleton

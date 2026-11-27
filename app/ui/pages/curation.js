@@ -2,19 +2,19 @@
 
 const PAGE_SIZES = [25, 50, 100]; // never above the API's ids per decisions call (100): a whole page fits one call
 const DEFAULT_PAGE_SIZE = 50;
-const TITLE = "Waiting for a curator";
 const DECISIONS = {
   approve: { label: "Approve", kind: "primary", danger: false, effect: "An approved threat joins the live library." },
   reject: { label: "Reject", kind: "danger", danger: true, effect: "A rejected threat is never proposed again." },
 };
+const SOURCES = { ai: "Promoted from an AI scenario", manual: "A hand-written scenario" };
 /** The look of an outcome that changed nothing; the others take the badge's own look. */
 const OUTCOME_TONES = { already_approved: "idle", already_rejected: "idle", is_approved: "warn", not_found: "warn" };
 
 /** @param {HTMLElement} container @param {object} tools the shell's tools (app.js) */
 export async function show(container, tools) {
-  // "columns" on a place: its content takes the place's width, so a wide table scrolls in its own box, not the page.
-  const result_place = tools.build_element("div", { class: "columns", hidden: true });
-  const list_place = tools.build_element("div", { class: "columns" });
+  tools.set_subtitle("Threats proposed for the library wait here for a curator. Tick them, then approve or reject.");
+  const result_place = tools.build_element("div", { hidden: true }); // no layout class: one would override [hidden]
+  const list_place = tools.build_element("div", { class: "stack" });
   const sizes = PAGE_SIZES.map((size) => ({ value: size, label: `${size} a page` }));
   const page_size = tools.build_select(sizes, DEFAULT_PAGE_SIZE, { on: { change: () => load_page(0) } });
   let offset = 0;
@@ -30,11 +30,10 @@ export async function show(container, tools) {
     return { ...page, offset, limit };
   }
 
-  function load_page(new_offset = offset) {
+  /** A new page shows the loading state; the same page read again (`quiet`) keeps the old rows until it answers. */
+  function load_page(new_offset = offset, quiet = false) {
     offset = new_offset;
-    const box = tools.build_element("div"); // a load that is overtaken answers into a box no longer shown
-    tools.replace_content(list_place, box);
-    return tools.load_into(box, read_page, (page) => build_pending_panel(page, tools, load_page, decide));
+    return tools.load_into(list_place, read_page, (page) => build_pending(page, tools, load_page, decide), { quiet });
   }
 
   async function decide(decision, rows) {
@@ -43,15 +42,20 @@ export async function show(container, tools) {
       result_place.hidden = true;
       tools.replace_content(result_place);
     };
-    tools.replace_content(result_place, build_result_panel(answer.results, rows, tools, dismiss));
+    tools.replace_content(result_place, build_result_section(answer.results, rows, tools, dismiss));
     result_place.hidden = false;
     const has_only_changes = answer.results.every((result) => !OUTCOME_TONES[result.outcome]);
     tools.show_notice(`Decided: ${summarise_outcomes(answer.results)}.`, has_only_changes ? "good" : "info");
-    await load_page();
+    await load_page(offset, true);
   }
 
-  const refresh = tools.build_button("Refresh", () => load_page());
-  container.append(tools.build_element("div", { class: "toolbar" }, tools.build_field("Page size", page_size), refresh), result_place, list_place);
+  const refresh = tools.build_button("Refresh", () => load_page(offset, true), { kind: "quiet" });
+  const pending = tools.build_section(
+    { title: "Waiting for a curator", subtitle: "Oldest first. A decision is final for each threat.", actions: [refresh] },
+    tools.build_element("div", { class: "toolbar" }, tools.build_field("Page size", page_size)),
+    list_place,
+  );
+  container.append(result_place, pending);
   await load_page();
 }
 
@@ -67,8 +71,8 @@ function summarise_outcomes(results) {
 }
 
 /** One page of pending threats with its ticks, the two decisions and the paging. */
-function build_pending_panel(page, tools, load_page, decide) {
-  if (page.total === 0) return tools.build_panel(TITLE, tools.build_empty("No threat is waiting for a curator."));
+function build_pending(page, tools, load_page, decide) {
+  if (page.total === 0) return tools.build_empty("No threat is waiting for a curator. New proposals appear here as runs suggest them.");
   const { items, offset, limit, total } = page;
   const boxes = new Map(
     items.map((row) => [row, tools.build_element("input", { type: "checkbox", "aria-label": `Tick ${row.threat}`, on: { change: show_ticks } })]),
@@ -116,39 +120,35 @@ function build_pending_panel(page, tools, load_page, decide) {
   const columns = [
     { title: "Tick", show: (row) => boxes.get(row) },
     { title: "Threat", key: "threat" },
-    { title: "Type", show: (row) => [row.type, row.type_pending && [" ", tools.build_badge("pending", "new type", "wait")]] },
-    { title: "Categories", show: (row) => row.categories.join(", ") },
-    { title: "Source", key: "source" },
+    { title: "Type", show: (row) => [row.type, row.type_pending && [" ", tools.build_badge("pending", "New type", "wait")]] },
+    { title: "Asset type", show: (row) => row.asset_type || "Any" },
+    { title: "Categories", show: (row) => (row.categories.length ? tools.build_element("div", { class: "tags" }, row.categories.map((name) => tools.build_tag(name))) : null) },
+    { title: "Source", show: (row) => SOURCES[row.source] ?? tools.humanise(row.source) },
     { title: "Proposed by", key: "created_by" },
     { title: "Proposed", show: (row) => tools.format_date(row.created_at), nowrap: true },
-    { title: "ID", key: "catalogue_id", numeric: true },
+    { title: "Library id", key: "catalogue_id", numeric: true },
   ];
-  const shown = `Showing ${offset + 1}–${offset + items.length} of ${tools.format_count(total)}, oldest first`;
-  const new_type_note = items.some((row) => row.type_pending) && "A new type goes live with its first approved threat.";
+  const new_type_note = items.some((row) => row.type_pending) && tools.build_callout("A new type goes live with its first approved threat.", "info");
   show_ticks();
-  return tools.build_panel(
-    TITLE,
-    tools.build_actions(tickers, deciders, ticked_count),
-    tools.build_table(items, columns, { caption: shown }),
-    new_type_note && tools.build_element("p", { class: "muted", text: new_type_note }),
-    tools.build_actions(
-      tools.build_button("Previous", () => load_page(Math.max(0, offset - limit)), { disabled: offset === 0 }),
-      tools.build_button("Next", () => load_page(offset + limit), { disabled: offset + items.length >= total }),
-    ),
-  );
+  return [
+    tools.build_kpis([{ label: "Waiting for a curator", value: total, tone: "warn" }]),
+    tools.build_element("div", { class: "spread" }, tools.build_actions(tickers), tools.build_actions(deciders, ticked_count)),
+    tools.build_table(items, columns, { caption: "Threats waiting for a curator, oldest first" }),
+    new_type_note,
+    tools.build_pager({ offset, limit, total, on_change: (next) => load_page(next) }),
+  ];
 }
 
 /** What the API answered for each id of the last decision, with the threat's name from the page it was ticked on. */
-function build_result_panel(results, rows, tools, dismiss) {
+function build_result_section(results, rows, tools, dismiss) {
   const threats = new Map(rows.map((row) => [row.catalogue_id, row.threat]));
   const columns = [
     { title: "Threat", show: (result) => threats.get(result.catalogue_id) },
-    { title: "ID", key: "catalogue_id", numeric: true },
+    { title: "Library id", key: "catalogue_id", numeric: true },
     { title: "Outcome", show: (result) => tools.build_badge(result.outcome, undefined, OUTCOME_TONES[result.outcome]) },
   ];
-  return tools.build_panel(
-    "Last decision",
-    tools.build_table(results, columns, { caption: summarise_outcomes(results), empty: "The API answered no outcome." }),
-    tools.build_actions(tools.build_button("Dismiss", dismiss, { kind: "quiet" })),
+  return tools.build_section(
+    { title: "Last decision", subtitle: summarise_outcomes(results), actions: [tools.build_button("Dismiss", dismiss, { kind: "quiet" })] },
+    tools.build_table(results, columns, { caption: "What happened to each ticked threat", empty: "The service answered no outcome." }),
   );
 }

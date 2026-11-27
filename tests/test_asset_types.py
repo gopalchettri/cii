@@ -5,7 +5,14 @@ OT threat never on an IT system); an empty value, or one that is not a type, fit
 import dataclasses
 from typing import Any
 
-from app.core.asset_types import asset_type_fits, asset_type_label, canonical_asset_type, place_asset_label
+from app.core.asset_types import (
+    asset_type_fits,
+    asset_type_label,
+    canonical_asset_type,
+    compatible_asset_types,
+    place_asset_label,
+    unknown_asset_type,
+)
 from app.core.constants import AiTask, AssetType, AttackerCheck, CandidateRejection, PlanLoss, PlanStage, StrideCategory
 from app.domain.scenario.plan import build_plan
 from app.domain.scenario.session import scenario_asset_type
@@ -223,6 +230,15 @@ def test_it_slash_ot_is_both_and_is_kept_in_one_spelling() -> None:
     assert canonical_asset_type(None) is None
 
 
+def test_ot_it_is_both_too_in_either_slash() -> None:
+    r"""Owner 2026-11-25: values are IT, OT, IT\OT or OT\IT. OT\IT was read as unknown (fitting everywhere with a
+    warning, and a MITRE run's OT\IT asset taken for unknown); it is IT\OT, kept in that one spelling."""
+    assert asset_type_label(r"OT\IT") == asset_type_label("ot/it") == asset_type_label(r" OT \ IT ") == AssetType.IT_OT
+    assert canonical_asset_type(r"OT\IT") == r"IT\OT"
+    assert not unknown_asset_type(r"OT\IT")  # never flagged for a curator to fix
+    assert compatible_asset_types(r"OT\IT", ()) == compatible_asset_types(r"IT\OT", ()) != frozenset()
+
+
 def test_a_dropped_kinds_attacker_never_speaks_for_the_kinds_that_stay() -> None:
     """The OT library threat's own kinds say no listed attacker fits; its AI twin's kind, on the IT system it
     cannot fit, named one. That kind is dropped, so its pick goes with it: the threat has no attacker and is
@@ -250,12 +266,14 @@ def test_a_dropped_kinds_attacker_never_speaks_for_the_kinds_that_stay() -> None
     assert attacker == [(RANSOMWARE.name, AttackerCheck.NONE_FITS)]
 
 
-def test_a_place_is_ot_when_ot_fits_it_else_it_and_none_without_a_code() -> None:
-    r"""The AssetType a promoted threat is saved with (owner 2026-11-24): an OT or IT\OT system makes the place OT."""
+def test_a_place_is_it_ot_when_both_fit_it_else_the_one_that_fits_and_none_without_a_code() -> None:
+    r"""The AssetType a promoted threat is saved with (owner 2026-11-24; 2026-11-25: IT\OT when it attacks both):
+    IT and OT systems, or an IT\OT one, make the place IT\OT."""
     assert place_asset_label("IT", ["IT"]) == "IT"
     assert place_asset_label("IT", ["OT"]) == "OT"
-    assert place_asset_label("IT", [r"IT\OT"]) == "OT"
-    assert place_asset_label("IT", ["IT", "OT"]) == "OT"
+    assert place_asset_label("IT", [r"IT\OT"]) == r"IT\OT"
+    assert place_asset_label("IT", ["IT", "OT"]) == r"IT\OT"
+    assert place_asset_label(r"OT\IT", []) == r"IT\OT"  # an IT\OT asset itself, either spelling
     assert place_asset_label("OT", []) == "OT"  # no system named: the asset itself
     assert place_asset_label("IT", [None]) == "IT"  # an unrecorded system takes the asset's
     assert place_asset_label(None, []) is None and place_asset_label("XX", []) is None
@@ -269,5 +287,8 @@ def test_a_scenarios_asset_type_is_where_it_attacks() -> None:
     assert scenario_asset_type({"systems": []}, MIXED) == "IT"  # the IT asset itself
     ics = {"mitre": {"attack_techniques": [{"mitre_id": "T1078", "domain": "enterprise"}, {"domain": "ics"}]}}
     enterprise = {"mitre": {"attack_techniques": [{"mitre_id": "T1078", "domain": "enterprise"}]}}
-    assert scenario_asset_type(ics | {"systems": [{"id": 322}]}, MIXED) == "OT"
+    assert scenario_asset_type({"systems": [{"id": 321}, {"id": 322}]}, MIXED) == r"IT\OT"  # attacks both
+    only_ics = {"mitre": {"attack_techniques": [{"mitre_id": "T0855", "domain": "ics"}]}}
+    assert scenario_asset_type(ics | {"systems": [{"id": 322}]}, MIXED) == r"IT\OT"  # IT -> OT crossing
+    assert scenario_asset_type(only_ics | {"systems": [{"id": 322}]}, MIXED) == "OT"
     assert scenario_asset_type(enterprise | {"systems": [{"id": 321}]}, MIXED) == "IT"

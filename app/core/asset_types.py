@@ -6,11 +6,16 @@ from app.core.constants import COMPATIBLE_ASSET_TYPES, AssetType
 
 
 def asset_type_label(value: str | None) -> AssetType | None:
-    r"""A stored AssetType or category code as IT, OT or IT\OT, whatever its case, spacing or slash; else None."""
+    r"""A stored AssetType or category code as IT, OT or IT\OT, whatever its case, spacing, slash or order (OT\IT is
+    IT\OT); else None."""
+    spelled = "".join((value or "").split()).upper().replace("/", "\\")
     try:
-        return AssetType("".join((value or "").split()).upper().replace("/", "\\"))
+        return AssetType(_BOTH_ORDERS.get(spelled, spelled))
     except ValueError:
         return None
+
+
+_BOTH_ORDERS = {r"OT\IT": AssetType.IT_OT.value}  # owner 2026-11-25: the data writes both sides either way round
 
 
 def canonical_asset_type(value: str | None) -> str | None:
@@ -47,9 +52,11 @@ def place_asset_types(asset_category: str | None, system_categories: Iterable[st
 
 
 def place_asset_label(asset_category: str | None, system_categories: Iterable[str | None]) -> str | None:
-    r"""IT or OT for one place, as the library types its threats: OT when OT fits it (an OT or IT\OT system), else
-    IT when IT fits; None when no code is recorded (the threat is saved untyped)."""
+    r"""IT, OT or IT\OT for one place, as the library types its threats: IT\OT when both fit it (IT and OT systems,
+    or an IT\OT one), else the one that fits; None when no code is recorded (the threat is saved untyped)."""
     fitting = place_asset_types(asset_category, system_categories)
+    if AssetType.IT in fitting and AssetType.OT in fitting:
+        return AssetType.IT_OT.value
     for label in (AssetType.OT, AssetType.IT):
         if label in fitting:
             return label.value

@@ -257,6 +257,7 @@ class SourceRefresh:
     retired: int = 0
     error: str | None = None  # people-readable: a message text or an exception type
     graph_changed: bool = False  # it stored an ATT&CK graph that differs from the one stored before
+    new_data: bool = False  # it changed the stored data: records, retirements, the graph or the STIX objects
 
 
 @dataclass(frozen=True)
@@ -288,6 +289,7 @@ class SourceHealth:
     last_error: str | None = None  # an IntelMessage, filled in
     # set while a worker refreshes it; older than IntelLimits.CLAIM_STALE_SECONDS: the worker is dead
     claimed_at: datetime | None = None
+    last_new_data_at: datetime | None = None  # the last import that changed the stored data (a check alone: not)
 
     @classmethod
     def from_doc(cls, doc: dict[str, Any]) -> "SourceHealth":
@@ -313,12 +315,16 @@ class SourceHealth:
             "last_success_at": self.last_success_at,
             "last_error": self.last_error,
             "claimed_at": self.claimed_at,
+            "last_new_data_at": self.last_new_data_at,
         }
 
 
-def refresh_success_fields(checkpoint: str, source_version: str, now: datetime, *, records: int) -> dict[str, Any]:
-    """What a successful refresh records on its source: the new checkpoint, version and count."""
-    return {
+def refresh_success_fields(
+    checkpoint: str, source_version: str, now: datetime, *, records: int, new_data: bool = False
+) -> dict[str, Any]:
+    """What a successful refresh records on its source: the new checkpoint, version and count; with `new_data`,
+    also when the stored data last changed (a check that found nothing new leaves that time as it was)."""
+    fields = {
         "status": FeedStatus.OK,
         "checkpoint": checkpoint,
         "source_version": source_version,
@@ -326,6 +332,7 @@ def refresh_success_fields(checkpoint: str, source_version: str, now: datetime, 
         "last_success_at": now,
         "last_error": None,
     }
+    return fields | ({"last_new_data_at": now} if new_data else {})
 
 
 def refresh_failure_fields(error: str, now: datetime) -> dict[str, Any]:

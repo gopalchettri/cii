@@ -15,6 +15,7 @@ class PendingThreat(BaseModel):
     threat: str
     type: str
     type_pending: bool = Field(description="The type is new too: it goes live with its first approved threat.")
+    asset_type: str | None = Field(None, description="IT, OT or IT\\OT; none fits every asset.")
     categories: list[str]
     source: str = Field(description="ai (promoted from a scenario) or manual (a hand-written scenario)")
     created_by: str | None = None

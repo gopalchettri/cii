@@ -46,7 +46,10 @@ _GROUPS: dict[ApiTag, str] = {
     ApiTag.MITRE: (
         "A run written from the full MITRE ATT&CK Enterprise and ICS data, with its own calls: start it, follow "
         "it, accept, reject or regenerate its scenarios, write its next set, or propose its threat to the "
-        "library. The answers are the same as group 5's and group 6's."
+        "library. The answers are the same as group 5's and group 6's. Follow a MITRE run live with "
+        "`GET /v1/sessions/{session_id}/events`: each `session.updated` says the run changed (its board, as "
+        "`GET /v1/sessions/{session_id}`); read `GET /v1/mitre_sessions/{session_id}` for its MITRE stage and "
+        "scenarios."
     ),
     ApiTag.REVIEW: (
         "Accept, reject or regenerate a run's scenarios, ask for the next set, or propose an AI-written "

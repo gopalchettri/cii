@@ -9,7 +9,7 @@ import json
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -34,6 +34,7 @@ from app.core.constants import (
     ErrorCode,
     IntelSource,
     LogEvent,
+    Remediation,
     ReviewFlag,
     ScenarioStatus,
     Status,
@@ -44,8 +45,11 @@ from app.core.constants import (
 from app.core.database import get_mongodb
 from app.core.exceptions import JobFailed, LeaseLost, Unavailable
 from app.crud import scenarios as scenario_crud
+from app.crud import work_control
 from app.crud.attack import AttackRepository, ControlLinkRepository
+from app.crud.audit import AuditRepository
 from app.crud.remediation import PLANNED_SCENARIO_FIELDS
+from app.domain.remediation.write import assess_controls, build_snapshot, list_affected_systems, plan_prompt
 from app.domain.scenario import attack_controls
 from app.domain.scenario.attack_controls import is_attack_scenario, pick_set_controls
 from app.domain.scenario.session import build_scenario_view
@@ -97,7 +101,13 @@ def _link(mitigation: str, *controls: tuple[int, float]) -> None:
     ]
     get_mongodb()[Collection.CONTROL_LINKS].replace_one(
         {"_id": mitigation},
-        {"_id": mitigation, "name": NAMES[mitigation], "fingerprint": "f", "links": links, "prepared_at": NOW},
+        {
+            "_id": mitigation,
+            "name": NAMES.get(mitigation, mitigation),
+            "fingerprint": "f",
+            "links": links,
+            "prepared_at": NOW,
+        },
         upsert=True,
     )
 
@@ -914,3 +924,461 @@ def test_a_plan_on_an_attack_scenario_with_an_empty_control_library_fails_as_any
         _map_for_a_plan(picker, scenario_id)
     assert failed.value.code == ErrorCode.CONTROL_LIBRARY_EMPTY and picker.chat.calls == []
     assert _stored_controls(scenario_id)["status"] == Status.FAILED
+
+
+# --- a MITRE plan's candidates (owner 2026-11-27) ----------------------------------------------------------
+
+
+def _mitre_card(steps: dict[str, list[str]], targeted: dict[str, str] | None = None, **fields: Any) -> dict[str, Any]:
+    """A MITRE card as its plan reads it, on the SCADA server (OT) and the Historian (IT): each step's technique
+    with its MITRE mitigations and MITRE's words on each, and the system a step targets when given."""
+    card = _scenario(techniques=(), mitigations=())
+    content = card["content"]
+    content["attack"]["techniques"] = [
+        {"id": technique, "name": f"Step {technique}", "source": ICS, "mitigations": mitigations}
+        for technique, mitigations in steps.items()
+    ]
+    said = [
+        {"technique": technique, "mitigations": [{"mitre_id": m, "name": f"Mitigation {m}", "text": f"MITRE: {m}"}]}
+        for technique, mitigations in steps.items()
+        for m in mitigations
+    ]
+    targets = [{"technique": technique, "supporting_system": system} for technique, system in (targeted or {}).items()]
+    content["mitre"] = {"mitigations": said, "systems_targeted": targets}
+    return card | fields
+
+
+class _PlanSearch:
+    """The snapshot surface gather_plan_candidates reads: the library, and one search answering each step's
+    query (it opens with the step's name) with that step's rows."""
+
+    def __init__(self, controls: tuple[LibraryControl, ...], nearest: dict[str, list[LibraryControl]] | None = None):
+        self.library = SimpleNamespace(control_library=controls)
+        self.nearest = nearest or {}
+        self.searched: list[tuple[list[str], int]] = []
+        self.down = False  # True: the search's embedding call is down
+
+    def find_controls(self, queries: list[str], top_k: int) -> list[list[tuple[LibraryControl, float]]]:
+        if self.down:
+            raise Unavailable(AI_OUTAGE_MESSAGES[AiOutage.UNREACHABLE], reason=AiOutage.UNREACHABLE)
+        self.searched.append((list(queries), top_k))
+        steps = [query.split(":")[0].removeprefix("Step ") for query in queries]
+        return [[(row, 0.9) for row in self.nearest.get(step, [])] for step in steps]
+
+
+def _gather(card: dict[str, Any], search: _PlanSearch) -> list[dict[str, Any]]:
+    return attack_controls.gather_plan_candidates(card, _OT_CONTEXT, search)  # type: ignore[arg-type]
+
+
+def _offered_for(rows: list[dict[str, Any]]) -> list[tuple[str, list[tuple[str, str]]]]:
+    return [(row["code"], [(entry["technique"], entry["found_by"]) for entry in row["offered_for"]]) for row in rows]
+
+
+def _many(first: int, count: int) -> list[LibraryControl]:
+    return [
+        LibraryControl(n, f"X-{n}", None, "Network", f"Control {n}", f"Does {n}") for n in range(first, first + count)
+    ]
+
+
+def _per_step(rows: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """Each step's candidates: (linked to its MITRE mitigations, by meaning)."""
+    found = Counter(
+        (entry["technique"], entry["found_by"] == ControlLinks.FOUND_BY_MEANING)
+        for row in rows
+        for entry in row["offered_for"]
+    )
+    return {technique: (found[(technique, False)], found[(technique, True)]) for technique, _ in found}
+
+
+def _card_of(sizes: list[tuple[int, int]]) -> tuple[dict[str, Any], _PlanSearch]:
+    """A card of one step per (linked, by meaning) size, each step's own controls, and its search."""
+    library: list[LibraryControl] = []
+    nearest, steps = {}, {}
+    for number, (linked_count, meaning_count) in enumerate(sizes, 1):
+        technique, mitigation = f"T{2000 + number}", f"M{2000 + number}"
+        linked, meaning = _many(10_000 * number, linked_count), _many(10_000 * number + 5_000, meaning_count)
+        _link(mitigation, *((row.control_id, 90.0 - place) for place, row in enumerate(linked)))
+        library += linked + meaning
+        nearest[technique], steps[technique] = meaning, [mitigation]
+    return _mitre_card(steps), _PlanSearch(tuple(library), nearest)
+
+
+@pytest.mark.parametrize(("steps", "each"), [(3, 20), (6, 10)])
+def test_a_mitre_plans_candidates_share_the_limit_fairly_between_its_steps_and_both_kinds(
+    steps: int, each: int
+) -> None:
+    """PLAN_CANDIDATES_LIMIT (120): each step's share is the limit over its steps, half linked to its MITRE
+    mitigations (best link first), half by meaning, at most 20 of each. Mutation: give each step the whole limit
+    and a 6-step card's last three steps get none."""
+    card, search = _card_of([(30, 30)] * steps)
+    rows = _gather(card, search)
+    assert len(rows) == get_settings().plan_candidates_limit == 120
+    assert _per_step(rows) == {f"T{2000 + number}": (each, each) for number in range(1, steps + 1)}
+    assert rows[0] == {
+        "control_id": 10_000, "code": "X-10000", "score": None, "match": "alternative",
+        "offered_for": [{"technique": "T2001", "found_by": "M2001"}],
+    }  # fmt: skip
+
+
+def test_slots_one_kind_leaves_go_to_the_other_kind_then_a_slot_each_in_turn_to_the_other_steps() -> None:
+    """Six steps, a share of 20 each: the first has 5 by meaning only, the second 3 linked, so its meaning takes
+    17; the 15 slots the first left go to the others in turn, linked first. Mutation: drop the turns and the card
+    stops at 105."""
+    card, search = _card_of([(0, 5), (3, 30), (30, 30), (30, 30), (30, 30), (30, 30)])
+    rows = _gather(card, search)
+    assert len(rows) == 120
+    assert _per_step(rows) == {"T2001": (0, 5), "T2002": (3, 20)} | {f"T200{n}": (13, 10) for n in range(3, 7)}
+
+
+def test_a_row_another_step_took_names_this_step_too_once_the_limit_is_reached() -> None:
+    """Six steps fill the 120 slots; the last step's 16th row by meaning is the first step's first linked row,
+    past its share: that row still names both steps. Mutation: stop merging at the limit and it names T2001
+    only."""
+    card, search = _card_of([(30, 30)] * 6)
+    first_linked = search.library.control_library[0]
+    search.nearest["T2006"].insert(15, first_linked)
+    rows = _gather(card, search)
+    assert len(rows) == 120 and rows[0]["control_id"] == first_linked.control_id
+    assert rows[0]["offered_for"] == [
+        {"technique": "T2001", "found_by": "M2001"}, {"technique": "T2006", "found_by": "meaning"},
+    ]  # fmt: skip
+
+
+def test_gathering_logs_each_kinds_count_the_rows_offered_and_the_steps_without_a_candidate() -> None:
+    """Seven steps, the last finding nothing: 20 + 20 found on each of the six, 120 offered. Mutation: log no step
+    without, or no offered count, and it fails."""
+    card, search = _card_of([(30, 30)] * 6 + [(0, 0)])
+    with capture_logs() as logs:
+        _gather(card, search)
+    (event,) = [entry for entry in logs if entry["event"] == LogEvent.PLAN_CANDIDATES_GATHERED]
+    assert (event["linked"], event["meaning"], event["offered"]) == (120, 120, 120)
+    assert event["steps_without"] == ["T2007"]
+
+
+def test_a_steps_candidates_fit_the_it_ot_type_of_the_system_it_targets_and_ai_rows_only_for_an_ai_threat() -> None:
+    """T0859 targets the SCADA server (OT): its link to the IT authentication control offers the OT copy, and by
+    meaning the IT patching and the AI-domain backup are never offered. Mutation: drop the step's fit from the
+    meaning rows and Server patching is offered."""
+    card = _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})
+    rows = _gather(card, _PlanSearch(CONTROLS, {"T0859": [PATCH_IT, AI_BACKUP, FILTER, BACKUP_OT]}))
+    assert _offered_for(rows) == [
+        ("AC-7", [("T0859", "M0932")]), ("NW-3", [("T0859", "meaning")]), ("BC-1", [("T0859", "meaning")]),
+    ]  # fmt: skip
+    assert rows[0]["control_id"] == MFA_OT.control_id
+
+
+def test_a_candidate_is_one_row_naming_each_step_never_a_twin_twice_nor_a_control_the_card_has() -> None:
+    """Within a step a control's IT/OT copy is offered once; a control two steps find is one row naming both,
+    taking one slot; a control the card's own done controls hold is never offered. Mutation: leave out the
+    card's own controls and Zone filter is offered."""
+    _link("M0953", (BACKUP_OT.control_id, 80.0))
+    done = {"status": Status.DONE, "items": [{"control_id": FILTER.control_id}]}
+    card = _mitre_card({"T0859": ["M0932"], "T0809": ["M0953"]}, targeted={"T0859": "SCADA server"}, controls=done)
+    nearest = {"T0859": [MFA_IT, MFA_OT, FILTER, BACKUP_OT], "T0809": [FILTER]}
+    assert _offered_for(_gather(card, _PlanSearch(CONTROLS, nearest))) == [
+        ("AC-7", [("T0859", "M0932")]),
+        ("BC-1", [("T0859", "meaning"), ("T0809", "M0953")]),
+    ]
+
+
+def test_each_steps_meaning_query_is_its_name_mitres_opening_words_and_the_systems_it_acts_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One search for the card over the whole library: each step's query names it, opens MITRE's description of
+    it (WRITER_TECHNIQUE_DESCRIPTION_CHARACTERS) and names the card's systems it acts on, every system when MITRE
+    targets none. Mutation: leave the systems out and the SCADA server is never searched."""
+    described = [{"attack_id": "T0859", "description": "Adversaries may log in with valid accounts. " + "x" * 500}]
+    found = SimpleNamespace(find_objects=lambda ids, keys: described)
+    monkeypatch.setattr(attack_controls, "get_attack_repository", lambda: found)
+    card = _mitre_card({"T0859": ["M0932"], "T0809": []}, targeted={"T0859": "SCADA server"})
+    search = _PlanSearch(CONTROLS)
+    _gather(card, search)
+    assert search.searched == [
+        (
+            [
+                "Step T0859: Adversaries may log in with valid accounts. Systems: SCADA server",
+                "Step T0809: Systems: SCADA server, Historian",
+            ],
+            len(CONTROLS),
+        )
+    ]
+
+
+def test_an_empty_library_gives_no_candidate_and_no_search_and_no_links_give_candidates_by_meaning() -> None:
+    """Mutation: search an empty library and its search is called."""
+    card = _mitre_card({"T0859": ["M0932"]})
+    empty = _PlanSearch(())
+    assert _gather(card, empty) == [] and empty.searched == []
+    get_mongodb()[Collection.CONTROL_LINKS].delete_many({})
+    assert _offered_for(_gather(card, _PlanSearch(CONTROLS, {"T0859": [FILTER]}))) == [("NW-3", [("T0859", "meaning")])]
+
+
+def test_an_embedding_outage_while_gathering_is_raised_for_the_plan_job_to_retry() -> None:
+    """Mutation: answer an outage with no candidate and the plan is written without them."""
+    search = _PlanSearch(CONTROLS)
+    search.down = True
+    with pytest.raises(Unavailable):
+        _gather(_mitre_card({"T0859": ["M0932"]}), search)
+
+
+def _plan_controls_for(picker: Picking, scenario_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """The plan job's own step that gives a plan its identified and offered controls."""
+    scenario = scenario_crud.get_threat_scenario_repository().get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
+    lease = SimpleNamespace(task_id="plan-task-1")
+    return plan_job._plan_controls(lease, scenario, _OT_CONTEXT, picker.snapshot, picker.rerank)  # type: ignore[arg-type]
+
+
+def test_a_mitre_plan_never_claims_its_cards_controls_and_offers_its_candidates(
+    run: dict[str, Any], picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner 2026-11-27: a MITRE card's plan reads its own done controls (an older card's) or none, and never
+    claims or maps queued ones. Mutation: branch on is_attack_scenario and the queued card's controls are
+    claimed and picked."""
+    monkeypatch.setattr(plan_job, "publish_session_status", lambda *_: None)
+    queued = _write(run, _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})["content"])
+    items, offered, most = _plan_controls_for(picker, queued)
+    assert (items, most, picker.chat.calls) == ([], get_settings().plan_candidates_limit, [])
+    assert _stored_controls(queued)["status"] == Status.QUEUED
+    assert offered[0]["control_id"] == MFA_OT.control_id
+    older = _write(run, _mitre_card({"T0859": ["M0932"]})["content"])
+    item = {"control_id": FILTER.control_id, "code": "NW-3", "score": None, "match": ControlMatch.EXACT}
+    get_mongodb()[Collection.SCENARIOS].update_one(
+        {"_id": older}, {"$set": {"controls": {"status": Status.DONE, "attempts": 1, "items": [item]}}}
+    )
+    items, offered, _ = _plan_controls_for(picker, older)
+    assert items == [item] and FILTER.control_id not in _ids(offered)
+
+
+def test_a_create_session_cards_plan_still_claims_and_maps_its_controls_and_is_offered_20_alternatives(
+    run: dict[str, Any], picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A POST /v1/create_session card is an ATT&CK card but no MITRE one: its plan maps its controls as before.
+    Mutation: branch on is_attack_scenario and its controls are never mapped."""
+    monkeypatch.setattr(plan_job, "publish_session_status", lambda *_: None)
+    asked: list[int] = []
+    monkeypatch.setattr(plan_job, "find_alternative_controls", lambda *args: asked.append(args[5]) or [(FILTER, 60.0)])
+    scenario_id = _write(run, _scenario()["content"])
+    picker.answer(("SC1", "S1", "Operator authentication", "prevent"))
+    items, offered, most = _plan_controls_for(picker, scenario_id)
+    assert _ids(items) == [MFA_OT.control_id] and _stored_controls(scenario_id)["status"] == Status.DONE
+    assert asked == [most] == [get_settings().remediation_alternative_controls] == [20]
+    assert offered == [{"control_id": FILTER.control_id, "code": "NW-3", "score": 60.0, "match": "alternative"}]
+
+
+def test_a_mitre_plans_prompt_names_each_candidates_step_and_mitigation_with_mitres_words(
+    run: dict[str, Any], picker: Picking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan reads each step once (its ATT&CK ID, name and mitigations by ID with MITRE's words) and each
+    candidate with the steps it is offered for (T... and M... IDs, or "meaning"), its description cut to
+    PLAN_CANDIDATE_DESCRIPTION_CHARACTERS; an alternative's constant match and a candidate's empty score are left
+    out. Mutation: skip the MITRE grounding and the prompt has no attack_steps."""
+    monkeypatch.setattr(plan_job, "publish_session_status", lambda *_: None)
+    wordy = LibraryControl(900777, "NW-9", None, "Network", "Zone filter plus", "Filter " + "traffic " * 100)
+    picker.use_library(*CONTROLS, wordy)
+    _link("M0932", (MFA_IT.control_id, 90.0), (wordy.control_id, 50.0))
+    scenario_id = _write(run, _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})["content"])
+    scenario = scenario_crud.get_threat_scenario_repository().get(fields=PLANNED_SCENARIO_FIELDS, _id=scenario_id)
+    _, offered, _ = _plan_controls_for(picker, scenario_id)
+    register = {
+        "supporting_systems_applicable_to_risk": [SCADA],
+        "supporting_systems_applicable_to_existing_controls": [],
+    }
+    affected, library = list_affected_systems(_OT_CONTEXT, register), picker.snapshot.library.control_library
+    alternatives = assess_controls(offered, register, library, affected, _OT_CONTEXT.system_categories())[0]
+    snapshot = build_snapshot(scenario, _OT_CONTEXT, register, [], [], affected, alternatives)
+    plan_job._add_mitre_grounding(snapshot, scenario)
+    shown = json.loads(plan_prompt(snapshot)[1].split("CONTEXT:\n", 1)[1])
+    assert shown["attack_steps"] == [
+        {
+            "technique": "T0859", "name": "Step T0859",
+            "mitigations": [{"mitigation": "M0932", "name": "Mitigation M0932", "mitre_says": "MITRE: M0932"}],
+        }
+    ]  # fmt: skip
+    first, second = shown["existing_controls"]["library_alternatives"][:2]
+    assert first["offered_for"] == second["offered_for"] == [{"technique": "T0859", "found_by": "M0932"}]
+    assert not {"match", "mapping_relevance", "control_id"} & set(first)
+    limit = get_settings().plan_candidate_description_characters
+    assert second["control_code"] == "NW-9" and len(second["control_description"]) == limit + len(
+        Remediation.TRUNCATED_MARK
+    )
+
+
+def test_a_mitre_plans_attack_steps_cut_mitres_words_and_leave_them_out_on_an_older_card() -> None:
+    """MITRE's words are cut at Remediation.TEXT_MAX_CHARS like every snapshot text; a card stored before
+    2026-11-24 has none and sends no mitre_says. Mutation: send them as describe_attack_steps gives them and the
+    long words reach the prompt whole; keep an empty one and the older card sends "mitre_says": ""."""
+    card = _mitre_card({"T0859": ["M0932"]})
+    card["content"]["mitre"]["mitigations"][0]["mitigations"][0]["text"] = "w" * (Remediation.TEXT_MAX_CHARS + 50)
+    snapshot: dict[str, Any] = {"existing_controls": {"library_alternatives": []}}
+    plan_job._add_mitre_grounding(snapshot, card)
+    (said,) = snapshot["attack_steps"][0]["mitigations"]
+    assert said["mitre_says"] == "w" * Remediation.TEXT_MAX_CHARS + Remediation.TRUNCATED_MARK
+    card["content"]["mitre"]["mitigations"] = []
+    plan_job._add_mitre_grounding(snapshot, card)
+    assert "mitre_says" not in snapshot["attack_steps"][0]["mitigations"][0]
+
+
+# --- MITRE generation picks no controls (owner 2026-11-27) ------------------------------------------------------
+
+
+def test_a_mitre_card_an_older_pod_queued_is_never_claimed_nor_requeued(run: dict[str, Any], picker: Picking) -> None:
+    """During a rolling deploy an older pod may still save a MITRE card with its controls queued: the new image never
+    maps it, by the run's controls job, a plan's claim or the sweep. Mutation: drop NOT_MITRE from
+    _controls_waiting and the job maps it; from claim_scenario_controls_by_id and the plan claims it; from
+    requeue_stalled_controls and the sweep queues it again."""
+    scenario_id = _write(run, _mitre_card({"T0859": ["M0932"]}, targeted={"T0859": "SCADA server"})["content"])
+    scenarios = scenario_crud.get_threat_scenario_repository()
+    assert scenarios.claim_scenario_controls(run["record_id"], "task-1") is None
+    assert scenarios.claim_scenario_controls_by_id(scenario_id, "task-1:plan", remap=True) is None
+    assert _deliver(run) == 0 and picker.chat.calls == []
+    long_ago = datetime.now(UTC) - timedelta(days=1)
+    get_mongodb()[Collection.SCENARIOS].update_one({"_id": scenario_id}, {"$set": {"controls.queued_at": long_ago}})
+    assert run["record_id"] not in scenarios.requeue_stalled_controls(datetime.now(UTC))
+    stored = _stored_controls(scenario_id)
+    assert stored["status"] == Status.QUEUED and stored["queued_at"] < datetime.now(UTC) - timedelta(hours=1)
+
+
+@pytest.fixture
+def cleanup_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
+    """The clean-up's tsg_scenarios, tsg_sessions and tsg_audit as this test's own collections: it reads every
+    MITRE card, so a parallel test's cards stay out of it."""
+    database, tag = get_mongodb(), uuid.uuid4().hex[:8]
+    names = {name: f"test_cleanup_{name}_{tag}" for name in ("scenarios", "sessions", "audit")}
+    scenarios = scenario_crud.ThreatScenarioRepository(database[names["scenarios"]])
+    runs = scenario_crud.ThreatScenarioSessionRepository(database[names["sessions"]], scenarios=scenarios)
+    monkeypatch.setattr(work_control, "get_threat_scenario_repository", lambda: scenarios)
+    monkeypatch.setattr(work_control, "get_threat_scenario_session_repository", lambda: runs)
+    monkeypatch.setattr(work_control, "get_audit_repository", lambda: AuditRepository(database[names["audit"]]))
+    yield {name: database[collection] for name, collection in names.items()} | {"runs": runs}
+    for collection in names.values():
+        database.drop_collection(collection)
+
+
+def _mitre_cards_left(store: dict[str, Any], controls: dict[str, dict[str, Any] | None], session: str) -> None:
+    content = _mitre_card({"T0859": ["M0932"]})["content"]
+    for name, record in controls.items():
+        card = {"_id": name, "session_id": session, "status": ScenarioStatus.DONE, "superseded_by": None}
+        card |= {"decision": "pending", "content": content} | ({"controls": record} if record else {})
+        store["scenarios"].insert_one(card)
+
+
+def _controls_left(store: dict[str, Any]) -> dict[str, Any]:
+    return {card["_id"]: (card.get("controls") or {}).get("status") for card in store["scenarios"].find()}
+
+
+def test_the_clean_up_clears_mitre_cards_waiting_controls_once_and_recounts_their_runs(
+    cleanup_store: dict[str, Any],
+) -> None:
+    """Owner 2026-11-27: once (a marker in tsg_audit), the controls an older image left waiting on MITRE cards
+    (queued, cancelled, failed, running with an expired lease) are removed and the run recounted; a card with no
+    record (a new one), done controls, a live lease and a POST /v1/create_session card are left alone; its counts
+    are logged. Mutation: match `controls.status $ne done` and the new card is matched too; skip the marker and a
+    card queued later is cleared at the next start."""
+    store, now = cleanup_store, datetime.now(UTC)
+    store["sessions"].insert_many(
+        [{"_id": "mitre-run", "entity_id": 86, "pipeline": "mitre"}, {"_id": "other-run", "entity_id": 86}]
+    )
+    queued = {"status": Status.QUEUED, "attempts": 0, "queued_at": now}
+    _mitre_cards_left(
+        store,
+        {
+            "queued": queued,
+            "cancelled": {"status": Status.CANCELLED, "attempts": 1},
+            "failed": {"status": Status.FAILED, "attempts": Controls.MAX_ATTEMPTS},
+            "expired": {"status": Status.RUNNING, "attempts": 1, "lease_until": now - timedelta(minutes=1)},
+            "live": {"status": Status.RUNNING, "attempts": 1, "lease_until": now + timedelta(minutes=5)},
+            "done": {"status": Status.DONE, "attempts": 1, "items": []},
+            "new": None,
+        },
+        "mitre-run",
+    )
+    plain = {"_id": "plain", "session_id": "other-run", "status": ScenarioStatus.DONE, "superseded_by": None}
+    plain |= {"decision": "pending", "content": _scenario()["content"], "controls": queued}
+    store["scenarios"].insert_one(plain)
+    assert store["runs"].update_scenario_session_counts("mitre-run")["controls_waiting"] == 3
+    with capture_logs() as logs:
+        work_control.clear_mitre_controls_once()
+    assert _controls_left(store) == {
+        **dict.fromkeys(("queued", "cancelled", "failed", "expired", "new"), None),
+        "live": Status.RUNNING,
+        "done": Status.DONE,
+        "plain": Status.QUEUED,
+    }
+    marker = store["audit"].find_one({"_id": work_control.MITRE_CONTROLS_CLEARED_MARKER})
+    assert (marker["matched"], marker["modified"], marker["recounted"]) == (4, 4, 1)
+    (logged,) = [entry for entry in logs if entry["event"] == LogEvent.CONTROLS_MITRE_CLEARED]
+    assert (logged["matched"], logged["modified"], logged["recounted"]) == (4, 4, 1)
+    counts = store["sessions"].find_one({"_id": "mitre-run"})["counts"]
+    assert (counts["controls_waiting"], counts["controls_failed"], counts["controls_cancelled"]) == (1, 0, 0)
+    _mitre_cards_left(store, {"late": queued}, "mitre-run")  # saved by an older pod after the clean-up ran
+    work_control.clear_mitre_controls_once()
+    assert _controls_left(store)["late"] == Status.QUEUED
+
+
+def test_the_clean_up_redone_after_a_crash_recounts_and_a_failure_never_stops_start_up(
+    cleanup_store: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start that died after clearing, before its recount and marker: the next start clears nothing more, yet
+    recounts each MITRE run still counting waiting, failed or cancelled controls. A failure is logged, writes no
+    marker and never raises. Mutation: recount only the runs of the cards cleared and the stale count stays."""
+    store = cleanup_store
+    stale = {"controls_waiting": 0, "controls_failed": 2, "controls_cancelled": 0}
+    store["sessions"].insert_many(
+        [
+            {"_id": "mitre-run", "entity_id": 86, "pipeline": "mitre", "counts": stale},
+            {"_id": "other-run", "entity_id": 86, "counts": stale},  # not a MITRE run: never recounted
+        ]
+    )
+    _mitre_cards_left(store, {"cleared": None}, "mitre-run")
+    assert work_control.clear_mitre_waiting_controls() == {"matched": 0, "modified": 0, "recounted": 1}
+    assert store["sessions"].find_one({"_id": "mitre-run"})["counts"]["controls_failed"] == 0
+    assert store["sessions"].find_one({"_id": "other-run"})["counts"] == stale
+
+    def broken(*_: Any) -> dict[str, int]:
+        raise Unavailable("MongoDB is down")
+
+    monkeypatch.setattr(work_control, "clear_mitre_waiting_controls", broken)
+    with capture_logs() as logs:
+        work_control.clear_mitre_controls_once()  # no exception
+    assert [entry["event"] for entry in logs] == [LogEvent.CONTROLS_MITRE_CLEAR_FAILED]
+    assert store["audit"].find_one({"_id": work_control.MITRE_CONTROLS_CLEARED_MARKER}) is None
+
+
+def test_the_sweep_clears_mitre_controls_an_older_pod_left_after_the_clean_up_so_the_run_settles(
+    cleanup_store: dict[str, Any],
+) -> None:
+    """Owner 2026-11-27: controls an older pod saves on a MITRE card after the one-time clean-up (a rolling deploy,
+    a killed pod's expired lease, a rollback and roll forward) are removed by the next sweep and the run
+    recounted, so it never shows controls waiting forever nor refuses its delete; a live lease and done controls
+    stay, and a POST /v1/create_session card is still queued for its send. Mutation: drop the sweep's clearing
+    and the run keeps counting 3 waiting."""
+    store, now = cleanup_store, datetime.now(UTC)
+    store["sessions"].insert_many(
+        [{"_id": "mitre-run", "entity_id": 86, "pipeline": "mitre"}, {"_id": "other-run", "entity_id": 86}]
+    )
+    store["audit"].insert_one({"_id": work_control.MITRE_CONTROLS_CLEARED_MARKER})  # the clean-up already ran
+    long_ago = now - timedelta(days=1)
+    _mitre_cards_left(
+        store,
+        {
+            "late": {"status": Status.QUEUED, "attempts": 0, "queued_at": now},
+            "expired": {"status": Status.RUNNING, "attempts": 1, "lease_until": now - timedelta(minutes=1)},
+            "live": {"status": Status.RUNNING, "attempts": 1, "lease_until": now + timedelta(minutes=5)},
+            "done": {"status": Status.DONE, "attempts": 1, "items": []},
+        },
+        "mitre-run",
+    )
+    plain = {"_id": "plain", "session_id": "other-run", "status": ScenarioStatus.DONE, "superseded_by": None}
+    plain |= {"decision": "pending", "content": _scenario()["content"]}
+    plain |= {"controls": {"status": Status.QUEUED, "attempts": 0, "queued_at": long_ago}}
+    store["scenarios"].insert_one(plain)
+    assert store["runs"].update_scenario_session_counts("mitre-run")["controls_waiting"] == 3
+    assert work_control.sweep_stalled_controls() == ["other-run"]  # a MITRE run is never sent to be mapped
+    assert _controls_left(store) == {
+        "late": None,
+        "expired": None,
+        "live": Status.RUNNING,
+        "done": Status.DONE,
+        "plain": Status.QUEUED,
+    }
+    assert store["sessions"].find_one({"_id": "mitre-run"})["counts"]["controls_waiting"] == 1  # the live lease

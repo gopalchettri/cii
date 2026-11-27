@@ -94,6 +94,28 @@ def test_nothing_new_counts_as_fresh_without_storing(monkeypatch: pytest.MonkeyP
     assert first.checkpoints[-1] == "v1" and feeds.successes[-1][1] == "v1"
 
 
+def test_only_an_import_that_changes_the_data_moves_last_new_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-11-25: "Last success" moved on every check, so a check that found nothing new looked like
+    new data. A first import and a real change move last_new_data_at; nothing new, or a full download of the
+    same content (an untrusted checkpoint), leaves it as it was while last_success_at moves."""
+    first = StubFetcher(ENT, result("A"))
+    run, feeds, *_ = refresher(monkeypatch, {ENT: first}, [ENT])
+    assert run.refresh_all_sources(NOW).sources[0].new_data is True
+    assert feeds.health[ENT].last_new_data_at == NOW
+    first.result = None  # MITRE: not modified
+    unchanged = run.refresh_all_sources(LATER).sources[0]
+    assert (unchanged.result, unchanged.new_data) == (RefreshResult.UNCHANGED, False)
+    assert (feeds.health[ENT].last_success_at, feeds.health[ENT].last_new_data_at) == (LATER, NOW)
+    first.result = result("A")  # the same content again, downloaded in full
+    later = LATER + timedelta(days=1)
+    same = run.refresh_all_sources(later).sources[0]
+    assert (same.result, same.new_data, feeds.health[ENT].last_new_data_at) == (RefreshResult.REFRESHED, False, NOW)
+    first.result = result("A", "B", version="v2")  # a new release
+    newest = later + timedelta(days=1)
+    assert run.refresh_all_sources(newest).sources[0].new_data is True
+    assert feeds.health[ENT].last_new_data_at == newest
+
+
 def test_one_failing_source_never_stops_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
     fetchers = {ENT: StubFetcher(ENT, RuntimeError("x")), ICS: StubFetcher(ICS, result("A", version="d"))}
     run, feeds, *_ = refresher(monkeypatch, fetchers, [ENT, ICS])

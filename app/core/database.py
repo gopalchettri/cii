@@ -1,6 +1,8 @@
 """Database clients: MongoDB for TSG data, SQL Server through stored procedures only."""
 
+import contextlib
 import ssl
+from collections.abc import Iterator
 from typing import Any, Final
 
 import pyodbc
@@ -111,7 +113,7 @@ class StoredProcedureClient:
         except (pyodbc.DataError, pyodbc.IntegrityError) as exc:
             raise Invalid(ErrorMessage.SQL_VALUE_REFUSED) from exc
         except pyodbc.ProgrammingError as exc:
-            raise SetupError(ErrorMessage.SQL_PROCEDURE_BROKEN) from exc
+            raise SetupError(describe_broken_procedure(procedure)) from exc
         except pyodbc.Error as exc:
             if exc.args and exc.args[0] == _DEADLOCK_SQLSTATE:
                 raise Unavailable(ErrorMessage.SQL_DEADLOCK) from exc
@@ -128,6 +130,27 @@ class StoredProcedureClient:
     def check_connection(self) -> None:
         """SQL Server answers: a connection is opened or a pooled one pinged; never runs a procedure."""
         self._engine.raw_connection().close()
+
+
+def describe_broken_procedure(procedure: StoredProcedure) -> str:
+    """The setup error of a procedure SQL Server refused (missing, too many or unknown parameters, its own THROW):
+    the procedure's name and, for one of TSG's own (tsg_*, a file in scripts/sql/), the file to install."""
+    own = procedure.value.startswith("tsg_")
+    fix = ErrorMessage.SQL_PROCEDURE_FIX_OWN if own else ErrorMessage.SQL_PROCEDURE_FIX_OTHER
+    return ErrorMessage.SQL_PROCEDURE_BROKEN.format(
+        procedure=procedure.value, fix=fix.format(procedure=procedure.value)
+    )
+
+
+@contextlib.contextmanager
+def procedure_answer_shape(procedure: StoredProcedure) -> Iterator[None]:
+    """Reads a procedure's answer: a result set, row or column the code expects and the installed procedure does
+    not return (an out-of-date procedure), or a value outside its contract, is the SetupError naming the procedure
+    and its file, never a bare 500 (owner 2026-11-27)."""
+    try:
+        yield
+    except (LookupError, ValueError) as exc:  # unpacking, a missing key or index, an unknown enum value
+        raise SetupError(describe_broken_procedure(procedure)) from exc
 
 
 @singleton

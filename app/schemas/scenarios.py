@@ -495,7 +495,7 @@ class ScenarioView(BaseModel):
     failure: dict[str, Any] | None
     regenerate_error: dict[str, Any] | None  # why the last regenerate kept this version
     created_at: datetime
-    controls_status: c.Status | None  # queued, running, done, failed or cancelled; None on a failure card
+    controls_status: c.Status | None  # queued, running, done, failed or cancelled; None on a failure or MITRE card
     controls_error: dict[str, Any] | None = None
     replaced_by: str | None  # the newer version, when this one was regenerated
     evidence_mode: str | None = None

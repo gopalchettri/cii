@@ -135,7 +135,8 @@ def test_an_import_with_a_failed_feed_ends_failed_and_names_the_feed(monkeypatch
     job = _jobs().get_any_admin_job(job_id)
     assert (job["status"], job["error"]["code"]) == (Status.FAILED, ErrorCode.UNAVAILABLE)
     assert IntelSource.ATTACK_ENTERPRISE in job["error"]["message"]
-    assert job["result"] == {"source": "mitre_attack_enterprise"}
+    failed = {"source": "mitre_attack_enterprise", "outcome": "failed", "new_data": False, "new_versions": 0}
+    assert job["result"] == {"source": "mitre_attack_enterprise", "sources": [failed | {"retired": 0}]}
 
 
 def _cancel(job_id: str) -> None:

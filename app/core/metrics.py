@@ -92,9 +92,6 @@ AI_SLOTS_CAP = Gauge(
     ["pool"],
 )
 AUDIT_FAILURES = Counter("tsg_audit_failures_total", "Audit records that could not be written")
-#: A MITRE card's controls chosen per technique: kept, dropped by code, or kept by the MITRE link score because
-#: the AI's answer could not be read.
-CONTROL_PICKS = Counter("tsg_control_picks_total", "MITRE control picks per technique, by outcome", ["outcome"])
 LIBRARY_CHECK_FAILURES = Counter(
     "tsg_library_check_failures_total", "Library checks that failed (the last loaded library is served)"
 )

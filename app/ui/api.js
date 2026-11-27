@@ -1,15 +1,24 @@
 // The one way every page calls the API: same origin, JSON in and out, one readable error.
-// The admin key and the name are held in this module's memory only: gone on reload, never stored, never in a URL.
+// Two kinds of call:
+//   - an admin call (the default): the admin key, held in this module's memory only (gone on reload, never stored);
+//   - a client call ({client: true}): the signed-in person's four headers from session.js.
+// A client call that starts work carries an Idempotency-Key: {idempotent: true} a new one, {idempotent: key} that
+// key. A form keeps one key per content (make_start_key), so a retry after a lost answer replays the start (200)
+// and never starts paid work twice.
+
+import { client_headers, identity, sign_out } from "./session.js";
 
 const USER_ID_HEADER = "X-User-Id";
 const ADMIN_KEY_HEADER = "X-Admin-Key";
 const REQUEST_ID_HEADER = "X-Request-Id";
+const IDEMPOTENCY_HEADER = "Idempotency-Key";
 const DEFAULT_USER_ID = "admin-ui";
 const HEADER_SAFE = /^[\x20-\x7E]+$/; // a header value the browser accepts: printable ASCII
+const IDEMPOTENCY_KEY_MAX = 200; // the API's own limit
 const KEY_REFUSED = new Set([401, 403]);
 
 let admin_key = "";
-let user_id = "";
+let admin_name = ""; // "Recorded as": who admin changes are audited under (memory only)
 const key_watchers = new Set();
 
 /** A call the API refused or that never reached it. `message` is ready to show. */
@@ -35,13 +44,26 @@ export function has_admin_key() {
   return admin_key !== "";
 }
 
-/** Keeps the key for this tab. @param {string} value @returns {boolean} false: empty or not sendable */
+/** Keeps the key for this tab, in memory. @param {string} value @returns {boolean} false: empty or not sendable */
 export function set_admin_key(value) {
   const key = String(value ?? "").trim();
   if (!HEADER_SAFE.test(key)) return false;
   admin_key = key;
   tell_key_watchers(null);
   return true;
+}
+
+/** Who admin changes are audited as; empty: the signed-in name, else admin-ui. @returns {boolean} false: not sendable */
+export function set_admin_name(value) {
+  const name = String(value ?? "").trim();
+  if (name && !HEADER_SAFE.test(name)) return false;
+  admin_name = name;
+  return true;
+}
+
+/** @returns {string} */
+export function read_admin_name() {
+  return admin_name;
 }
 
 export function clear_admin_key() {
@@ -58,14 +80,6 @@ export function clear_admin_key() {
 export function watch_admin_key(watcher) {
   key_watchers.add(watcher);
   return () => key_watchers.delete(watcher);
-}
-
-/** Who admin changes are audited as. @param {string} value @returns {boolean} false: not sendable (kept unchanged) */
-export function set_user_id(value) {
-  const name = String(value ?? "").trim();
-  if (name && !HEADER_SAFE.test(name)) return false;
-  user_id = name;
-  return true;
 }
 
 /**
@@ -100,41 +114,112 @@ export function with_query(path, params) {
 }
 
 /**
+ * The headers of a call. A client call carries the signed-in person's four headers (or `options.client`'s, an
+ * identity being checked at sign-in); an admin call the admin key and the person's name for the audit.
+ * @param {{client?: boolean | object, idempotent?: boolean}} [options]
+ * @returns {Record<string, string>}
+ */
+export function build_headers(options = {}) {
+  const headers = { Accept: "application/json" };
+  if (options.client) {
+    const values = typeof options.client === "object" ? options.client : identity();
+    if (!values) throw new ApiError("Sign in first.", { status: 401, code: "signed_out" });
+    Object.assign(headers, client_headers(values));
+  } else {
+    headers[USER_ID_HEADER] = admin_name || identity()?.user_id || DEFAULT_USER_ID;
+    if (admin_key) headers[ADMIN_KEY_HEADER] = admin_key;
+  }
+  const unsendable = Object.entries(headers).find(([, value]) => !HEADER_SAFE.test(value));
+  if (unsendable) throw new ApiError(`${unsendable[0]} may hold plain characters only.`);
+  if (typeof options.idempotent === "string") {
+    if (!HEADER_SAFE.test(options.idempotent) || options.idempotent.length > IDEMPOTENCY_KEY_MAX) throw new ApiError("Not a usable request key.");
+    headers[IDEMPOTENCY_HEADER] = options.idempotent;
+  } else if (options.idempotent) headers[IDEMPOTENCY_HEADER] = new_idempotency_key();
+  return headers;
+}
+
+/**
  * One API call. Resolves with the parsed JSON (null for an empty answer); rejects with an ApiError.
- * A 401 or 403 also clears the admin key and tells the watchers.
+ * An admin call's 401 or 403 clears the admin key; a client call's 401 signs the person out (the key is no
+ * longer accepted); a client 403 is only an error (another entity's run, say).
  * @param {string} method GET, POST, PUT or DELETE
  * @param {string} path a path of this origin, e.g. "/v1/tsg/intel/health"
  * @param {any} [body] sent as JSON when given
- * @param {Record<string, string>} [caller] a client's own headers (X-API-Key, X-User-Id, X-Entity-Id, X-Tenant-Id):
- *   sent instead of the admin key; their 401 or 403 leaves the admin key set
+ * @param {{client?: boolean | object, idempotent?: boolean | string, with_status?: boolean}} [options]
+ *   with_status: resolve {status, body} (a start's 200 is a replay of the same start, 202 a new one)
  * @returns {Promise<any>}
  */
-export async function request(method, path, body, caller) {
+export async function request(method, path, body, options = {}) {
   if (!is_own_path(path)) throw new ApiError(`Not a path of this API: ${path}`);
-  const own = Object.entries(caller ?? {}).map(([name, value]) => [name, String(value ?? "").trim()]);
-  const unsendable = own.find(([, value]) => !HEADER_SAFE.test(value));
-  if (unsendable) throw new ApiError(`Fill in ${unsendable[0]} (plain characters, no line breaks).`);
-  const headers = { Accept: "application/json", [USER_ID_HEADER]: user_id || DEFAULT_USER_ID, ...Object.fromEntries(own) };
-  if (admin_key && !caller) headers[ADMIN_KEY_HEADER] = admin_key;
-  const options = { method, headers, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer" };
+  const headers = build_headers(options);
+  const sent = { method, headers, cache: "no-store", credentials: "same-origin", referrerPolicy: "no-referrer" };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(body);
+    sent.body = JSON.stringify(body);
   }
   let response;
   try {
-    response = await fetch(path, options);
+    response = await fetch(path, sent);
   } catch {
-    throw new ApiError("The API did not answer. Check the connection and try again.");
+    throw new ApiError("The service did not answer. Check your connection and try again.");
   }
   const answer = read_json(await response.text());
-  if (response.ok) return answer;
+  if (response.ok) return options.with_status ? { status: response.status, body: answer } : answer;
   const problem = read_problem(response, answer);
-  if (KEY_REFUSED.has(response.status) && !caller) {
+  if (options.client === true && response.status === 401) sign_out(problem.message);
+  else if (!options.client && KEY_REFUSED.has(response.status) && admin_key) {
     admin_key = "";
     tell_key_watchers(problem.message);
   }
   throw problem;
+}
+
+/** A client call: the signed-in person's headers. @returns {Promise<any>} */
+export function call(method, path, body, options = {}) {
+  return request(method, path, body, { ...options, client: true });
+}
+
+/** The API's problem body: {status, title, detail, code, request_id, reason?, errors?: [{field, message}], details?}. */
+export function read_problem(response, answer) {
+  const problem = answer !== null && typeof answer === "object" ? answer : {};
+  const request_id = problem.request_id || response.headers.get(REQUEST_ID_HEADER) || null;
+  const fields = Array.isArray(problem.errors)
+    ? problem.errors.map((error) => `${String(error.field ?? "").replace(/^body\./, "")}: ${error.message}`).join("; ")
+    : "";
+  const parts = [
+    String(problem.detail || problem.title || `The service answered ${response.status}.`),
+    fields && `(${fields})`,
+    request_id && `Reference ${request_id}.`,
+  ];
+  return new ApiError(parts.filter(Boolean).join(" "), {
+    status: response.status,
+    code: problem.code,
+    reason: problem.reason,
+    request_id,
+    details: problem.details,
+    body: answer,
+  });
+}
+
+/**
+ * One Idempotency-Key per content: for_content(path, body) gives the same key while the same start is sent again
+ * (a retry, a double click, the same form sent twice) and a new key once the content changes.
+ * @returns {{for_content: (path: string, body: any) => string}}
+ */
+export function make_start_key() {
+  let last = { content: null, key: null };
+  return {
+    for_content(path, body) {
+      const content = `${path} ${JSON.stringify(body ?? null)}`;
+      if (content !== last.content) last = { content, key: new_idempotency_key() };
+      return last.key;
+    },
+  };
+}
+
+export function new_idempotency_key() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function tell_key_watchers(refusal) {
@@ -148,26 +233,4 @@ function read_json(text) {
   } catch {
     return text;
   }
-}
-
-// The API's problem body: {status, title, detail, code, request_id, reason?, errors?: [{field, message}], details?}.
-function read_problem(response, answer) {
-  const problem = answer !== null && typeof answer === "object" ? answer : {};
-  const request_id = problem.request_id || response.headers.get(REQUEST_ID_HEADER) || null;
-  const fields = Array.isArray(problem.errors)
-    ? problem.errors.map((error) => `${error.field}: ${error.message}`).join("; ")
-    : "";
-  const parts = [
-    String(problem.detail || problem.title || `The API answered ${response.status}.`),
-    fields && `(${fields})`,
-    request_id && `Request id ${request_id}.`,
-  ];
-  return new ApiError(parts.filter(Boolean).join(" "), {
-    status: response.status,
-    code: problem.code,
-    reason: problem.reason,
-    request_id,
-    details: problem.details,
-    body: answer,
-  });
 }

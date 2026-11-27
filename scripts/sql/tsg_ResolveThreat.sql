@@ -20,16 +20,17 @@ CREATE OR ALTER PROCEDURE dbo.tsg_ResolveThreat
     @Source       NVARCHAR(50),           -- 'manual' | 'ai'
     @CreatedBy    NVARCHAR(200),
     @ActorIDs     NVARCHAR(MAX) = NULL,   -- JSON array of live actor ids, linked to a NEW type only, e.g. N'[3,5]'
-    @AssetType    NVARCHAR(10) = NULL     -- 'IT' | 'OT' (where the scenario attacks), saved on a NEW threat only;
-                                          -- NULL: saved untyped. Deploy this procedure before the app that sends it.
+    @AssetType    NVARCHAR(10) = NULL     -- 'IT' | 'OT' | 'IT\OT' (where the scenario attacks; IT\OT: both), saved
+                                          -- on a NEW threat only; NULL: saved untyped. Deploy this procedure before
+                                          -- the app that sends it.
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
     IF @Source NOT IN (N'manual', N'ai')
         THROW 50001, N'tsg_ResolveThreat: @Source must be manual or ai.', 1;
-    IF @AssetType IS NOT NULL AND @AssetType NOT IN (N'IT', N'OT')
-        THROW 50002, N'tsg_ResolveThreat: @AssetType must be IT, OT or NULL.', 1;
+    IF @AssetType IS NOT NULL AND @AssetType NOT IN (N'IT', N'OT', N'IT\OT')
+        THROW 50002, N'tsg_ResolveThreat: @AssetType must be IT, OT, IT\OT or NULL.', 1;
 
     DECLARE @CategoryID INT = (SELECT ThreatCategoryID FROM dbo.Threat_Category
                                WHERE ThreatCategoryName = @CategoryName AND IsActive = 1 AND IsDeleted = 0);

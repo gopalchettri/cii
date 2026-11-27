@@ -13,8 +13,10 @@ Two ways to start a run, with the same request and the same answer:
   shown. The controls still come only from the control library.
 
 MITRE ATT&CK (Enterprise and ICS, no other source) is imported on a saved schedule: weekly on Sunday 02:00 UTC
-until an admin changes it, and once right after the first start. The admin web page is served by the API at `/ui/`
-(e.g. `http://localhost:8000/ui/`): import now, the schedule, the control links, jobs, API keys and more.
+until an admin changes it, and once right after the first start. The web UI is served by the API at `/ui/`
+(e.g. `http://localhost:8000/ui/`, and the same path on UAT): sign in with a client API key to start MITRE or standard
+runs, review scenarios, write treatment plans and map services; the administration pages (import, schedule, control
+links, jobs, API keys and more) are in the same menu.
 
 ## Run it locally (Windows PowerShell 5.1)
 

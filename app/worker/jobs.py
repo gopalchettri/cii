@@ -124,6 +124,11 @@ def run_leased_job(
         _fail(lease, failure.code, failure.message)
         publish(record_id)
         raise
+    except AppError as exc:  # a known failure: failed in its own words, not "Unexpected" (owner 2026-11-27)
+        log.error(LogEvent.JOB_KNOWN_ERROR, record_id=record_id, code=exc.code, message=str(exc.__cause__ or exc))
+        _fail(lease, exc.code, exc.detail, outage_reason(exc))
+        publish(record_id)
+        raise
     except Exception:
         log.exception(LogEvent.JOB_UNEXPECTED_ERROR, record_id=record_id)
         _fail(lease, ErrorCode.INTERNAL_ERROR, ErrorMessage.JOB_UNEXPECTED.format(record_id=record_id))

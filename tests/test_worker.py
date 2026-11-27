@@ -40,8 +40,8 @@ from app.core.constants import (
     Worker,
     module_of,
 )
-from app.core.database import get_mongodb, get_redis_client
-from app.core.exceptions import JobFailed, LeaseLost, Unavailable, WaitingForAnotherJob
+from app.core.database import describe_broken_procedure, get_mongodb, get_redis_client
+from app.core.exceptions import JobFailed, LeaseLost, NotFound, SetupError, Unavailable, WaitingForAnotherJob
 from app.core.lease_signal import raise_if_lease_lost
 from app.crud import indexes
 from app.crud.jobs import JobLease, JobRepository, ended_job_fields
@@ -292,6 +292,28 @@ def test_an_unexpected_error_fails_the_job_and_a_success_finishes_it(published: 
         "message": ErrorMessage.JOB_UNEXPECTED.format(record_id=broken),
     }
     assert _records().find_one({"_id": good})["status"] == Status.DONE
+
+
+@pytest.mark.parametrize(
+    "error",
+    [SetupError(describe_broken_procedure(StoredProcedure.RESOLVE_THREAT)), NotFound("Scenario 's1' does not exist.")],
+    ids=["setup_error", "not_found"],
+)
+def test_a_known_error_fails_the_job_in_its_own_words(published: list[str], error: Exception) -> None:
+    """Owner 2026-11-27: a job stopped by a known error (an out-of-date procedure, a missing record) showed only
+    "Unexpected error" and lost what to fix. Mutation: leave out the AppError branch and the board shows
+    JOB_UNEXPECTED again."""
+    record_id = _insert_job()
+
+    def refuse(_lease: JobLease) -> None:
+        raise error
+
+    with pytest.raises(type(error)):
+        jobs.run_leased_job(_task(), Collection.SESSIONS, record_id, 1, refuse)
+    record = _records().find_one({"_id": record_id})
+    assert record["status"] == Status.FAILED
+    assert record["job"]["error"] == {"code": error.code, "message": error.detail}
+    assert record_id in published  # its watchers are told
 
 
 def test_the_reaper_requeues_abandons_and_resends_each_once(

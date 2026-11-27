@@ -107,6 +107,8 @@ Every error is `application/problem+json` (RFC 9457):
 | 500 | unexpected (`internal_error`) or server misconfigured (`setup_error`); quote `request_id` |
 | 503 | a store or the AI is down; header `Retry-After: 5`. Retry. |
 
+A `setup_error` from the library database names the procedure and, for one of TSG's own, the file to install (owner, 2026-11-27), e.g. *"The library database's procedure dbo.tsg_ResolveThreat is missing, out of date or refused its call: install scripts/sql/tsg_ResolveThreat.sql on this database (the database team runs it). SQL Server's reason is in the API log under this request id."* It usually means an app release went out before its SQL script was installed. SQL Server's own words (e.g. "@AssetType is not a parameter for procedure tsg_ResolveThreat") are logged as `http.app_error` with the `request_id`, never sent in the answer.
+
 ### Validation rules that apply everywhere
 
 - Unknown body fields → `422` (`Extra inputs are not permitted`). Every request body model uses `extra="forbid"`.
@@ -305,7 +307,7 @@ Headers: identity headers.
 | 404 | — | unknown session |
 | 403 | — | another entity's session |
 
-Note: scenarios are written first, controls after. A run whose scenarios are written reads `session_status: completed` with `progress.controls: RUNNING` while controls are mapped; `overall` is then already `awaiting_review` (or `awaiting_next_set`) when there is something to decide, else `in_progress`. You may accept and request plans then (see `controls_pending`, 3.5).
+Note: scenarios are written first, controls after. A run whose scenarios are written reads `session_status: completed` with `progress.controls: RUNNING` while controls are mapped; `overall` is then already `awaiting_review` (or `awaiting_next_set`) when there is something to decide, else `in_progress`. You may accept and request plans then (see `controls_pending`, 3.5). A MITRE run maps no controls (3.4b): never wait on `progress.controls` for one.
 
 A failed run reads `overall: in_progress` while the controls of its written scenarios are still matched (`progress.controls` `RUNNING`), then `error`. `session_status` stays `failed`, and `error` and `progress.error_message` say why from the start.
 
@@ -334,6 +336,17 @@ Headers: identity headers (see "SSE auth" below).
 - When idle 15 s the server sends a comment line `: ping`.
 - The server re-reads the status at least every 30 s.
 - The stream does **not** end when the run completes. It ends when you close it, when the run is deleted, or when the API key is revoked (closes with no event).
+
+**A MITRE run uses this stream too** (owner, 2026-11-26). There is no `/v1/mitre_sessions/{session_id}/events`: open this one with the MITRE run's `session_id`. Every MITRE call that changes the run sends a `session.updated`:
+
+| MITRE call (group 5b) | `session.updated` |
+| --- | --- |
+| `POST /v1/mitre_create_session` | as the run works: each stage (choosing groups, planning paths, writing), each scenario saved, the end (a MITRE card has no controls to match, owner 2026-11-27) |
+| `POST .../accept`, `POST .../scenarios/reject` | yes, at once |
+| `POST .../regenerate/scenarios`, `POST .../scenarios/next-set` | yes, then as the new scenarios are written |
+| `POST .../scenarios/{scenario_id}/promote-to-library` | no: it changes the library's pending list, not the run |
+
+The event's body is the run's board (3.2: status, progress, counts, `updated_at`), not the MITRE detail. Read it as "the run changed", then read `GET /v1/mitre_sessions/{session_id}` for the MITRE stage, groups and paths, and its `/results` for the scenarios. This replaces polling every few seconds.
 
 **Errors** (normal HTTP responses, before the stream starts)
 
@@ -491,7 +504,7 @@ There is no AI reviewer: `validation_errors` never holds "The plan check could n
 The same page, parameters and fields as 3.4 (a MITRE card's `actors` are its MITRE groups and `attack_techniques` its
 techniques, each with its attack.mitre.org `url`; `procedures` and `mitigations` are MITRE's procedure examples and
 mitigations for those techniques, the same as the run's status shows; its threat is AI-written, so `threat.threat_id` is null, as for every AI threat in 3.4).
-A MITRE card's `controls[]` are chosen **per technique**, never per sentence: for each technique, the AI chooses (at most `CONTROLS_PER_TECHNIQUE`) among the library controls linked to that technique's own MITRE mitigations, and code refuses any other. Each control's `match_reason` names what it does and the technique and mitigation it defends against, e.g. `"prevent: T1498.001 Direct Network Flood (MITRE M1037 Filter Network Traffic)"` (one per technique, `; `-separated, when it defends several); the AI's picks come first, in the attack path's technique order, `match_type` `EXACT`. **A card never shows no control** (owner, 2026-11-24): a technique the AI finds no exact fit for, or every technique when its answer cannot be read, shows its best-linked control, `match_type` `NEAREST`, its reason ending "picked by the MITRE link score"; a card that still has fewer than `MIN_CONTROLS` is topped up with the library search's nearest controls, `NEAREST`, the reason starting "Nearest by the library search, too few MITRE-linked controls fitted". At most `MAX_CONTROLS`; a cut drops a nearest control before an exact one. The AI is given, for each mitigation, MITRE's own words on how it defends that technique, and keeps a control only when it does what MITRE says. A sub-technique MITRE gives no mitigation of its own is defended through its parent technique's mitigations, the reason saying so (`"... (MITRE M1029 Remote Data Storage, for parent T1070)"`). A backup or recovery control (library domain Business Continuity & Disaster Recovery) is always `recover` or `contain`, a monitoring control (Continuous Monitoring) always `detect`: code corrects any other effect. Each technique's outcome is in the run's status (`technique_control_states`): `matched` (an exact pick), `nearest` (its best-linked control shown as `NEAREST`), or why it has no control of its own: `no_known_defence`, `no_library_control`, `not_prepared`, `type_mismatch`.
+**A MITRE card carries no controls** (owner, 2026-11-27): a MITRE run picks none when it writes its scenarios; the remediation plan of an accepted scenario (4.1) identifies them, per attack step, from the library controls linked to that step's MITRE mitigations and those nearest it by meaning. A card written since then shows `controls: []`, `controls_status: null`, `control_match_status: null`, `controls_mapped: false`, and in the run's status (`GET /v1/mitre_sessions/{session_id}`, `partial_scenarios` / `result.scenarios`) `controls_status: null`, `controls: []`, `technique_control_states: []`. **Do not wait on `controls_status` or `progress.controls` for a MITRE run**: accept and request plans as soon as the scenarios are written; an accept never lists a MITRE card in `controls_pending`. A card written before 2026-11-27 keeps the controls it was given (picked per technique, `match_reason` naming the technique and its MITRE mitigation, e.g. `"prevent: T1498.001 Direct Network Flood (MITRE M1037 Filter Network Traffic)"`, its `technique_control_states` `matched`, `nearest`, `no_known_defence`, `no_library_control`, `not_prepared` or `type_mismatch`); one whose controls were still waiting then shows none, as a new card.
 A MITRE next set and regenerate show their own `progress.timings.threats` and `.scenarios`, as 3.2 describes.
 `404` for a run that is not a MITRE run.
 
@@ -959,7 +972,7 @@ Headers: identity headers.
 | `plan.control_assessment[]` | object[] | `control_id`, `control_code`, `control_name`, `domain`, `match`, `implementation_status`, `recommended`, `protected_systems[]`, `required_systems[]`, `validation` (`retained`/`replaced`/`flagged_for_review`), `validation_reason`, `replaced_by`, `replaces[]` |
 | `plan.unresolved_gaps[]` | object[] | `kind` (`flagged_control`/`no_validated_control`/`uncovered_risk`), `control_code`, `detail` |
 | `warnings` | string[] | checks on the shown version; never a block. An existing control the request names that is a library control but none of this scenario's controls or their alternatives is named here: the plan does not count it against this risk |
-| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[]`, `controls[]`. Each actor has `name`, `role` and the 3.4 actor fields (`actor_name`; on a MITRE card every group, with `mitre_id`, `url`, `relevance`, `documented_techniques`); each control has its stored keys (`code`, `name`, `rank`, `rationale`, ...) and the 3.4 control fields (`control_code`, `control_name`, `map_rank`, `match_reason`, ...), all from the library control `control_id` |
+| `scenario` | object or null | `scenario_id`, `title`, `statement`, `risk_statement`, `category`, `threat`, `actors[]`, `controls[]`. Each actor has `name`, `role` and the 3.4 actor fields (`actor_name`; on a MITRE card every group, with `mitre_id`, `url`, `relevance`, `documented_techniques`); `controls[]` is `[]` for a MITRE card written since 2026-11-27 (its plan's `control_assessment` lists the controls it identified); each control has its stored keys (`code`, `name`, `rank`, `rationale`, ...) and the 3.4 control fields (`control_code`, `control_name`, `map_rank`, `match_reason`, ...), all from the library control `control_id` |
 | `register_data` | object | the register fields as sent in 4.1 (ratings as strings; each system list with each id once, `[]` when not sent) |
 | `versions` | array or null | only with `include_history=true`: `version`, `status`, `decision`, `decided_by`, `decided_at`, `review_comment`, `requested_by`, `requested_at`, `completed_at`, `error`, `plan`, `warnings` |
 
@@ -1660,23 +1673,27 @@ Example: saved on a Wednesday, that body answers `next_run_at` of the coming Sun
 
 `GET /control-links` → `{mitigations, linked, without_links, not_prepared, prepared_at}`: `mitigations` have a prepared record, of which `linked` have at least one library control and `without_links` none; `not_prepared` are listed but not judged yet (or their judging failed); `prepared_at` is the newest preparation (null: none yet).
 
-### 7.5 The admin web page: `/ui/`
+### 7.5 The web UI: `/ui/`
 
-A page for operators, served by the API itself at `https://<tsg-host>/ui/` (same origin, nothing else to deploy). It calls only the routes of this guide and adds none of its own; it is not in the OpenAPI document.
+One web UI for analysts and operators (D90), served by the API itself at `https://<tsg-host>/ui/`: locally `http://localhost:8000/ui/`, on UAT `https://threatgen-api.apps.dda-desc-az1-01.desccii.local/ui/`. It is the same origin as the API, so nothing else is deployed and no CORS setting is needed. It calls only the routes of this guide and adds none of its own; it is not in the OpenAPI document.
 
-| Page | What it shows and does | Needs the admin key |
+**Sign in.** The first screen asks for the API key, user id, entity id and tenant id: the four headers every client route needs. "Sign in" checks them with `GET /v1/jobs` and keeps them for that browser tab only (`sessionStorage`): gone when the tab is closed or on Sign out. A `401` from any call signs the person out and says why. The administration pages that need the admin key ask for it in their own place and keep it in the tab's memory only (gone on reload).
+
+| Menu | Page | What it shows and does |
 | --- | --- | --- |
-| Data ingestion | the switch; each source's state; import now (all or one source), followed until done | no |
-| Schedule | the form of 7.4, with the next and the last run | no |
-| Control links | linked, without a control, not prepared, last prepared; prepare now, followed with `judged`, `unchanged`, `failed` | no |
-| Service mapper | describe a service and generate its mapping, followed until done; upstream and downstream services; accept, reject, regenerate; recent mappings. Sends the client `X-API-Key`, `X-User-Id`, `X-Entity-Id` and `X-Tenant-Id` typed on the page | no (a client key instead) |
-| Jobs | every job, queue and worker (7.2); cancel an import or a build | yes |
-| Search vectors | build the library's search vectors now | yes |
-| API keys | list, mint (the key is shown once), revoke | yes |
-| Library curation | threats waiting for a curator; approve or reject | yes |
-| AI usage | the counts of 7.3 for a chosen period, as numbers | no |
-| System | `/health`, `/ready`, each store and worker | no |
+| Overview | Home | work in progress (`GET /v1/jobs`), the runs opened in this tab, plans waiting for a decision, the service's state |
+| Threat scenarios | New run | a guided form: MITRE ATT&CK (`POST /v1/mitre_create_session`) or Standard (`POST /v1/sessions`); asset, supporting systems, optional service from the entity's catalogue, sector, subsector |
+| | Runs | open a run by id, this tab's runs, work in progress, the entity's earlier runs; cancel or delete a run |
+| | A MITRE run (`#/mitre_run/<id>`) | stage, counts, timings, attack paths and groups; scenario cards with the description, scenario, risk, groups and techniques (linked to attack.mitre.org), and "Controls are identified in the remediation plan" (owner 2026-11-27; an older card's controls, exact or nearest); accept, accept as replacement, reject, regenerate, next set, promote to library, details with version history, Word export, print. Polled |
+| | A standard run (`#/run/<id>`) | the seven-step progress, a meter of accepted, rejected and to review, filters, the same cards and actions; live through the run's event stream |
+| Treatment plans | Register | the entity's plans with status, decision and risk filters and paging |
+| | A plan (`#/plan/<run>/<scenario>`) | the create-plan form; then the plan: controls to implement with their status per system, the action plan and schedule, warnings, versions with accept or reject (with a comment), regenerate, cancel, Word export; live |
+| | Manual scenario | a form for a scenario written by hand and its plan (`POST /v1/remediation` with `is_manual: true`) |
+| Services | Service mapper | describe a service (or pick it from the catalogue), the entity's mappings, upstream and downstream services with accept or reject (one by one or all pending), regenerate, Word export; live |
+| Administration | System health, Data ingestion, Ingestion schedule, Control links, AI usage | as in 7.1-7.4; no key |
+| | Jobs, API keys, Library curation, Search vectors | as in 7.2 and 7.6; the admin key |
 
-- **The admin key** is typed in the bar at the top of the page and kept in that browser tab's memory only: never in local storage, a cookie or a URL, and gone on reload. A `401` or `403` clears it and the page asks again. The "Recorded as" box is the `X-User-Id` changes are audited under (`admin-ui` when empty).
-- **It has no login of its own.** It uses what the API uses: anyone who can reach `/ui/` on the network can open the pages that need no key and change the switch and the schedule, exactly as anyone who can reach the API can call those routes today. The other pages work only with the admin key.
+- **Starts are never sent twice.** A start (a run, a plan, a manual scenario, a mapping) carries an `Idempotency-Key` that stays the same while the same form is sent again, so a retry after a lost answer opens the run already started (`200`) instead of starting a second one.
+- **Word export** writes a Word-readable `.doc` in the browser (no library, no other host); every page also prints cleanly ("Save as PDF").
+- **It has no login of its own beyond the key.** Anyone who can reach `/ui/` can open the pages that need no key, exactly as anyone who can reach the API can call those routes.
 - Every answer of `/ui/` carries `Cache-Control: no-store`, `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.

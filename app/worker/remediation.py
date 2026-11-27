@@ -1,6 +1,7 @@
 """The plan job (tsg_write_plan): one plan version written from the scenario now and the stored register."""
 
 import time
+from collections.abc import Sequence
 from functools import partial
 from typing import Any
 
@@ -11,11 +12,14 @@ from app import ai
 from app.ai import ChatModel, RerankModel
 from app.core import metrics
 from app.core.clock import utc_now
+from app.core.config import get_settings
 from app.core.constants import (
     ActorRole,
     AuditAction,
     AuditTarget,
     Collection,
+    ErrorCode,
+    ErrorMessage,
     LibrarySource,
     LibraryStatus,
     LogEvent,
@@ -28,6 +32,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import (
     TEMPORARY_ERRORS,
+    AppError,
     ControlsNotMapped,
     JobFailed,
     LeaseLost,
@@ -47,9 +52,16 @@ from app.domain.remediation.write import (
     build_snapshot,
     existing_controls_not_for_this_risk,
     list_affected_systems,
+    redact_and_shorten_text,
     write_plan,
 )
-from app.domain.scenario.attack_controls import is_attack_scenario, pick_set_controls
+from app.domain.scenario.attack_controls import (
+    describe_attack_steps,
+    gather_plan_candidates,
+    is_attack_scenario,
+    is_mitre_card,
+    pick_set_controls,
+)
 from app.domain.scenario.session import scenario_asset_type
 from app.domain.scenario.write import find_alternative_controls, map_controls
 from app.domain.shared.audit import audit_target
@@ -81,12 +93,14 @@ def write_plan_version(
     """Writes the leased version: its snapshot rebuilt and saved, the checked plan, then the audit."""
 
     try:
-        snapshot = _save_snapshot(lease, search, rerank, threats)
+        snapshot, controls = _save_snapshot(lease, search, rerank, threats)
         started = time.perf_counter()
         plan, warnings = write_plan(chat, snapshot)
     except JobFailed:
         metrics.PLANS.labels(Status.FAILED).inc()
         raise
+    weighed = [row["control_id"] for row in plan["control_assessment"]]  # owner 2026-11-27: the final rows
+    warnings += existing_controls_not_for_this_risk(lease.record["register"], controls, weighed)
     written = {
         "status": Status.DONE,
         "plan": plan,
@@ -104,7 +118,9 @@ def write_plan_version(
     )
 
 
-def _save_snapshot(lease: JobLease, search: LibrarySearch, rerank: RerankModel, threats: ThreatRepository) -> Doc:
+def _save_snapshot(
+    lease: JobLease, search: LibrarySearch, rerank: RerankModel, threats: ThreatRepository
+) -> tuple[Doc, Sequence[LibraryControl]]:
 
     started, scenarios = time.perf_counter(), scenario_crud.get_threat_scenario_repository()
     scenario = scenarios.get(fields=PLANNED_SCENARIO_FIELDS, _id=lease.record["scenario_id"])
@@ -124,22 +140,47 @@ def _save_snapshot(lease: JobLease, search: LibrarySearch, rerank: RerankModel, 
         scenario = scenarios.update_manual_scenario_findings(scenario["_id"], changes, PLANNED_SCENARIO_FIELDS)
         if scenario is None:  # deleted with its run meanwhile
             raise LeaseLost(lease.record_id)
-    controls = library.library.control_library
-    by_id = {row.control_id: row for row in controls}
-    mapped = _mapped_controls(lease, scenario, context, library, by_id, rerank)
-    items, register = mapped["items"], lease.record["register"]
-    affected = list_affected_systems(context, register)
-    categories = context.system_categories()
+    controls, register = library.library.control_library, lease.record["register"]
+    affected, categories = list_affected_systems(context, register), context.system_categories()
+    items, offered, most = _plan_controls(lease, scenario, context, library, rerank)
     library_mapped, warnings = assess_controls(items, register, controls, affected, categories)
-    found = find_alternative_controls(rerank, scenario, context, library, [i["control_id"] for i in items], 5, mapped)
-    offered = [{"control_id": c.control_id, "code": c.code, "score": s, "match": "alternative"} for c, s in found]
     alternatives = assess_controls(offered, register, controls, affected, categories)[0]
-    considered = [row["control_id"] for row in library_mapped + alternatives]
-    warnings = warnings + existing_controls_not_for_this_risk(register, controls, considered)
+    log.info(LogEvent.PLAN_ALTERNATIVES_OFFERED, record_id=lease.record_id, offered=len(alternatives), most=most)
     snapshot = build_snapshot(scenario, context, register, library_mapped, warnings, affected, alternatives)
+    if is_mitre_card(scenario):
+        _add_mitre_grounding(snapshot, scenario)
     seconds = {"controls_s": time.perf_counter() - started}
     get_remediation_repository().update_remediation_plan_version(lease, {"snapshot": snapshot}, timings=seconds)
-    return snapshot
+    return snapshot, controls
+
+
+def _plan_controls(
+    lease: JobLease, scenario: Doc, context: FrozenContext, library: LibrarySnapshot, rerank: RerankModel
+) -> tuple[list[Doc], list[Doc], int]:
+    """(identified items, offered alternatives, the most offered). A MITRE card's: its own done controls (an older
+    card's) or none, and its gathered candidates; its controls are never claimed or mapped (owner 2026-11-27).
+    Any other card's: its mapped controls and up to REMEDIATION_ALTERNATIVE_CONTROLS alternatives."""
+    settings, by_id = get_settings(), {row.control_id: row for row in library.library.control_library}
+    if is_mitre_card(scenario):
+        candidates = gather_plan_candidates(scenario, context, library)
+        return active_mapped_controls(scenario, by_id), candidates, settings.plan_candidates_limit
+    mapped = _mapped_controls(lease, scenario, context, library, by_id, rerank)
+    most, identified = settings.remediation_alternative_controls, [item["control_id"] for item in mapped["items"]]
+    found = find_alternative_controls(rerank, scenario, context, library, identified, most, mapped)
+    offered = [{"control_id": c.control_id, "code": c.code, "score": s, "match": "alternative"} for c, s in found]
+    return mapped["items"], offered, most
+
+
+def _add_mitre_grounding(snapshot: Doc, scenario: Doc) -> None:
+    # owner 2026-11-27: a MITRE plan reads its attack steps with MITRE's words once, and each candidate short.
+    most = get_settings().plan_candidate_description_characters
+    for row in snapshot["existing_controls"]["library_alternatives"]:
+        row["control_description"] = redact_and_shorten_text(row["control_description"], most)
+    snapshot["attack_steps"] = describe_attack_steps(scenario)
+    for step in snapshot["attack_steps"]:
+        for mitigation in step["mitigations"]:
+            if "mitre_says" in mitigation:
+                mitigation["mitre_says"] = redact_and_shorten_text(mitigation["mitre_says"])
 
 
 def pick_manual_attacker(search_snapshot: LibrarySnapshot, scenario: Doc) -> list[Doc]:
@@ -241,7 +282,13 @@ def _freed_controls(claimed: Doc, exc: Exception, run_cancelled: bool) -> tuple[
         return Status.CANCELLED, None
     if isinstance(exc, LeaseLost):
         return Status.QUEUED, None
-    error = outage_error(exc) if isinstance(exc, TEMPORARY_ERRORS) else job_error_of(exc)
+    if isinstance(exc, TEMPORARY_ERRORS):
+        error = outage_error(exc)
+    elif isinstance(exc, AppError | JobFailed):  # a known failure: its own code and words
+        error = job_error_of(exc)
+    else:  # a bug: the readable words the controls job shows, never the exception's class name (logged by the job)
+        message = ErrorMessage.JOB_UNEXPECTED.format(record_id=claimed["session_id"])
+        error = {"code": ErrorCode.INTERNAL_ERROR, "message": message}
     return (Status.FAILED if manual else Status.QUEUED), error
 
 

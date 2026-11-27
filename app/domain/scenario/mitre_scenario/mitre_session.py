@@ -7,9 +7,10 @@ its own part is `mitre`: stage, asset_context (the engine's shape), and once pla
 system_mitre_assets, it_ot_crossing_required, it_ot_crossing_reason, invalid_paths, planner_calls, run_target,
 relevant_actors, failed_path_ids, groups_removed_over_share, paths_complete, further_rounds and
 planner_stopped_at_round_cap.
-Its cards are tsg_scenarios records: content.mitre is the POC scenario, content.attack the shape the controls
-job picks CII library controls from (attack_controls.pick_set_controls): the library controls prepared for each
-technique's MITRE mitigations (tsg_control_links) first."""
+Its cards are tsg_scenarios records: content.mitre is the POC scenario, content.attack the shape its remediation
+plan gathers CII library controls from (attack_controls.gather_plan_candidates): the library controls prepared for
+each technique's MITRE mitigations (tsg_control_links) and those nearest each technique by meaning. A card carries
+no controls record (owner 2026-11-27): no controls job maps it."""
 
 import uuid
 from collections.abc import Collection
@@ -25,9 +26,7 @@ from app.core.clock import utc_now
 from app.core.config import Settings, get_settings
 from app.core.constants import AiApi
 from app.core.exceptions import Conflict, NotFound
-from app.core.logging import current_job_origin, current_request_id
 from app.core.security import Principal
-from app.crud import work_control
 from app.crud.audit import get_audit_repository
 from app.crud.jobs import JobLease, new_job
 from app.crud.mitre.mitre_stix import get_mitre_enterprise_stix_repository, get_mitre_ics_stix_repository
@@ -388,7 +387,7 @@ def read_mitre_run_progress(
 
 
 def build_mitre_attack_block(scenario: dict[str, Any]) -> dict[str, Any]:
-    """content.attack as the controls job reads it: the lead group, each technique with the MITRE mitigations
+    """content.attack as its remediation plan reads it: the lead group, each technique with the MITRE mitigations
     recorded for it, and those mitigations once each (the ones that are no defence left out)."""
     recorded, inherited = {}, {}
     for technique_mitigations in scenario["mitigations"]:
@@ -421,7 +420,7 @@ def build_mitre_attack_block(scenario: dict[str, Any]) -> dict[str, Any]:
 
 def build_mitre_card_content(run: dict[str, Any], scenario: dict[str, Any], path: dict[str, Any]) -> dict[str, Any]:
     """The card's content: the CII fields every shared route reads, content.mitre (the whole MITRE scenario) and
-    content.attack (what the controls are picked from: each technique with its MITRE mitigations)."""
+    content.attack (what its plan gathers controls from: each technique with its MITRE mitigations)."""
     system_ids = {}
     for system in run["context"]["systems"]:
         system_ids[system["name"]] = system["id"]
@@ -478,10 +477,9 @@ def build_mitre_card(
     epoch: int,
     replaces: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A written scenario's card, done with its controls queued as every written card's are; with `replaces`
-    (the path's current card: _id, version), its next version."""
+    """A written scenario's card, done, with no controls record (owner 2026-11-27: its remediation plan identifies
+    its controls); with `replaces` (the path's current card: _id, version), its next version."""
     now = utc_now()
-    origin = {"request_id": current_request_id(), "origin": current_job_origin()}
     version = replaces["version"] + 1 if replaces else write.FIRST_VERSION
     return {
         "_id": write.build_scenario_id(run["_id"], path["path_id"], version),
@@ -502,7 +500,6 @@ def build_mitre_card(
         "findings": [],
         "rewritten": False,
         "generation": {"epoch": epoch, "started_at": None, "finished_at": now},
-        "controls": {"status": c.Status.QUEUED, "attempts": 0, "queued_at": now, **origin},
         "created_at": now,
         "updated_at": now,
     }
@@ -603,12 +600,8 @@ def regenerate_mitre_scenarios(
 def send_mitre_job(
     principal: Principal, run: SessionStatus, epoch: int, action: c.AuditAction, after: dict[str, Any]
 ) -> None:
-    """Resumes a cancelled run's controls, sends the queued job, tells the live status and audits the action."""
-    was_cancelled = run.status == c.Status.CANCELLED or run.cancelled is not None
-    if (was_cancelled or run.counts.get("controls_cancelled", 0)) and work_control.resume_scenario_controls(
-        run.session_id, None
-    ):  # a cancelled run is resumed whole
-        send_job(c.TaskName.MAP_CONTROLS, run.session_id, 0)  # the epoch is never checked for controls
+    """Sends the queued job, tells the live status and audits the action (a MITRE card has no controls to resume,
+    owner 2026-11-27: queue_mitre_job clears the cancel stamp)."""
     send_job(c.TaskName.WRITE_MITRE_SCENARIOS, run.session_id, epoch)
     publish_session_status(run.session_id)
     target = audit_target(c.AuditTarget.SESSION, run.session_id)
@@ -695,7 +688,8 @@ def build_mitre_run_details(record: dict[str, Any], scenarios: list[dict[str, An
 
 
 def list_mitre_scenarios_with_controls(session_id: str) -> list[dict[str, Any]]:
-    """The run's written scenarios in path order, each the MITRE scenario with the CII library controls mapped."""
+    """The run's written scenarios in path order, each the MITRE scenario with the CII library controls mapped: a
+    card written since 2026-11-27 has none (None, [], []), its remediation plan identifies them."""
     cards = get_threat_scenario_repository().list(
         fields=MITRE_CARD_FIELDS, sort="path_rank", session_id=session_id, status=c.ScenarioStatus.DONE, newest=True
     )

@@ -4,50 +4,51 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>CII admin</title>
+  <title>Threat Scenario Generator</title>
   <link rel="stylesheet" href="./styles.css">
   <script type="module" src="./app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to the page</a>
 
-  <header class="site-header">
-    <div class="bar">
-      <a class="brand" href="#/ingestion">
-        <span class="brand-mark" aria-hidden="true">CII</span>
-        <span>Critical Information Infrastructure <span class="brand-part">Admin</span></span>
-      </a>
-
-      <div class="access" role="group" aria-label="Who is calling">
-        <span class="access-item">
-          <label for="user-id">Recorded as</label>
-          <input id="user-id" type="text" maxlength="256" placeholder="admin-ui" autocomplete="off" spellcheck="false">
+  <div id="app" class="app">
+    <aside id="sidebar" class="sidebar" aria-label="Main menu">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true">TSG</span>
+        <span class="brand-text">
+          <strong>Threat Scenario</strong>
+          <span>Generator</span>
         </span>
-        <form id="access" class="access-item" autocomplete="off">
-          <label for="admin-key">Admin key</label>
-          <input id="admin-key" type="password" autocomplete="off" spellcheck="false" placeholder="Not set">
-          <button id="set-key" type="submit">Set key</button>
-          <button id="clear-key" type="button" class="quiet" hidden>Clear key</button>
-        </form>
-        <span id="key-state" role="status"></span>
       </div>
+      <nav id="nav" class="nav" aria-label="Pages"></nav>
+      <div class="sidebar-foot">
+        <span id="environment" class="environment"></span>
+        <a class="sidebar-link" href="/docs" target="_blank" rel="noopener">API documentation</a>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-button" type="button" class="quiet menu-button" aria-controls="sidebar" aria-expanded="false">Menu</button>
+        <div id="topbar-context" class="topbar-context"></div>
+        <div id="account" class="account" role="group" aria-label="Signed in as"></div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <div class="page-head">
+          <div>
+            <h1 id="page-title">Threat Scenario Generator</h1>
+            <p id="page-subtitle" class="page-subtitle" hidden></p>
+          </div>
+          <div id="page-actions" class="page-actions"></div>
+        </div>
+        <div id="page">
+          <noscript><p class="state state-error">This page needs JavaScript.</p></noscript>
+        </div>
+      </main>
     </div>
+  </div>
 
-    <nav id="nav" class="bar" aria-label="Admin pages"></nav>
-  </header>
-
-  <div id="notices" class="notices" role="status" aria-live="polite"></div>
-
-  <main id="main" tabindex="-1">
-    <h1 id="page-title">CII admin</h1>
-    <div id="page">
-      <noscript><p class="state state-error">This page needs JavaScript.</p></noscript>
-    </div>
-  </main>
-
-  <footer class="site-footer">
-    The admin key and the name are kept in this browser tab only and are gone on reload.
-    <a href="/docs">API docs</a>
-  </footer>
+  <div id="notices" class="notices" aria-live="polite"></div>
 </body>
 </html>

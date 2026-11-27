@@ -21,6 +21,9 @@ from app.schemas.scenarios import SessionStatus, StartRunRequest
 
 MAPPED_VERSIONS = {"$or": [{"superseded_by": None}, {"decision": c.Decision.ACCEPTED}]}
 FAILED_WITH_ATTEMPTS_LEFT = {"controls.status": c.Status.FAILED, "controls.attempts": {"$lt": c.Controls.MAX_ATTEMPTS}}
+# owner 2026-11-27: a MITRE card's controls are identified by its remediation plan, never mapped: one an older pod
+# saved queued during a rolling deploy is never claimed nor requeued, whatever the rollout order.
+NOT_MITRE = {"content.mitre": {"$exists": False}}
 TITLE_INDEX = "one_title_per_run_all_versions"
 _COUNTED_FIELDS = ("status", "superseded_by", "decision", "controls.status")
 _DUPLICATE_CHECK_FIELDS = (
@@ -87,7 +90,8 @@ def waiting_controls(now: datetime) -> list[Record]:
 
 
 def _controls_waiting(_: Any = True) -> Record:
-    return {"status": c.ScenarioStatus.DONE, "$and": [MAPPED_VERSIONS, {"$or": waiting_controls(utc_now())}]}
+    waiting = {"$or": waiting_controls(utc_now())}
+    return {"status": c.ScenarioStatus.DONE, "$and": [MAPPED_VERSIONS, waiting], **NOT_MITRE}
 
 
 _SCENARIO_CONDITIONS: dict[str, Condition] = {
@@ -154,10 +158,6 @@ _CLAIMED_FIELDS = dict.fromkeys(
         "content.evidence.mitigations",
         "content.evidence.facts",  # the about-AI check leaves the cited attackers' names out
         "content.attack",  # POST /v1/create_session's card: its controls are picked from its mitigations' links
-        # A MITRE card's controls are picked per technique (owner 2026-11-24): its mitigations' names and the
-        # systems each technique targets; their presence marks the card as a MITRE one.
-        "content.mitre.mitigations",
-        "content.mitre.systems_targeted",
     ),
     1,
 )
@@ -305,7 +305,7 @@ class ThreatScenarioRepository(MongoRepository):
         if remap:
             not_mapped.append({"controls.status": c.Status.DONE})
         return self.collection.find_one_and_update(
-            {"_id": scenario_id, "status": c.ScenarioStatus.DONE, "$or": not_mapped},
+            {"_id": scenario_id, "status": c.ScenarioStatus.DONE, "$or": not_mapped, **NOT_MITRE},
             _running(task_id, now),
             projection=_CLAIMED_FIELDS,
             return_document=ReturnDocument.AFTER,
@@ -381,7 +381,7 @@ class ThreatScenarioRepository(MongoRepository):
             {"controls.status": c.Status.RUNNING, "controls.lease_until": {"$lt": now}},
             FAILED_WITH_ATTEMPTS_LEFT | {"controls.last_attempt_at": {"$lt": failed_long_ago}},
         ]
-        query = {**SWEPT, "$and": [MAPPED_VERSIONS, {"$or": stalled}]}
+        query = {**SWEPT, "$and": [MAPPED_VERSIONS, {"$or": stalled}], **NOT_MITRE}
         session_ids: list[str] = self.collection.distinct("session_id", query)
         requeued = {"controls.status": c.Status.QUEUED, "controls.queued_at": now, "controls.lease_until": None}
         self.collection.update_many(query, {"$set": requeued})

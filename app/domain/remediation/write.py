@@ -2,17 +2,20 @@
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Annotated, Any
 
+import structlog
 from pydantic import AfterValidator, BaseModel, BeforeValidator
 
 from app.ai import ChatModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.core.asset_types import asset_type_fits, compatible_asset_types
 from app.core.constants import (
     ActionPriority,
+    AddedControlWarning,
     AiTask,
     AnswerProblem,
     ControlCoverage,
@@ -22,6 +25,7 @@ from app.core.constants import (
     ErrorCode,
     GapKind,
     ImplementationStatus,
+    LogEvent,
     PlanText,
     PlanWarning,
     Remediation,
@@ -39,8 +43,13 @@ from app.schemas.remediation import ControlRef, Doc
 from app.schemas.scenario_internal import FrozenContext
 from app.search.snapshot import describe_control
 
-PLAN_SYSTEM_PROMPT: str = PROMPTS["remediation"]["plan"]["text"]
+log = structlog.get_logger(__name__)
+# owner 2026-11-27: <added_max> is the answer room's (Remediation.ADDED_CONTROLS_MAX).
+PLAN_SYSTEM_PROMPT: str = PROMPTS["remediation"]["plan"]["text"].replace(
+    "<added_max>", str(Remediation.ADDED_CONTROLS_MAX)
+)
 _CONTEXT_PREFIX: str = PROMPTS["remediation"]["plan"]["context_prefix"]
+_FEWER_CONTROLS: str = PROMPTS["remediation"]["plan"]["truncated_reask"]  # owner 2026-11-27
 _NOT_SHOWN = ("register", "warnings")
 _RATINGS = ("likelihood_rating", "impact_rating", "final_risk_rating")
 _SYSTEM_LISTS = ("protected_systems", "required_systems")
@@ -117,9 +126,15 @@ class DraftValidation(BaseModel):
     reason: Given  # why; for an implemented control, how the existing control already reduces this risk
 
 
+class DraftAddedControl(BaseModel):
+    control_code: Given  # a library_alternatives code, verbatim
+    reason: Given  # how it reduces this risk; for an implemented one, how it already does
+
+
 class PlanDraft(BaseModel):
     title: str = ""  # a fallback only: code names the plan from its controls' domains (glm leaves it out)
     control_validation: list[DraftValidation]
+    added_controls: list[DraftAddedControl] = []  # owner 2026-11-27: alternatives added, replacing nothing
     controls_to_be_implemented: Annotated[list[DraftControl], BeforeValidator(_the_controls)]
     remediation_action_plan: list[DraftAction]
     action_plan: Given
@@ -236,7 +251,8 @@ def existing_controls_not_for_this_risk(
     register: Doc, controls: Sequence[LibraryControl], considered_ids: Sequence[int]
 ) -> list[str]:
     """A warning for each library control the register says is in place that is none of the controls the plan
-    weighs (the scenario's and their alternatives, IT/OT twins as one), so the person sees it was not counted."""
+    weighed (its final rows: identified, chosen and added; IT/OT twins as one), so the person sees it was not
+    counted."""
     by_id = _index_controls(controls)[0]
     considered = set()
     for control_id in considered_ids:
@@ -279,7 +295,7 @@ def _assessed_row(
         "implementation_status": status,
         "protected_systems": covered,
         "required_systems": needed,
-    }
+    } | ({"offered_for": item["offered_for"]} if "offered_for" in item else {})  # a MITRE plan's candidate
 
 
 def build_snapshot(
@@ -414,18 +430,23 @@ def plan_prompt(snapshot: Doc) -> ChatPrompt:
     # Systems are named by their names alone: their ids are the API's, never the model's.
     existing = shown["existing_controls"]
     shown["existing_controls"] = existing | {
-        part: [
-            row
-            | {"match": ControlMatch.EXACT if row["match"] == ControlMatch.GIVEN else row["match"]}
-            | {key: [system["name"] for system in row[key]] for key in _SYSTEM_LISTS}
-            for row in existing[part]
-        ]
+        part: [_shown_control(row, part == "library_alternatives") for row in existing[part]]
         for part in ("library_mapped", "library_alternatives")
     }
     affected_names = [system["name"] for system in shown["risk_scope"]["affected_systems"]]
     shown["risk_scope"] = shown["risk_scope"] | {"affected_systems": affected_names}
     context = json.dumps(drop_database_ids(shown), ensure_ascii=False, separators=(",", ":"))
     return PLAN_SYSTEM_PROMPT, _CONTEXT_PREFIX + context
+
+
+def _shown_control(row: Doc, is_alternative: bool) -> Doc:
+    shown = row | {"match": ControlMatch.EXACT if row["match"] == ControlMatch.GIVEN else row["match"]}
+    shown |= {key: [system["name"] for system in row[key]] for key in _SYSTEM_LISTS}
+    if is_alternative:  # owner 2026-11-27: its match is always "alternative"; a MITRE candidate has no score
+        del shown["match"]
+        if shown["mapping_relevance"] is None:
+            del shown["mapping_relevance"]
+    return shown
 
 
 def write_plan(chat: ChatModel, snapshot: Doc) -> tuple[Doc, list[str]]:
@@ -439,14 +460,7 @@ def write_plan(chat: ChatModel, snapshot: Doc) -> tuple[Doc, list[str]]:
         return _gap_problems(snapshot, draft, rows) + _prose_problems(draft, rows)
 
     try:
-        draft: PlanDraft = ask_ai_and_check(
-            chat,
-            AiTask.REMEDIATION_PLAN,
-            plan_prompt(snapshot),
-            _read_answer,
-            check_first_answer,
-            reuse_earlier_answer=True,  # a retry after a crash reads back the plan its epoch already got
-        )
+        draft = _ask_for_plan(chat, snapshot, check_first_answer)
     except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
         reason = shorten_text(str(exc), 300)
         message = f"The AI could not write a usable remediation plan: {reason}"
@@ -455,6 +469,24 @@ def write_plan(chat: ChatModel, snapshot: Doc) -> tuple[Doc, list[str]]:
         draft = PlanDraft.model_validate(first[0])
     plan, warnings = _build_final_plan(draft, snapshot)
     return plan, [*snapshot["warnings"], *warnings, *schedule_plan(plan, snapshot)]
+
+
+def _ask_for_plan(chat: ChatModel, snapshot: Doc, check_first_answer: Callable[[Doc], list[str]]) -> PlanDraft:
+    system, user = plan_prompt(snapshot)
+    ask = partial(
+        ask_ai_and_check,
+        chat,
+        AiTask.REMEDIATION_PLAN,
+        read_answer=_read_answer,
+        first_answer_check=check_first_answer,
+        reuse_earlier_answer=True,  # a retry after a crash reads back the plan its epoch already got
+    )
+    try:
+        draft: PlanDraft = ask(prompt=(system, user))
+    except TruncatedAiAnswer as exc:  # owner 2026-11-27: cut off even at the model's room: once more, fewer controls
+        log.info(LogEvent.PLAN_TRUNCATED_ASKED_AGAIN, ai_task=AiTask.REMEDIATION_PLAN, message=str(exc))
+        draft = ask(prompt=(f"{system}\n{_FEWER_CONTROLS}", user))
+    return draft
 
 
 def _read_answer(answer: Doc) -> tuple[PlanDraft | None, list[str]]:
@@ -501,7 +533,36 @@ def _apply_ai_verdicts(snapshot: Doc, draft: PlanDraft) -> tuple[list[Doc], list
         if weighed["validation"] == ControlValidation.FLAGGED_FOR_REVIEW:
             weighed["implementation_status"] = ImplementationStatus.UNVERIFIED
         rows.append(weighed)
-    return rows + list(chosen.values()), warnings
+    added, added_warnings = _added_rows(draft, offered, chosen)
+    return rows + list(chosen.values()) + added, warnings + added_warnings
+
+
+def _added_rows(draft: PlanDraft, offered: dict[str, Doc], chosen: dict[str, Doc]) -> tuple[list[Doc], list[str]]:
+    # owner 2026-11-27: an alternative the AI adds, or lists to implement without adding, is a chosen
+    # alternative replacing nothing; one named only in an action is not (IMPLEMENTS_UNKNOWN warns).
+    reasons: dict[str, str | None] = {}
+    warnings: list[str] = []
+    for entry in draft.added_controls:
+        if _normalise_code(entry.control_code) in offered:
+            reasons.setdefault(_normalise_code(entry.control_code), entry.reason)
+        else:
+            warnings.append(AddedControlWarning.UNKNOWN.format(code=entry.control_code))
+    for control in draft.controls_to_be_implemented:
+        if _normalise_code(control.control_code) in offered:
+            reasons.setdefault(_normalise_code(control.control_code), None)
+    taken = {_normalise_code(code) for code in chosen}
+    recommended = {_normalise_code(control.control_code) for control in draft.controls_to_be_implemented}
+    keys = sorted((key for key in reasons if key not in taken), key=lambda key: key not in recommended)
+    limit = Remediation.ADDED_CONTROLS_MAX  # the recommended ones first, so the cap drops the others
+    if len(keys) > limit:
+        warnings.append(AddedControlWarning.CAPPED.format(count=len(keys), limit=limit))
+    rows = [
+        offered[key]
+        | {"validation": None, "validation_reason": redact_and_shorten_text(reasons[key]), "replaced_by": None}
+        | {"replaces": [], "added": True}  # added: internal only, never in control_assessment
+        for key in keys[:limit]
+    ]
+    return rows, warnings
 
 
 def _all_implemented(validated: list[Doc]) -> bool:
@@ -511,7 +572,7 @@ def _all_implemented(validated: list[Doc]) -> bool:
 
 
 def _is_kept_after_ai_check(row: Doc) -> bool:
-    return row["validation"] == ControlValidation.RETAINED or bool(row["replaces"])
+    return row["validation"] == ControlValidation.RETAINED or bool(row["replaces"]) or bool(row.get("added"))
 
 
 def _gap_problems(snapshot: Doc, draft: PlanDraft, rows: list[Doc]) -> list[str]:
@@ -537,7 +598,8 @@ def _gap_problems(snapshot: Doc, draft: PlanDraft, rows: list[Doc]) -> list[str]
     for row in rows:
         code, status = row["control_code"], row["implementation_status"]
         key = _normalise_code(code)
-        if _is_kept_after_ai_check(row) and status in _GAPS and key not in listed:
+        added = bool(row.get("added"))  # owner 2026-11-27: an added gap left out warns, never re-asked
+        if _is_kept_after_ai_check(row) and not added and status in _GAPS and key not in listed:
             problems.append(f"controls_to_be_implemented must include {code}: it is {status} for this scenario")
         elif status == ImplementationStatus.IMPLEMENTED and key in named:
             problems.append(
@@ -595,7 +657,7 @@ def _without_code_facts(text: str) -> str:
 
 
 def _build_final_plan(draft: PlanDraft, snapshot: Doc) -> tuple[Doc, list[str]]:
-    plan = draft.model_dump(mode="json", exclude={"control_validation", "uncovered_risks"})
+    plan = draft.model_dump(mode="json", exclude={"control_validation", "added_controls", "uncovered_risks"})
     if not plan["remediation_action_plan"]:
         message = "The AI's remediation plan has no action, so there is nothing to schedule or do."
         raise JobFailed(ErrorCode.INVALID_PLAN, message)
@@ -603,7 +665,7 @@ def _build_final_plan(draft: PlanDraft, snapshot: Doc) -> tuple[Doc, list[str]]:
     rows, warnings = _apply_ai_verdicts(snapshot, draft)
     validated = [row for row in rows if _is_kept_after_ai_check(row)]
     gaps = {_normalise_code(r["control_code"]): r for r in validated if r["implementation_status"] in _GAPS}
-    controls, kept_warnings = _kept_controls(plan["controls_to_be_implemented"], rows, gaps)
+    controls, kept_warnings = _kept_controls(plan["controls_to_be_implemented"], rows, gaps, snapshot)
     recommended = [control["control_code"] for control in controls]
     covered = _all_implemented(validated)
     named = validated if covered else [row for row in rows if row["control_code"] in recommended]
@@ -623,8 +685,9 @@ def _build_final_plan(draft: PlanDraft, snapshot: Doc) -> tuple[Doc, list[str]]:
         ],
         "unresolved_gaps": _unresolved_gaps(rows, validated, draft.uncovered_risks),
     }
+    open_gap = {False: PlanWarning.GAP_NOT_ADDRESSED, True: AddedControlWarning.GAP_NOT_ADDRESSED}
     warnings += kept_warnings + [
-        PlanWarning.GAP_NOT_ADDRESSED.format(code=row["control_code"], status=row["implementation_status"])
+        open_gap[bool(row.get("added"))].format(code=row["control_code"], status=row["implementation_status"])
         for row in gaps.values()
         if row["control_code"] not in recommended
     ]
@@ -659,14 +722,20 @@ def _plan_title(named: list[Doc], covered: bool, drafted: str, snapshot: Doc) ->
     return (PlanText.VERIFICATION_TITLE if covered else PlanText.REMEDIATION_TITLE).format(domains=joined)
 
 
-def _kept_controls(drafted: list[Doc], rows: list[Doc], gaps: dict[str, Doc]) -> tuple[list[Doc], list[str]]:
+def _kept_controls(
+    drafted: list[Doc], rows: list[Doc], gaps: dict[str, Doc], snapshot: Doc
+) -> tuple[list[Doc], list[str]]:
     by_code = {_normalise_code(row["control_code"]): row for row in rows}
+    offered = snapshot["existing_controls"].get("library_alternatives") or []
+    offered_codes = {_normalise_code(row["control_code"]) for row in offered}  # no row: the cap dropped it (CAPPED)
     kept: list[Doc] = []
     seen: set[int] = set()
     warnings: list[str] = []
     for control in drafted:
         key = _normalise_code(control["control_code"])
         row = by_code.get(key)
+        if row is None and key in offered_codes:
+            continue
         if row is None:
             warnings.append(PlanWarning.CONTROL_NOT_IN_LIBRARY.format(code=control["control_code"]))
         elif row["implementation_status"] == ImplementationStatus.IMPLEMENTED:

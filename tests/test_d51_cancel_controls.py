@@ -19,6 +19,8 @@ from app.core.constants import (
     Collection,
     ConflictReason,
     Decision,
+    ErrorCode,
+    ErrorMessage,
     Header,
     JobKind,
     Remediation,
@@ -27,9 +29,11 @@ from app.core.constants import (
     RunKind,
     ScenarioStatus,
     Status,
+    StoredProcedure,
     TaskName,
 )
-from app.core.database import get_mongodb
+from app.core.database import describe_broken_procedure, get_mongodb
+from app.core.exceptions import SetupError
 from app.core.lease_signal import raise_if_lease_lost
 from app.crud import scenarios as scenario_crud
 from app.crud import work_control
@@ -353,6 +357,22 @@ def test_a_plan_job_fault_gives_a_cancelled_runs_controls_back_cancelled(
 
 
 # --- a delete refused for plans names them
+
+
+@pytest.mark.parametrize("source", [RunKind.MANUAL, RunKind.GENERATED])
+def test_a_plan_jobs_control_mapping_fault_is_told_in_readable_words(source: str) -> None:
+    """Owner 2026-11-27: a bug in the plan job's control mapping showed the scenario's controls_error as the bare
+    Python class name ("KeyError"); now the words the controls job uses, with the run's id; a known error keeps
+    its own words. Mutation: return job_error_of(exc) for a bug and the message is "KeyError"."""
+    claimed = {"session_id": "run-1", "source": source}
+    status, error = remediation_plan_job._freed_controls(claimed, KeyError("controls"), run_cancelled=False)
+    assert status == (Status.FAILED if source == RunKind.MANUAL else Status.QUEUED)
+    assert error == {"code": ErrorCode.INTERNAL_ERROR, "message": ErrorMessage.JOB_UNEXPECTED.format(record_id="run-1")}
+    known = SetupError(describe_broken_procedure(StoredProcedure.GET_CONTROL_LIBRARY))
+    assert remediation_plan_job._freed_controls(claimed, known, run_cancelled=False)[1] == {
+        "code": ErrorCode.SETUP_ERROR,
+        "message": known.detail,
+    }
 
 
 def test_a_delete_refused_for_plans_names_each_plan_to_cancel(client: TestClient, api_key: str, entity: int) -> None:

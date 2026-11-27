@@ -1,6 +1,6 @@
 """The MITRE run's task (ADR-010): tsg_write_mitre_scenarios writes one set of a MITRE run (its first set plans
 the run first) or, for a regenerate, writes its chosen paths again as new versions. Each card is saved as it is
-written, then the existing controls job maps CII library controls."""
+written; no controls job maps it (owner 2026-11-27: its remediation plan identifies its controls)."""
 
 import time
 from functools import partial
@@ -28,7 +28,7 @@ from app.domain.scenario.mitre_scenario import mitre_session
 from app.realtime.publisher import publish_session_status
 from app.search.library_cache import get_library_cache
 from app.search.mitre.mitre_index import MitreIndex, get_current_mitre_index
-from app.worker.celery_app import celery_app, send_job
+from app.worker.celery_app import celery_app
 from app.worker.jobs import run_leased_job
 from app.worker.scenario.write_job import _note_regenerate_failure, save_with_unique_title, supersede_scenario_version
 
@@ -93,8 +93,6 @@ def write_mitre_scenario_set(lease: JobLease) -> None:
     remaining = min(len(open_paths) - len(failed_path_ids), mitre["run_target"] - progress["written"]) - written
     timings["timings.scenarios_s"] = round(time.perf_counter() - writing_from, 1)
     written += progress["written_this_set"]  # an earlier try's saved cards count too
-    if written:  # the controls are picked while the planner looks for more
-        send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
     run_failed = bool(goal) and not written and not progress["written"]  # no card in the whole run
     if not run_failed:  # a run left with no card fails: no round for it
         mitre, remaining = plan_more_when_none_left(lease, chat, index, settings, mitre, remaining, timings)
@@ -184,12 +182,18 @@ def rewrite_mitre_scenarios(lease: JobLease) -> None:
     )
     for position in outcome["failed_positions"]:
         failed_card = current_cards[paths[position]["path_id"]]
-        _note_regenerate_failure(
-            scenarios, failed_card["_id"], c.ErrorCode.GENERATION_FAILED, c.MitreMessage.NO_SCENARIO
-        )
+        _note_regenerate_failure(scenarios, failed_card["_id"], *regenerate_failure_of(paths[position], index))
     replaced = already_replaced + len(outcome["written"])
     timings["timings.scenarios_s"] = round(time.perf_counter() - writing_from, 1)
     finish_mitre_rewrite(lease, replaced, len(run["job"]["batch"]), timings)
+
+
+def regenerate_failure_of(path: dict[str, Any], index: MitreIndex) -> tuple[c.ErrorCode, str]:
+    """(code, message) of a path a regenerate could not write: one whose technique an ATT&CK import retired
+    says so, never a retryable-looking "no scenario passed" (owner 2026-11-27)."""
+    if engine.retired_techniques_of(path, index):
+        return c.ErrorCode.LIBRARY_RECORD_RETIRED, c.MitreMessage.TECHNIQUE_RETIRED
+    return c.ErrorCode.GENERATION_FAILED, c.MitreMessage.NO_SCENARIO
 
 
 def find_cards_to_rewrite(lease: JobLease, scenarios: ThreatScenarioRepository) -> tuple[dict[str, Any], int]:
@@ -273,10 +277,8 @@ def finish_mitre_set(
 
 
 def finish_mitre_rewrite(lease: JobLease, replaced: int, requested: int, timings: dict[str, float]) -> None:
-    """Queue the new versions' controls, count the run's cards and end the job with the board's last_regen and
-    `timings` (its threats and writing seconds)."""
-    if replaced:
-        send_job(c.TaskName.MAP_CONTROLS, lease.record_id, lease.epoch)
+    """Count the run's cards and end the job with the board's last_regen and `timings` (its threats and writing
+    seconds)."""
     get_threat_scenario_session_repository().update_scenario_session_counts(lease.record_id)
     outcome = c.RunActionOutcome.COMPLETE if replaced == requested else c.RunActionOutcome.PARTIAL
     ended = {

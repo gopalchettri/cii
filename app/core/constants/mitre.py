@@ -28,6 +28,10 @@ class MitreMessage(StrEnum):
     )
     NO_PATHS = "No attack path passed the MITRE checks for this asset: no scenario can be written."
     NO_SCENARIO = "No scenario passed the MITRE checks for this run's paths."
+    TECHNIQUE_RETIRED = (
+        "A MITRE ATT&CK update since this run was planned retired a technique of this path, so it can no longer be "
+        "written: regenerating it again will not help. Its current card stays."
+    )
     NOTHING_LEFT = (
         "Every MITRE attack path of this run is done: {written} scenarios written, {dropped} dropped by the MITRE "
         "checks. {why}"

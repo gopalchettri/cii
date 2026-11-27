@@ -3,7 +3,8 @@ an API key, the library's vectors, the intel import, its schedule changed and pu
 mitigations linked to library controls, a run written, reviewed, regenerated and given its next set, a
 promoted threat rejected again, plans (generated and manual) reviewed, regenerated and cancelled, a service
 mapping, a run the AI writes from MITRE ATT&CK (POST /v1/create_session) checked and reviewed the same way,
-every job listed and an embeddings build cancelled, a second run cancelled and deleted, the key revoked.
+a MITRE run (POST /v1/mitre_create_session) whose cards carry no controls and whose plan adds them, every
+job listed and an embeddings build cancelled, a second run cancelled and deleted, the key revoked.
 At the end, every operation the app's own OpenAPI lists is checked off ("N of N operations called").
 
 It keeps the main run (saved as TSG_RUN_ID in debug/.env, for scripts/scorecard.py) and rejects the threats
@@ -43,6 +44,8 @@ USAGE = "/v1/ai-usage"
 SCHEDULE = "/v1/tsg/intel/schedule"
 LINKS = "/v1/tsg/intel/control-links"
 CREATE_SESSION = "/v1/create_session"
+MITRE_CREATE = "/v1/mitre_create_session"
+MITRE = "/v1/mitre_sessions/{session_id}"
 #: What an admin sets on the import schedule: the body of its PUT.
 SCHEDULE_FIELDS = ("enabled", "frequency", "day_of_week", "time", "timezone")
 TECHNIQUE_ID = re.compile(r"T\d{4}(\.\d{3})?")
@@ -203,13 +206,71 @@ def check_attack_scenarios(api: Api, run: str) -> None:
             FAILED.append(f"create_session: scenario {item['scenario_id']} of run {run}: {state}")
 
 
-def promote_and_reject(api: Api, run: str, written: list[dict[str, Any]]) -> None:
+def mitre_settled(api: Api, run: str, minutes: int) -> None:
+    """The run settled, then its MITRE stage complete (or the run failed)."""
+    wait(api, RUN, run_settled, minutes, session_id=run)
+    done = lambda body: (body.get("mitre") or {}).get("stage") == "complete" or body.get("session_status") == "failed"  # noqa: E731
+    wait(api, MITRE, done, minutes, session_id=run)
+
+
+def review_mitre_run(api: Api, args: argparse.Namespace) -> None:
+    """A MITRE run (POST /v1/mitre_create_session) written, reviewed, regenerated, given its next set and its
+    promoted threat rejected. Its cards carry no controls; its accepted card's plan identifies them, adding
+    library controls (owner 2026-11-27). Deleted unless a check on it failed."""
+    failures = len(FAILED)
+    body = run_request(args, args.systems)
+    run = (api.call("POST", MITRE_CREATE, (202,), idempotent=True, body=body) or {}).get("session_id")
+    if not run:
+        return
+    mitre_settled(api, run, 60)
+    shown = api.call("GET", MITRE + "/results", session_id=run) or {}
+    written = [item for item in shown.get("scenarios", []) if item.get("status") == "done"]
+    print(f"      MITRE run {run}: {len(written)} written of {len(shown.get('scenarios', []))}")
+    for item in written:
+        if item.get("controls") or item.get("controls_status") is not None:
+            FAILED.append(
+                f"MITRE: card {item['scenario_id']} has controls at generation: {item.get('controls_status')}"
+            )
+    if len(written) >= 3:
+        ids = [item["scenario_id"] for item in written]
+        api.call("POST", MITRE + "/accept", session_id=run, body={"mode": "subset", "scenario_ids": ids[:1]})
+        api.call("POST", MITRE + "/scenarios/reject", session_id=run, body={"scenario_ids": ids[1:2]})
+        regenerate = MITRE + "/regenerate/scenarios"
+        api.call("POST", regenerate, (202,), idempotent=True, session_id=run, body={"scenario_ids": ids[2:3]})
+        mitre_settled(api, run, 30)
+        api.call("POST", MITRE + "/scenarios/next-set", (200, 202), idempotent=True, session_id=run)
+        mitre_settled(api, run, 60)
+        promote_and_reject(api, run, written, MITRE)
+        check_mitre_plan(api, args, run, ids[0])
+    if len(FAILED) == failures:
+        api.call("DELETE", RUN, session_id=run)
+    else:
+        print(f"      MITRE run {run} is kept: a check on it failed")
+
+
+def check_mitre_plan(api: Api, args: argparse.Namespace, run: str, scenario: str) -> None:
+    """The accepted MITRE card's plan: at least one library control added (a chosen alternative replacing
+    nothing) and no 'no validated control' gap."""
+    ids = {"session_id": run, "scenario_id": scenario}
+    api.call("POST", "/v1/remediation", (202,), idempotent=True, body=plan_request_example(args, 0) | ids)
+    plan_settled = lambda body: body.get("progress", {}).get("overall") != "generating"  # noqa: E731
+    wait(api, PLAN + "/status", plan_settled, 30, **ids)
+    plan = (api.call("GET", PLAN, **ids) or {}).get("plan") or {}
+    rows = plan.get("control_assessment", [])
+    added = [row for row in rows if row.get("match") == "alternative" and not row.get("replaces")]
+    gaps = [gap["kind"] for gap in plan.get("unresolved_gaps", [])]
+    print(f"      MITRE plan: {len(rows)} controls weighed, {len(added)} added, gaps {gaps}")
+    if not added or "no_validated_control" in gaps:
+        FAILED.append(f"MITRE plan {scenario}: {len(added)} added, gaps {gaps}")
+
+
+def promote_and_reject(api: Api, run: str, written: list[dict[str, Any]], base: str = RUN) -> None:
     """An AI-written threat proposed to the library, then rejected by the curator: the library is unchanged.
     With none in the run, a library threat is proposed, which the API refuses."""
     ai_written = [item for item in written if (item.get("threat") or {}).get("is_threat_ai_generated")]
     target = (ai_written or written)[0]["scenario_id"]
     expect = (200,) if ai_written else (200, 409, 422)
-    path = RUN + "/scenarios/{scenario_id}/promote-to-library"
+    path = base + "/scenarios/{scenario_id}/promote-to-library"
     promoted = api.call("POST", path, expect, session_id=run, scenario_id=target) or {}
     ids = {item.get("threat_catalogue_id") for item in promoted.get("results", [])} - {None}
     pending = api.call("GET", "/v1/tsg/library/pending", admin=True) or {}
@@ -403,6 +464,8 @@ def main() -> int:
         service_mapper(api, args)
         print("ATT&CK run")
         review_attack_run(api, args)
+        print("MITRE run")
+        review_mitre_run(api, args)
         print("AI usage")
         ai_usage(api, run, since)
         print("Admin jobs")

@@ -105,6 +105,15 @@ class AiOutputSettings(BaseSettings):
     )
     # No default: missing from the env file, the app does not start.
     control_candidates: int = Field(ge=1, validation_alias="CONTROL_CANDIDATES")
+    # A plan's library alternatives, at most (owner 2026-11-27): twins and identified controls make fewer.
+    remediation_alternative_controls: int = Field(ge=1, validation_alias="REMEDIATION_ALTERNATIVE_CONTROLS")
+    # A MITRE plan's candidates (owner 2026-11-27): per attack step, at most this many linked to its MITRE
+    # mitigations and this many nearest by meaning; at most PLAN_CANDIDATES_LIMIT in all, each step's share
+    # fair; each description cut to PLAN_CANDIDATE_DESCRIPTION_CHARACTERS.
+    plan_linked_controls_per_technique: int = Field(ge=1, validation_alias="PLAN_LINKED_CONTROLS_PER_TECHNIQUE")
+    controls_per_technique_by_meaning: int = Field(ge=1, validation_alias="CONTROLS_PER_TECHNIQUE_BY_MEANING")
+    plan_candidates_limit: int = Field(ge=1, validation_alias="PLAN_CANDIDATES_LIMIT")
+    plan_candidate_description_characters: int = Field(ge=1, validation_alias="PLAN_CANDIDATE_DESCRIPTION_CHARACTERS")
     min_controls: int = Field(default=3, ge=1, validation_alias="MIN_CONTROLS")
     max_controls: int = Field(default=5, ge=1, validation_alias="MAX_CONTROLS")
     nearest_controls: int = Field(default=3, ge=1, validation_alias="NEAREST_CONTROLS")
@@ -226,10 +235,11 @@ class MitreScenarioSettings(BaseSettings):
     mitre_actor_slice_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_ACTOR_SLICE_TOKENS_LIMIT")
     mitre_plan_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_PLAN_CALL_TOKENS_LIMIT")
     mitre_write_call_tokens_limit: int = Field(ge=1000, validation_alias="MITRE_WRITE_CALL_TOKENS_LIMIT")
-    # Controls (owner 2026-11-24): a MITRE card's controls are chosen per technique, among the library controls
-    # linked to its MITRE mitigations (false: per sentence, as an ATT&CK card's). Each technique offers at most
-    # CONTROLS_PER_TECHNIQUE_CANDIDATES of them, best link first; the AI keeps at most CONTROLS_PER_TECHNIQUE. Each
-    # mitigation comes with MITRE's own words on how it defends that technique, cut to MITIGATION_TEXT_CHARACTERS.
+    # owner 2026-11-27: read by nothing since a MITRE card's controls are identified by its remediation plan, not
+    # picked per technique at generation. Kept until the rollback window ends: the previous image needs the keys,
+    # and the env files and configmap may hold only keys the app reads (tests/test_config.py, test_deploy.py).
+    # Remove these three fields and their keys together. MITIGATION_TEXT_CHARACTERS: MITRE's own words on how a
+    # mitigation defends a technique, cut to this.
     mitre_controls_by_technique: bool = Field(validation_alias="MITRE_CONTROLS_BY_TECHNIQUE")
     controls_per_technique_candidates: int = Field(ge=1, validation_alias="CONTROLS_PER_TECHNIQUE_CANDIDATES")
     controls_per_technique: int = Field(ge=1, validation_alias="CONTROLS_PER_TECHNIQUE")

@@ -252,7 +252,9 @@ def accept_threat_scenarios(
     skipped += raced
     changes = {"accepted": newly, "replaced": replaced}
     _announce_decisions(principal, run.session_id, c.AuditAction.SCENARIOS_ACCEPTED, changes, skipped)
-    unmapped = {target["_id"] for target in targets if (target.get("controls") or {}).get("status") != c.Status.DONE}
+    # owner 2026-11-27: a card with no controls record (a MITRE card's: its plan identifies them) never waits.
+    recorded = [target for target in targets if "controls" in target]
+    unmapped = {target["_id"] for target in recorded if (target["controls"] or {}).get("status") != c.Status.DONE}
     pending = [scenario_id for scenario_id in accepted if scenario_id in unmapped]
     return api_views.AcceptResult(accepted=accepted, replaced=replaced, skipped=skipped, controls_pending=pending)
 

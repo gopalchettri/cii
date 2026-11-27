@@ -44,7 +44,7 @@ def curation_on_the_sql_test_database(client: TestClient, sql_test_engine: Engin
         connection.exec_driver_sql(_REMOVE_TEST_ROWS)
 
 
-def _propose(sql_test_engine: Engine, type_name: str) -> dict[str, Any]:
+def _propose(sql_test_engine: Engine, type_name: str, asset_type: str | None = None) -> dict[str, Any]:
     """A new pending threat (and its type, when the type is new) as a promotion makes it."""
     return StoredProcedureClient(sql_test_engine).execute_procedure(
         StoredProcedure.RESOLVE_THREAT,
@@ -54,6 +54,7 @@ def _propose(sql_test_engine: Engine, type_name: str) -> dict[str, Any]:
         Source="ai",
         CreatedBy="reviewer-1",
         ActorIDs="[1]",
+        AssetType=asset_type,
     )[0][0]
 
 
@@ -85,6 +86,16 @@ def test_pending_threats_are_listed_oldest_first_with_their_type_and_categories(
     assert order.index(first) < order.index(second)
     page = client.get(PENDING, params={"limit": 1}, headers=ADMIN).json()
     assert len(page["items"]) == 1 and page["total"] == len(listed) >= 2
+
+
+def test_a_pending_threat_shows_the_asset_type_it_was_promoted_with(
+    client: TestClient, sql_test_engine: Engine
+) -> None:
+    """Owner 2026-11-25: the curator sees where the threat attacks (IT or OT); none fits every asset."""
+    ot = _propose(sql_test_engine, _new_type(), "OT")["threat_catalogue_id"]
+    anywhere = _propose(sql_test_engine, _new_type())["threat_catalogue_id"]
+    listed = _pending(client)
+    assert (listed[ot]["asset_type"], listed[anywhere]["asset_type"]) == ("OT", None)
 
 
 def test_an_offset_past_sql_servers_int_is_refused_not_a_500(client: TestClient) -> None:

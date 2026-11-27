@@ -6730,6 +6730,15 @@
       }
      ],
      "description": "The source refreshed; none = every source due."
+    },
+    "sources": {
+     "default": [],
+     "description": "Each source's outcome, in import order.",
+     "items": {
+      "$ref": "#/components/schemas/IntelSourceOutcome"
+     },
+     "title": "Sources",
+     "type": "array"
     }
    },
    "title": "IntelRefreshResult",
@@ -8060,6 +8069,18 @@
   },
   "PendingThreat": {
    "properties": {
+    "asset_type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "IT, OT or IT\\OT; none fits every asset.",
+     "title": "Asset Type"
+    },
     "catalogue_id": {
      "title": "Catalogue Id",
      "type": "integer"

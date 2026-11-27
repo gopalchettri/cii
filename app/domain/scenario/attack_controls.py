@@ -3,6 +3,7 @@
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from typing import Any
 
 import structlog
@@ -10,12 +11,11 @@ import structlog
 from app.ai import RerankModel, TruncatedAiAnswer, UnreadableAiAnswer
 from app.ai.chat import get_scenario_chat_model
 from app.core import constants as c
-from app.core import metrics
 from app.core.asset_types import asset_type_fits, place_asset_types
 from app.core.config import get_settings
-from app.core.prompts import MITRE_PROMPTS, PROMPTS
+from app.core.prompts import PROMPTS
 from app.core.redaction import redact
-from app.crud.attack import get_control_link_repository
+from app.crud.attack import get_attack_repository, get_control_link_repository
 from app.domain.scenario.write import (
     build_control_item,
     build_control_query,
@@ -29,6 +29,7 @@ from app.domain.shared.ask_ai import ask_ai_and_check
 from app.domain.shared.prompt_redaction import redacted
 from app.schemas.library import LibraryControl
 from app.schemas.scenario_internal import ControlQuery, FrozenContext
+from app.search.mitre.mitre_index import opening_sentences
 from app.search.snapshot import LibrarySnapshot
 
 log = structlog.get_logger(__name__)
@@ -41,6 +42,12 @@ _Fits = Callable[[LibraryControl], bool]
 def is_attack_scenario(scenario: dict[str, Any]) -> bool:
     """Whether MITRE ATT&CK confirmed the scenario (POST /v1/create_session): its controls are picked."""
     return "attack" in (scenario.get("content") or {})
+
+
+def is_mitre_card(scenario: dict[str, Any]) -> bool:
+    """Whether a MITRE run wrote the card: its remediation plan identifies its controls (owner 2026-11-27). Never
+    is_attack_scenario, which a POST /v1/create_session card is too."""
+    return "mitre" in (scenario.get("content") or {})
 
 
 @dataclass(frozen=True)
@@ -98,25 +105,9 @@ class _Offer:
 def pick_set_controls(
     rerank: RerankModel, scenarios: list[dict[str, Any]], context: FrozenContext, snapshot: LibrarySnapshot
 ) -> dict[str, dict[str, Any]]:
-    """Each scenario's stored controls record by its id. A MITRE card's are chosen per technique among the controls
-    linked to its MITRE mitigations (MITRE_CONTROLS_BY_TECHNIQUE, owner 2026-11-24); every other card's per
-    sentence, and one of those whose picks cannot be read is mapped by the search."""
-    by_technique: list[dict[str, Any]] = []
-    by_sentence: list[dict[str, Any]] = []
-    for scenario in scenarios:
-        if "mitre" in scenario["content"] and get_settings().mitre_controls_by_technique:
-            by_technique.append(scenario)
-        else:
-            by_sentence.append(scenario)
-    records = _pick_controls_per_sentence(rerank, by_sentence, context, snapshot)
-    records |= _pick_controls_per_technique(rerank, by_technique, context, snapshot)
-    return records
-
-
-def _pick_controls_per_sentence(
-    rerank: RerankModel, scenarios: list[dict[str, Any]], context: FrozenContext, snapshot: LibrarySnapshot
-) -> dict[str, dict[str, Any]]:
-    """Each scenario's stored controls record by its id; one whose picks cannot be read is mapped by the search."""
+    """Each scenario's stored controls record by its id, picked per sentence; one whose picks cannot be read is
+    mapped by the search. A MITRE card is never claimed for this (owner 2026-11-27): its plan identifies its
+    controls (gather_plan_candidates)."""
     if not scenarios:
         return {}
     prepared = _read_prepared_links(scenarios, snapshot)
@@ -387,92 +378,7 @@ def _list_technique_states(offer: _Offer, shown: list[dict[str, Any]], prepared:
     return states
 
 
-# ----------------------------------------------------------------------------- a MITRE card's controls, per technique
-
-
-@dataclass(frozen=True)
-class _TechniqueChoice:
-    """One MITRE card as the per-technique pick reads it: each technique's candidate controls (the library rows
-    linked to its MITRE mitigations, best link first, of an IT/OT type its systems take) and what code checks."""
-
-    scenario: dict[str, Any]
-    technique_names: dict[str, str]  # technique ID -> its name, in the path's order
-    controls: dict[str, LibraryControl]  # C1 ...: every candidate row of the card, labelled once
-    candidates: dict[str, list[str]]  # technique ID -> its candidate labels, best link first
-    # (technique ID, label) -> (its mitigation's ID, the mitigation as its reason names it, the link's effect)
-    carried_out: dict[tuple[str, str], tuple[str, str, str]]
-    mitigations: dict[str, list[dict[str, str]]]  # technique ID -> its linked mitigations: id, name, MITRE's words
-    inherited: dict[str, str]  # technique ID -> the parent technique whose mitigations it carries (MITRE has none)
-
-
-def _pick_controls_per_technique(
-    rerank: RerankModel, scenarios: list[dict[str, Any]], context: FrozenContext, snapshot: LibrarySnapshot
-) -> dict[str, dict[str, Any]]:
-    """Each MITRE card's stored controls record by its id: the AI chooses, in one call for the set, among each
-    technique's own linked controls; a technique left without an exact pick (none fitted, or the answer could not
-    be read) shows its best MITRE link as NEAREST, and a card short of MIN_CONTROLS is topped up by the search."""
-    if not scenarios:
-        return {}
-    prepared = _read_prepared_links(scenarios, snapshot)
-    choices: dict[str, _TechniqueChoice] = {}
-    for number, scenario in enumerate(scenarios, 1):
-        choices[f"SC{number}"] = _build_technique_choice(scenario, context, prepared)
-    answers = _ask_technique_picks(choices)
-    made_with = _technique_made_with(snapshot)
-    records: dict[str, dict[str, Any]] = {}
-    for slot, choice in choices.items():
-        kept: list[dict[str, Any]] = []  # the answer could not be read: every technique gets its nearest link
-        dropped: list[dict[str, Any]] = []
-        picked_with = made_with | {"picked_by": c.ControlLinks.PICKED_BY_LINK}
-        if slot in answers:
-            (kept, dropped), picked_with = _check_technique_picks(choice, answers[slot]), made_with
-        picks = kept + _nearest_for_unpicked(choice, kept)
-        records[choice.scenario["_id"]] = _build_technique_record(choice, picks, dropped, prepared, picked_with)
-    _top_up_by_search(rerank, scenarios, records, (context, snapshot, prepared))
-    count = sum(len(record["items"]) for record in records.values())
-    log.info(c.LogEvent.CONTROLS_PICKED_BY_TECHNIQUE, count=len(records), controls=count)
-    return records
-
-
-def _technique_made_with(snapshot: LibrarySnapshot) -> dict[str, Any]:
-    settings, searched = get_settings(), read_control_search_settings(snapshot)
-    return {
-        "chat_model": settings.chat_of(c.ChatModule.SCENARIO).model,
-        "library": searched["library"],
-        "max_controls": settings.max_controls,
-        "picked_by": c.ControlLinks.PICKED_BY_TECHNIQUE,
-    }
-
-
-def _build_technique_choice(scenario: dict[str, Any], context: FrozenContext, prepared: _Prepared) -> _TechniqueChoice:
-    """The card's techniques with their candidates: at most CONTROLS_PER_TECHNIQUE_CANDIDATES each."""
-    content, most = scenario["content"], get_settings().controls_per_technique_candidates
-    mitigation_names, about_ai = _name_mitigations(content), build_control_query(content, context).is_about_ai
-    mitre_words = _read_mitigation_texts(content)
-    choice = _TechniqueChoice(scenario, {}, {}, {}, {}, {}, {})
-    label_of: dict[int, str] = {}  # a library row -> its label: a row linked to two techniques is labelled once
-    for technique in content["attack"]["techniques"]:
-        technique_id, parent = technique["id"], technique.get("mitigations_from")
-        choice.technique_names[technique_id] = technique["name"]
-        if parent:  # MITRE lists none of its own: its parent technique's
-            choice.inherited[technique_id] = parent
-        labels: list[str] = []
-        fits = _fits_technique_systems(content, context, technique_id, about_ai)
-        for row, mitigation, effect in _list_linked_controls(technique, prepared, fits)[:most]:
-            if row.control_id not in label_of:
-                label_of[row.control_id] = f"{c.ControlLinks.LABEL_PREFIX}{len(label_of) + 1}"
-                choice.controls[label_of[row.control_id]] = row
-            label = label_of[row.control_id]
-            labels.append(label)
-            name = mitigation_names.get(mitigation, "")
-            named = f"{mitigation} {name}".strip() + (f", for parent {parent}" if parent else "")
-            choice.carried_out[(technique_id, label)] = (mitigation, named, effect)
-            listed = choice.mitigations.setdefault(technique_id, [])
-            if all(known["id"] != mitigation for known in listed):
-                words = mitre_words.get((technique_id, mitigation))  # none on a card stored before 2026-11-24
-                listed.append({"id": mitigation, "name": name} | ({"mitre_says": words} if words else {}))
-        choice.candidates[technique_id] = labels
-    return choice
+# ----------------------------------------------------------------------------- a MITRE card's steps, as its plan reads
 
 
 def _name_mitigations(content: dict[str, Any]) -> dict[str, str]:
@@ -497,16 +403,9 @@ def _read_mitigation_texts(content: dict[str, Any]) -> dict[tuple[str, str], str
 def _fits_technique_systems(
     content: dict[str, Any], context: FrozenContext, technique_id: str, about_ai: bool
 ) -> _Fits:
-    """Whether a library row may defend this technique: its IT/OT type fits the systems the technique acts on (the
-    card's MITRE systems_targeted for it, else every system of the card), and an AI-domain row only for an AI
-    threat."""
-    card_systems = context.find_systems(system["id"] for system in content.get("systems") or [])
-    targeted = set()
-    for target in (content.get("mitre") or {}).get("systems_targeted") or []:
-        if target.get("technique") == technique_id:
-            targeted.add(target.get("supporting_system"))
-    acted_on = [system for system in card_systems if system["name"] in targeted] or card_systems
-    codes = [system.get("category_code") for system in acted_on]
+    """Whether a library row may defend this technique: its IT/OT type fits the systems the technique acts on, and
+    an AI-domain row only for an AI threat."""
+    codes = [system.get("category_code") for system in _list_systems_acted_on(content, context, technique_id)]
     allowed = place_asset_types(context.asset.get("category_code"), codes)
 
     def fits(control: LibraryControl) -> bool:
@@ -514,6 +413,17 @@ def _fits_technique_systems(
         return is_wanted_domain and asset_type_fits(control.asset_type, allowed)
 
     return fits
+
+
+def _list_systems_acted_on(content: dict[str, Any], context: FrozenContext, technique_id: str) -> list[dict[str, Any]]:
+    """The card's systems the technique acts on: the card's MITRE systems_targeted for it, else every system of
+    the card."""
+    card_systems = context.find_systems(system["id"] for system in content.get("systems") or [])
+    targeted = set()
+    for target in (content.get("mitre") or {}).get("systems_targeted") or []:
+        if target.get("technique") == technique_id:
+            targeted.add(target.get("supporting_system"))
+    return [system for system in card_systems if system["name"] in targeted] or card_systems
 
 
 def _list_linked_controls(
@@ -539,255 +449,140 @@ def _list_linked_controls(
     return found
 
 
-def _ask_technique_picks(choices: dict[str, _TechniqueChoice]) -> dict[str, list[Any]]:
-    """Each slot's picks in one AI call; a card without candidates is not asked (it has nothing to choose). A slot
-    missing from the result had an unreadable answer."""
-    answers: dict[str, list[Any]] = {}
-    asked = []
-    for slot, choice in choices.items():
-        described = _describe_technique_choice(slot, choice)
-        if described["TECHNIQUES"]:
-            asked.append(described)
-        else:
-            answers[slot] = []
-    if not asked:
-        return answers
-    per_technique = str(get_settings().controls_per_technique)
-    prompt = str(MITRE_PROMPTS["controls"]["text"]).replace("<per_technique>", per_technique)
-    try:
-        answers |= _ask_slots(prompt, asked, [item["slot"] for item in asked])
-    except (UnreadableAiAnswer, TruncatedAiAnswer) as exc:
-        log.warning(c.LogEvent.CONTROLS_LINK_FALLBACK, count=len(asked), error_type=type(exc).__name__)
-    return answers
+# ----------------------------------------------------------------------------- a MITRE plan's candidates
+
+#: One step's candidates of one kind, in order: (library row, found by: its MITRE mitigation's ID, or "meaning").
+_Found = list[tuple[LibraryControl, str]]
 
 
-def _describe_technique_choice(slot: str, choice: _TechniqueChoice) -> dict[str, Any]:
-    """One slot of the pick call: the scenario's text, and each technique that has candidates, with its MITRE
-    mitigations in MITRE's own words and the controls linked to them."""
-    techniques = []
-    for technique_id, labels in choice.candidates.items():
-        if not labels:
-            continue
-        controls = []
-        for label in labels:
-            control = choice.controls[label]
-            controls.append(
-                {
-                    "label": label,
-                    "name": control.name,
-                    "description": (control.description or "")[: c.ControlLinks.CARD_TEXT_CHARS],
-                    "mitigation": choice.carried_out[(technique_id, label)][0],
-                }
-            )
-        technique = {"id": technique_id, "name": choice.technique_names[technique_id]}
-        if technique_id in choice.inherited:
-            technique["mitigations_of_parent"] = choice.inherited[technique_id]
-        techniques.append(technique | {"MITIGATIONS": choice.mitigations[technique_id], "CONTROLS": controls})
-    return {"slot": slot, "SCENARIO": choice.scenario["content"].get("statement") or "", "TECHNIQUES": techniques}
+def gather_plan_candidates(
+    scenario: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot
+) -> list[dict[str, Any]]:
+    """A MITRE card's remediation candidates (owner 2026-11-27): per attack step, the library controls linked to its
+    MITRE mitigations, best link first, and those nearest it by meaning, each of an IT/OT type the step's systems
+    take, one per control text and none the card already has; at most PLAN_CANDIDATES_LIMIT, each step's share
+    fair. One row per control, naming every step it is offered for."""
+    if not snapshot.library.control_library:
+        return []
+    content, prepared = scenario["content"], _read_prepared_links([scenario], snapshot)
+    about_ai = build_control_query(content, context).is_about_ai
+    taken = _list_card_control_texts(scenario, prepared)
+    steps = content["attack"]["techniques"]
+    found: list[tuple[str, _Found, _Found]] = []
+    for step, nearest in zip(steps, _find_steps_by_meaning(content, context, snapshot), strict=True):
+        fits = _fits_technique_systems(content, context, step["id"], about_ai)
+        found.append((step["id"], *_list_step_candidates(step, prepared, fits, nearest, taken)))
+    rows = _share_candidates(found)
+    offered = {entry["technique"] for row in rows for entry in row["offered_for"]}
+    log.info(
+        c.LogEvent.PLAN_CANDIDATES_GATHERED,
+        scenario_id=scenario["_id"],
+        linked=sum(len(linked) for _, linked, _ in found),
+        meaning=sum(len(meaning) for _, _, meaning in found),
+        offered=len(rows),
+        steps_without=[step["id"] for step in steps if step["id"] not in offered],
+    )
+    return rows
 
 
-def _check_technique_picks(
-    choice: _TechniqueChoice, picks: list[Any]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """The picks kept and the ones dropped with the reason, in the answer's order."""
-    most = get_settings().controls_per_technique
-    kept: list[dict[str, Any]] = []
-    dropped: list[dict[str, Any]] = []
-    used: Counter[str] = Counter()  # picks kept per technique, and per "technique label"
-    for given in picks:
-        answered = given if isinstance(given, dict) else {}
-        technique, label, effect = (
-            answered.get(key) if isinstance(answered.get(key), str) else None
-            for key in ("technique", "label", "effect")
-        )
-        reason = _find_technique_drop_reason(choice, (technique, label, effect), used, most)
-        if reason is not None or technique is None or label is None or effect is None:
-            dropped.append({"technique": technique, "label": label, "effect": effect, "reason": reason})
-            log.info(c.LogEvent.CONTROLS_PICK_DROPPED, scenario_id=choice.scenario["_id"], message=reason)
-            continue
-        used.update((technique, f"{technique} {label}"))
-        kept.append(_kept_technique_pick(choice, technique, label, effect))
-    return kept, dropped
-
-
-def _find_technique_drop_reason(
-    choice: _TechniqueChoice, pick: tuple[str | None, str | None, str | None], used: Counter[str], most: int
-) -> str | None:
-    """Why code drops a per-technique pick (a ControlPickDrop's text), or None when it is kept."""
-    technique, label, effect = pick
-    labels = choice.candidates.get(technique or "") or []
-    if not labels:
-        return c.ControlPickDrop.NO_TECHNIQUE.value
-    if label not in labels:
-        return c.ControlPickDrop.NOT_THIS_TECHNIQUE.value
-    if effect not in _EFFECTS:
-        return c.ControlPickDrop.BAD_EFFECT.value
-    if used[f"{technique} {label}"]:
-        return c.ControlPickDrop.TWICE_FOR_TECHNIQUE.value
-    if used[technique or ""] >= most:
-        return c.ControlPickDrop.TOO_MANY_FOR_TECHNIQUE.format(most=most)
-    return None
-
-
-def _kept_technique_pick(choice: _TechniqueChoice, technique: str, label: str, effect: str) -> dict[str, Any]:
-    """A kept pick; an effect its control's library domain cannot have is set to one it can, and noted."""
-    control = choice.controls[label]
-    pick = {
-        "technique": technique,
-        "technique_name": choice.technique_names[technique],
-        "mitigation": choice.carried_out[(technique, label)][1],
-        "control_id": control.control_id,
-        "code": control.code,
-        "name": control.name,
-        "effect": effect,
-    }
-    possible = c.ControlLinks.EFFECTS_BY_DOMAIN.get(control.domain or "")
-    if possible and effect not in possible:
-        pick |= {"effect": possible[0], "effect_corrected_from": effect}
-        log.info(c.LogEvent.CONTROLS_EFFECT_CORRECTED, code=control.code, given=effect, kept=possible[0])
-        metrics.CONTROL_PICKS.labels(c.ControlLinks.EFFECT_CORRECTED).inc()
-    return pick
-
-
-def _nearest_for_unpicked(choice: _TechniqueChoice, kept: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Each technique with linked candidates but no exact pick (none fitted, or the AI's answer could not be read)
-    gets its best MITRE link, with the link's own effect, as a nearest pick (owner 2026-11-24: a step is never left
-    without a control while one is linked to its mitigations)."""
-    picked = {pick["technique"] for pick in kept}
-    nearest = []
-    for technique, labels in choice.candidates.items():
-        if labels and technique not in picked:
-            effect = choice.carried_out[(technique, labels[0])][2]
-            nearest.append(_kept_technique_pick(choice, technique, labels[0], effect) | {"nearest": True})
-    metrics.CONTROL_PICKS.labels(c.ControlLinks.PICKED_BY_LINK).inc(len(nearest))
-    return nearest
-
-
-def _order_by_technique(choice: _TechniqueChoice, kept: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The kept picks in the path's technique order, each technique's in the answer's order."""
-    ordered = []
-    for technique in choice.technique_names:
-        for pick in kept:
-            if pick["technique"] == technique:
-                ordered.append(pick)
-    return ordered
-
-
-def _group_picks_by_control(
-    choice: _TechniqueChoice, picks: list[dict[str, Any]], prepared: _Prepared
-) -> tuple[dict[str, LibraryControl], dict[str, list[str]], dict[str, set[tuple[str, bool]]]]:
-    """Per control text, in the path's technique order: its row (an exact pick's first, else the first nearest
-    pick's: the IT/OT copy an exact pick fitted wins), its reasons (one per technique it defends, naming the MITRE
-    mitigation) and the techniques it defends, each with whether as a nearest pick."""
-    rows: dict[str, LibraryControl] = {}
-    reasons: dict[str, list[str]] = {}
-    defends: dict[str, set[tuple[str, bool]]] = {}
-    for pick in _order_by_technique(choice, picks):
-        row = prepared.by_id[pick["control_id"]]
-        text = read_control_twin_key(row)
-        if text not in rows or (not pick.get("nearest") and all(nearest for _, nearest in defends[text])):
-            rows[text] = row
-        reason = c.ControlPickMessage.TECHNIQUE_REASON.format(
-            effect=pick["effect"],
-            technique=pick["technique"],
-            technique_name=pick["technique_name"],
-            mitigation=pick["mitigation"],
-        )
-        if pick.get("nearest"):
-            reason = c.ControlPickMessage.LINK_SCORE_REASON.format(reason=reason)
-        reasons.setdefault(text, []).append(reason)
-        defends.setdefault(text, set()).add((pick["technique"], bool(pick.get("nearest"))))
-    return rows, reasons, defends
-
-
-def _build_technique_record(
-    choice: _TechniqueChoice,
-    picks: list[dict[str, Any]],
-    dropped: list[dict[str, Any]],
-    prepared: _Prepared,
-    made_with: dict[str, Any],
-) -> dict[str, Any]:
-    """One card's stored controls record: one item per control text, the exact picks first, then the nearest (a cut
-    at MAX_CONTROLS drops a nearest one first), each in the path's technique order, its reason naming every
-    technique it defends and the MITRE mitigation it carries out. A control picked exactly for any technique is
-    EXACT."""
-    rows, reasons, defends = _group_picks_by_control(choice, picks, prepared)
-    exact = [text for text in rows if any(not nearest for _, nearest in defends[text])]
-    shown = [*exact, *(text for text in rows if text not in exact)][: made_with["max_controls"]]
-    items = []
-    defended: set[tuple[str, bool]] = set()
-    for rank, text in enumerate(shown, 1):
-        match = c.ControlMatch.EXACT if text in exact else c.ControlMatch.NEAREST
-        items.append(build_control_item(rows[text], rank, None, match, "; ".join(reasons[text])))
-        defended |= defends[text]
-    if made_with["picked_by"] == c.ControlLinks.PICKED_BY_TECHNIQUE:
-        metrics.CONTROL_PICKS.labels(c.ControlLinks.PICKS_KEPT).inc(sum(not pick.get("nearest") for pick in picks))
-        metrics.CONTROL_PICKS.labels(c.ControlLinks.PICKS_DROPPED).inc(len(dropped))
-    return {
-        "items": items,
-        "query": None,
-        "shortlist": [{"control_id": control.control_id, "score": None} for control in choice.controls.values()],
-        "made_with": made_with,
-        "picks": picks,
-        "dropped": dropped,
-        "technique_states": _list_states_per_technique(choice, defended, prepared),
-    }
-
-
-def _top_up_by_search(
-    rerank: RerankModel,
-    scenarios: list[dict[str, Any]],
-    records: dict[str, dict[str, Any]],
-    searched_in: tuple[FrozenContext, LibrarySnapshot, _Prepared],
-) -> None:
-    """A card with fewer than MIN_CONTROLS (its techniques' MITRE links gave too few) is topped up to it with the
-    library search's nearest controls, marked NEAREST (owner 2026-11-24: a card never shows no control). Their
-    queries are embedded in one call."""
-    context, snapshot, prepared = searched_in
-    least = get_settings().min_controls
-    short = [scenario for scenario in scenarios if len(records[scenario["_id"]]["items"]) < least]
-    if not short:
-        return
-    queries = {scenario["_id"]: build_control_query(scenario["content"], context) for scenario in short}
-    snapshot.embed_control_queries([query.text for query in queries.values()])
-    for scenario in short:
-        record = records[scenario["_id"]]
-        found = map_controls(rerank, scenario, context, snapshot, queries[scenario["_id"]])
-        shown = {read_control_twin_key(prepared.by_id[item["control_id"]]) for item in record["items"]}
-        for item in found["items"]:
-            text = read_control_twin_key(prepared.by_id[item["control_id"]])
-            if len(record["items"]) < least and text not in shown:
-                shown.add(text)
-                reason = c.ControlPickMessage.SEARCH_TOP_UP_REASON.format(reason=item["rationale"])
-                row, rank = prepared.by_id[item["control_id"]], len(record["items"]) + 1
-                record["items"].append(build_control_item(row, rank, item["score"], c.ControlMatch.NEAREST, reason))
-        record["query"] = found["query"]
-        log.info(c.LogEvent.CONTROLS_TOPPED_UP_BY_SEARCH, scenario_id=scenario["_id"], controls=len(record["items"]))
-
-
-def _list_states_per_technique(
-    choice: _TechniqueChoice, defended: set[tuple[str, bool]], prepared: _Prepared
-) -> list[dict[str, str]]:
-    """What each technique got: an exact control, its nearest MITRE link, or why none was."""
-    states = []
-    for technique in choice.scenario["content"]["attack"]["techniques"]:
-        defending = [
-            mitigation for mitigation in technique["mitigations"] if mitigation not in c.ControlLinks.NOT_MITIGATIONS
+def describe_attack_steps(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    """The card's attack steps as its plan reads them, once per plan: each technique by its ATT&CK ID and name,
+    with its defending MITRE mitigations in MITRE's own words, unredacted (none on a card stored before
+    2026-11-24: no mitre_says)."""
+    content = scenario["content"]
+    names, texts = _name_mitigations(content), _read_mitigation_texts(content)
+    steps = []
+    for technique in content["attack"]["techniques"]:
+        mitigations = [
+            {"mitigation": mitigation, "name": names.get(mitigation, "")}
+            | ({"mitre_says": words} if (words := texts.get((technique["id"], mitigation))) else {})
+            for mitigation in technique["mitigations"]
+            if mitigation not in c.ControlLinks.NOT_MITIGATIONS
         ]
-        if (technique["id"], False) in defended:
-            state = c.TechniqueControlState.MATCHED
-        elif (technique["id"], True) in defended:
-            state = c.TechniqueControlState.NEAREST
-        elif not defending:
-            state = c.TechniqueControlState.NO_KNOWN_DEFENCE
-        elif not prepared.list_linked_rows(defending):
-            every_prepared = all(mitigation in prepared.links for mitigation in defending)
-            state = (
-                c.TechniqueControlState.NO_LIBRARY_CONTROL if every_prepared else c.TechniqueControlState.NOT_PREPARED
-            )
-        elif not choice.candidates.get(technique["id"]):
-            state = c.TechniqueControlState.TYPE_MISMATCH
-        else:
-            state = c.TechniqueControlState.NOT_PICKED
-        states.append({"id": technique["id"], "state": state.value})
-    return states
+        steps.append({"technique": technique["id"], "name": technique["name"], "mitigations": mitigations})
+    return steps
+
+
+def _list_card_control_texts(scenario: dict[str, Any], prepared: _Prepared) -> set[str]:
+    """The control texts of the card's own done controls (an older MITRE card's): never a candidate too."""
+    controls = scenario.get("controls") or {}
+    if controls.get("status") != c.Status.DONE:
+        return set()
+    rows = (prepared.by_id.get(item["control_id"]) for item in controls.get("items") or [])
+    return {read_control_twin_key(row) for row in rows if row is not None}
+
+
+def _find_steps_by_meaning(
+    content: dict[str, Any], context: FrozenContext, snapshot: LibrarySnapshot
+) -> list[list[LibraryControl]]:
+    """Each attack step's library rows, nearest first, in one search of the local vectors (no rerank): its name
+    and its MITRE description's opening sentences, with the card's systems it acts on, redacted."""
+    steps = content["attack"]["techniques"]
+    described: dict[str, str] = {}
+    for found in get_attack_repository().find_objects([step["id"] for step in steps], ()):
+        if found.get("description"):  # an object both sources hold comes once per source
+            described.setdefault(found["attack_id"], found["description"])
+    most = get_settings().writer_technique_description_characters
+    queries = []
+    for step in steps:
+        opening = opening_sentences(described.get(step["id"], ""), most)
+        systems = ", ".join(system["name"] for system in _list_systems_acted_on(content, context, step["id"]))
+        queries.append(redact(" ".join(part for part in (f"{step['name']}:", opening, f"Systems: {systems}") if part)))
+    hits = snapshot.find_controls(queries, len(snapshot.library.control_library))
+    return [[row for row, _ in found] for found in hits]
+
+
+def _list_step_candidates(
+    step: dict[str, Any], prepared: _Prepared, fits: _Fits, nearest: list[LibraryControl], taken: set[str]
+) -> tuple[_Found, _Found]:
+    """A step's fitting rows linked to its MITRE mitigations (best link first, at most
+    PLAN_LINKED_CONTROLS_PER_TECHNIQUE) and nearest it by meaning (at most CONTROLS_PER_TECHNIQUE_BY_MEANING): one
+    per control text, none of `taken`."""
+    settings, seen = get_settings(), set(taken)
+
+    def keep_new(pairs: Iterable[tuple[LibraryControl, str]], most: int) -> _Found:
+        kept: _Found = []
+        for row, found_by in pairs:
+            if len(kept) < most and read_control_twin_key(row) not in seen:
+                seen.add(read_control_twin_key(row))
+                kept.append((row, found_by))
+        return kept
+
+    linked = ((row, mitigation) for row, mitigation, _ in _list_linked_controls(step, prepared, fits))
+    meaning = ((row, c.ControlLinks.FOUND_BY_MEANING) for row in prepared.list_fitting_rows(nearest, fits))
+    most_linked, most_meaning = settings.plan_linked_controls_per_technique, settings.controls_per_technique_by_meaning
+    return keep_new(linked, most_linked), keep_new(meaning, most_meaning)
+
+
+def _share_candidates(found: list[tuple[str, _Found, _Found]]) -> list[dict[str, Any]]:
+    """The candidate rows, at most PLAN_CANDIDATES_LIMIT: each step's share is the limit over the steps, half
+    linked, half by meaning; slots one kind leaves go to the other, then, a slot each in turn, to the other steps.
+    A row an earlier step took takes no slot: it names this step too, even once the limit is reached."""
+    limit = get_settings().plan_candidates_limit
+    rows: dict[int, dict[str, Any]] = {}
+
+    def take(technique: str, queue: Iterator[tuple[LibraryControl, str]], most: int) -> int:
+        used = 0
+        while used < most and (pair := next(queue, None)) is not None:
+            row, entry = pair[0], {"technique": technique, "found_by": pair[1]}
+            if row.control_id in rows:
+                rows[row.control_id]["offered_for"].append(entry)
+                continue
+            if len(rows) >= limit:  # full: the rest of the queue only names its step on rows already offered
+                continue
+            match = c.ControlLinks.PLAN_CANDIDATE_MATCH
+            rows[row.control_id] = {"control_id": row.control_id, "code": row.code, "score": None, "match": match}
+            rows[row.control_id]["offered_for"] = [entry]
+            used += 1
+        return used
+
+    share, queues = (limit // len(found) if found else 0), []
+    for technique, linked, meaning in found:
+        linked_left, meaning_left = iter(linked), iter(meaning)
+        used = take(technique, linked_left, share // 2)
+        used += take(technique, meaning_left, share - used)
+        take(technique, linked_left, share - used)
+        queues.append((technique, chain(linked_left, meaning_left)))
+    while queues:  # the slots the steps left, one each in turn
+        queues = [(technique, queue) for technique, queue in queues if take(technique, queue, 1)]
+    return list(rows.values())

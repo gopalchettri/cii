@@ -85,7 +85,7 @@
     "contributing_categories": [
      "Denial of Service"
     ],
-    "prompt_version": "scenario writer-2",
+    "prompt_version": "scenario writer-1",
     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
     "route": {
      "note": null,
@@ -186,7 +186,7 @@
     "category": "Repudiation",
     "category_id": 13,
     "contributing_categories": [],
-    "prompt_version": "scenario writer-2",
+    "prompt_version": "scenario writer-1",
     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
     "route": {
      "note": null,
@@ -275,7 +275,7 @@
     "category": "Elevation of Privilege",
     "category_id": 16,
     "contributing_categories": [],
-    "prompt_version": "scenario writer-2",
+    "prompt_version": "scenario writer-1",
     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
     "route": {
      "note": null,
@@ -376,7 +376,7 @@
     "category": "Denial of Service",
     "category_id": 15,
     "contributing_categories": [],
-    "prompt_version": "scenario writer-2",
+    "prompt_version": "scenario writer-1",
     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
     "route": {
      "note": null,
@@ -472,7 +472,7 @@
     "category": "Spoofing",
     "category_id": 11,
     "contributing_categories": [],
-    "prompt_version": "scenario writer-2",
+    "prompt_version": "scenario writer-1",
     "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
     "route": {
      "note": null,
@@ -606,7 +606,7 @@
    "contributing_categories": [
     "Denial of Service"
    ],
-   "prompt_version": "scenario writer-2",
+   "prompt_version": "scenario writer-1",
    "risk_statement": "Loss of control at Grid Control Centre could interrupt electricity transmission.",
    "route": {
     "note": null,

@@ -366,6 +366,8 @@ def planner_actor_lines(
     """One line per top-ranked selected actor, with the quote it was kept for and all its documented techniques."""
     lines = []
     for actor_id in actor_selection["ranked_actor_ids"][: settings.planner_relevant_actors]:
+        if actor_id not in index["techniques_by_actor"]:  # revoked by an import since the run chose it: left out
+            continue
         documented_ids = []
         for technique_id in index["techniques_by_actor"][actor_id]:
             if not it_only or "enterprise" in index["domains"][technique_id]:
@@ -1265,6 +1267,10 @@ def build_path_brief(
     MITRE_WRITE_CALL_TOKENS_LIMIT: {slot, position, path, input, shared, procedures, candidate_ids}; None when it
     never fits."""
     position, planned_path, ranked_candidate_ids = taken
+    retired = retired_techniques_of(planned_path, writing["index"])
+    if retired:  # owner 2026-11-27: an import since planning retired them; written, the path would fail every set
+        log.warning(c.LogEvent.MITRE_PATH_DROPPED, reason="technique_retired", retired=retired)
+        return None
     built = build_writer_input_within_call_limit(
         chat,
         prompt,
@@ -1286,6 +1292,16 @@ def build_path_brief(
     brief = {"slot": slot, "position": position, "path": planned_path, "input": path_input}
     shared = fields_of(writer_input, SHARED_INPUT_FIELDS)
     return brief | {"shared": shared, "procedures": procedures, "candidate_ids": candidate_ids}
+
+
+def retired_techniques_of(planned_path: dict[str, Any], index: MitreIndex) -> list[str]:
+    """The path's techniques (STIX ids) the MITRE data in use no longer holds: an ATT&CK import since the run was
+    planned revoked or deprecated them. [] for a path that can still be written."""
+    retired = []
+    for technique_id in planned_path["technique_stix_ids"]:
+        if technique_id not in index["techniques"] or technique_id not in index["procedures_by_technique"]:
+            retired.append(technique_id)
+    return retired
 
 
 def fields_of(data: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:

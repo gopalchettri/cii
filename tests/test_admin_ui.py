@@ -1,6 +1,7 @@
-"""The admin web UI's shell (plan 5a): served at /ui with the browser security headers and outside the OpenAPI
-document; its files hold nothing the page's content policy or the key rule forbids, and call only routes the
-API has."""
+"""The web UI (D90, owner 2026-11-25: one UI for local and UAT, replacing the admin pages and the tools/ux console):
+served at /ui with the browser security headers and outside the OpenAPI document; its files hold nothing the page's
+content policy or the key rule forbids (only session.js keeps the sign-in, in the tab's sessionStorage), and they
+call only routes the API has."""
 
 import re
 import shutil
@@ -18,17 +19,27 @@ from app.main import create_app
 from tests.checkout import REPO
 
 PAGE_IDS = [
+    "home",
+    "new_run",
+    "runs",
+    "mitre_run",
+    "run",
+    "plans",
+    "plan",
+    "manual_plan",
+    "service_mapper",
+    "system",
+    "jobs",
+    "api_keys",
+    "curation",
+    "vectors",
     "ingestion",
     "schedule",
     "control_links",
-    "service_mapper",
-    "jobs",
-    "vectors",
-    "api_keys",
-    "curation",
     "ai_usage",
-    "system",
 ]
+#: The one file that may keep anything in the browser: the sign-in, for the tab (sessionStorage).
+SESSION_FILE = "session.js"
 #: What no file of the UI may hold: markup parsed from text, code built from text, anything kept in the browser.
 FORBIDDEN_WORDS = (
     "innerHTML",
@@ -72,6 +83,9 @@ def _text(name: str) -> str:
         ("/api.js", "text/javascript"),
         ("/poll.js", "text/javascript"),
         ("/dom.js", "text/javascript"),
+        ("/session.js", "text/javascript"),
+        ("/stream.js", "text/javascript"),
+        ("/export.js", "text/javascript"),
         ("/styles.css", "text/css"),
     ],
 )
@@ -91,24 +105,31 @@ def test_every_file_is_served_with_the_security_headers(ui_client: TestClient, p
 def test_the_shell_is_what_ui_answers(ui_client: TestClient) -> None:
     shell = ui_client.get(f"{UI_PATH}/").text
     assert shell == _text("index.html")
-    for part in ('id="nav"', 'id="admin-key"', 'type="password"', 'id="page"', 'src="./app.js"', "./styles.css"):
+    for part in (
+        'id="nav"',
+        'id="account"',
+        'id="notices"',
+        'id="page"',
+        'id="page-title"',
+        'src="./app.js"',
+        "./styles.css",
+    ):
         assert part in shell, part
 
 
 def test_no_link_of_the_shell_loads_the_document_again() -> None:
-    """The admin key lives in the tab's memory: a link to "./" is a reload and the key is gone without a word."""
+    """The admin key lives in the tab's memory: a link to "./" is a reload and the key is gone without a word. The
+    API documentation opens in a new tab."""
     links = re.findall(r'<a\b[^>]*\shref="([^"]*)"', _text("index.html"))
-    assert links == ["#main", f"#/{PAGE_IDS[0]}", "/docs"]
+    assert links == ["#main", "/docs"]
+    assert re.search(r'href="/docs"[^>]*target="_blank"', _text("index.html"))
 
 
-def test_enter_in_the_name_field_does_not_submit_the_key_form() -> None:
-    """Enter in any field of a form submits it; the key form's submit means "set this key": it holds the key alone."""
+def test_the_shell_holds_no_key_field() -> None:
+    """The sign-in and the admin key are built by app.js where they are asked: no key field sits in the page's
+    own HTML, so nothing there can submit or keep one."""
     shell = _text("index.html")
-    key_form = re.search(r'<form id="access"[^>]*>(.*?)</form>', shell, re.S)
-    assert key_form is not None
-    assert re.findall(r'<input id="([\w-]+)"', key_form.group(1)) == ["admin-key"]
-    assert re.findall(r'<input id="([\w-]+)"', shell) == ["user-id", "admin-key"]
-    assert shell.count("<form") == 1
+    assert "<input" not in shell and "<form" not in shell
 
 
 def test_a_script_is_javascript_whatever_the_machine_guesses(
@@ -156,8 +177,9 @@ def test_the_intelligence_groups_swagger_text_names_this_page_and_only_routes_th
     assert [path for path in sorted(named) if f"/v1/tsg/intel{path}" not in document["paths"]] == []
 
 
-def _find_forbidden(text: str, is_html: bool) -> list[str]:
-    found = [word for word in FORBIDDEN_WORDS if word in text]
+def _find_forbidden(text: str, is_html: bool, is_session_file: bool = False) -> list[str]:
+    allowed = {"sessionStorage"} if is_session_file else set()
+    found = [word for word in FORBIDDEN_WORDS if word in text and word not in allowed]
     found += re.findall(r"https?://[\w.-]+[^\s\"'`<>)]*", text)
     found += re.findall(r"\bstyle\s*=\s*[\"'`]", text)
     found += re.findall(r"setAttribute\(\s*[\"']style", text)
@@ -172,14 +194,24 @@ def _find_forbidden(text: str, is_html: bool) -> list[str]:
 
 def test_no_ui_file_holds_what_the_page_policy_forbids() -> None:
     """The policy is default-src 'self': no inline script or style runs, nothing loads from another host. The
-    admin key lives in a variable of the tab only, and text from the API is never parsed as markup."""
-    assert {path.name for path in UI_FILES} >= {"index.html", "styles.css", "api.js", "poll.js", "dom.js", "app.js"}
+    admin key lives in a variable of the tab only; the sign-in only in session.js, for the tab; text from the API is
+    never parsed as markup."""
+    core = {"index.html", "styles.css", "api.js", "poll.js", "dom.js", "app.js", "session.js", "stream.js", "export.js"}
+    assert {path.name for path in UI_FILES} >= core
     offenders = [
         f"{_name(path)}: {found}"
         for path in UI_FILES
-        for found in _find_forbidden(path.read_text(encoding="utf-8"), path.suffix == ".html")
+        for found in _find_forbidden(
+            path.read_text(encoding="utf-8"), path.suffix == ".html", path == UI_FOLDER / SESSION_FILE
+        )
     ]
     assert offenders == [], "\n".join(offenders)
+
+
+def test_only_the_session_file_may_use_storage() -> None:
+    assert _find_forbidden("window.sessionStorage.setItem(k, v);", False, is_session_file=True) == []
+    assert _find_forbidden("window.localStorage.setItem(k, v);", False, is_session_file=True) != []
+    assert _find_forbidden("window.sessionStorage.setItem(k, v);", False) != []
 
 
 @pytest.mark.parametrize(
@@ -248,12 +280,17 @@ def test_the_path_guard_reads_literals_and_templates() -> None:
     assert _find_unknown_paths(script, routes) == ["/v1/admin/job", "/v1/admin/jobs/${job.id}/stop", "/v2/anything"]
 
 
-def test_the_page_table_names_the_ten_pages_each_with_its_file() -> None:
+def test_the_page_table_names_every_page_each_with_its_file() -> None:
     table = re.findall(
-        r'\{ id: "(\w+)", title: "[^"]+", needs_admin_key: (?:true|false), load: [^}]*?pages/(\w+)\.js', _text("app.js")
+        r'\{ id: "(\w+)", title: "[^"]+", group: "[^"]+", access: "(client|admin|open)", nav: (?:true|false), '
+        r"load: [^}]*?pages/(\w+)\.js",
+        _text("app.js"),
     )
-    assert [page_id for page_id, _ in table] == PAGE_IDS
-    assert all(page_id == file_name for page_id, file_name in table)
+    assert [page_id for page_id, _, _ in table] == PAGE_IDS
+    assert all(page_id == file_name for page_id, _, file_name in table)
+    assert [path.stem for path in sorted((UI_FOLDER / "pages").glob("*.js"))] == sorted(PAGE_IDS)
+    admin = {page_id for page_id, access, _ in table if access == "admin"}
+    assert admin == {"jobs", "api_keys", "curation", "vectors"}, "the pages the admin key guards on the server"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -267,10 +304,12 @@ def test_every_script_parses(script: Path) -> None:
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 @pytest.mark.parametrize("checks_file", ["admin_ui_checks.mjs", "admin_ui_shell_checks.mjs"])
 def test_the_scripts_behave_under_node(checks_file: str) -> None:
-    """admin_ui_checks.mjs: headers, the one error message, 401/403 clear the key and say why, never another
-    origin; following pauses while hidden, ends at done, failed or cancelled, and gives up on a refusal.
-    admin_ui_shell_checks.mjs: only "#/<page>" changes the page, a refusal is told in the API's words, a reload
-    keeps the keyboard focus in the page, a source's claim never hides its status, a link stays on this origin."""
+    """admin_ui_checks.mjs: admin and client headers, sign-in checks and its tab-only keeping, a client 401 signs out
+    with the API's words, an Idempotency-Key on starts only, the one error message, never another origin; the event
+    stream's blocks, reconnects and end on a refusal; following pauses while hidden and gives up on a refusal.
+    admin_ui_shell_checks.mjs: the sign-in screen, "#/<page>/<param>" routing, a refusal told in the API's words,
+    a reload keeps the keyboard focus in the page, a source's claim never hides its status, a link stays on this
+    origin, a plan's alternative replacing nothing reads "Added"."""
     checks = [str(NODE), str(REPO / "tests" / checks_file)]
     result = subprocess.run(checks, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
     assert result.returncode == 0, result.stdout + result.stderr

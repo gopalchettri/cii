@@ -4,10 +4,22 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
+import structlog
 from pymongo.collection import Collection as MongoCollection
 
 from app.core.clock import utc_now
-from app.core.constants import Collection, JobControl, Lease, RunActionKind, RunActionOutcome, RunKind, Status
+from app.core.constants import (
+    Collection,
+    JobControl,
+    Lease,
+    LogEvent,
+    RunActionKind,
+    RunActionOutcome,
+    RunKind,
+    RunPipeline,
+    Status,
+)
+from app.crud.audit import get_audit_repository
 from app.crud.base import MongoRepository, Record
 from app.crud.jobs import ended_job_fields
 from app.crud.remediation import get_remediation_repository
@@ -22,7 +34,11 @@ from app.crud.scenarios import (
     waiting_controls,
 )
 
+log = structlog.get_logger(__name__)
 _WORKING = [Status.QUEUED, Status.RUNNING]
+#: The one-time clean-up's marker in tsg_audit (owner 2026-11-27): no `at`, so the audit TTL never deletes it.
+MITRE_CONTROLS_CLEARED_MARKER = "controls.mitre_cleared.2026-11-27"
+_COUNTED_CONTROLS = ("controls_waiting", "controls_failed", "controls_cancelled")
 _LISTED_FIELDS = dict.fromkeys(
     ("asset_id", "status", "job.due_at", "job.attempts", "job.retry", "user_id", "client_id")
     + ("created_at", "updated_at"),
@@ -225,12 +241,57 @@ def sweep_stalled_controls(recount: Recount | None = None) -> list[str]:
     recount = recount or runs.update_scenario_session_counts
     settle_stopped_scenario_sessions(recount)
     now = utc_now()
+    cleared = _unset_mitre_waiting_controls(now)[0]  # owner 2026-11-27: an older pod's, whenever it left them
     abandoned = scenarios.fail_abandoned_controls(now)
     session_ids = scenarios.requeue_stalled_controls(now)
-    for session_id in sorted({*abandoned, *session_ids}):
+    for session_id in sorted({*cleared, *abandoned, *session_ids}):
         recount(session_id)
     live = runs.list_scenario_sessions_with_live_delivery(session_ids)
     return sorted(set(session_ids) - live)
+
+
+def clear_mitre_controls_once(recount: Recount | None = None) -> None:
+    """At start-up, once (its marker in tsg_audit): clear_mitre_waiting_controls. A failure is logged and never
+    stops start-up; with no marker written, the next start tries again."""
+    try:
+        audit = get_audit_repository().collection
+        if audit.find_one({"_id": MITRE_CONTROLS_CLEARED_MARKER}, {"_id": 1}) is not None:
+            return
+        counts = clear_mitre_waiting_controls(recount)
+        marker = {"$setOnInsert": {**counts, "done_at": utc_now()}}
+        audit.update_one({"_id": MITRE_CONTROLS_CLEARED_MARKER}, marker, upsert=True)
+        log.info(LogEvent.CONTROLS_MITRE_CLEARED, **counts)
+    except Exception:  # noqa: BLE001 — a clean-up outage must not stop the pod: it is tried at the next start
+        log.warning(LogEvent.CONTROLS_MITRE_CLEAR_FAILED, exc_info=True)
+
+
+def clear_mitre_waiting_controls(recount: Recount | None = None) -> dict[str, int]:
+    """Owner 2026-11-27: a MITRE card's controls are identified by its remediation plan, so the controls an older
+    image left waiting on MITRE cards (queued, cancelled, failed, or running with an expired lease) are removed;
+    done ones stay, and a card with no record is never matched. Its runs are read first and every MITRE run still
+    counting waiting, failed or cancelled controls is recounted after, so a crash part-way is redone in full."""
+    runs = get_threat_scenario_session_repository()
+    session_ids, matched, modified = _unset_mitre_waiting_controls(utc_now())
+    counting = [{f"counts.{name}": {"$gt": 0}} for name in _COUNTED_CONTROLS]
+    session_ids |= set(runs.collection.distinct("_id", {"pipeline": RunPipeline.MITRE, "$or": counting}))
+    for session_id in sorted(session_ids):
+        (recount or runs.update_scenario_session_counts)(session_id)
+    return {"matched": matched, "modified": modified, "recounted": len(session_ids)}
+
+
+def _unset_mitre_waiting_controls(now: datetime) -> tuple[set[str], int, int]:
+    """The controls left waiting on MITRE cards (queued, cancelled, failed, or running with an expired lease)
+    removed: (their runs, matched, modified). A live lease is left to its older pod; done ones stay. The
+    controls.status index serves it, and it matches nothing once no older pod runs."""
+    scenarios = get_threat_scenario_repository().collection
+    left = [
+        {"controls.status": {"$in": [Status.QUEUED, Status.CANCELLED, Status.FAILED]}},
+        {"controls.status": Status.RUNNING, "controls.lease_until": {"$lt": now}},
+    ]
+    waiting = {"content.mitre": {"$exists": True}, "$or": left}
+    session_ids = {found for found in scenarios.distinct("session_id", waiting) if found}
+    cleared = scenarios.update_many(waiting, {"$unset": {"controls": ""}})
+    return session_ids, cleared.matched_count, cleared.modified_count
 
 
 def _cancelled_job(cancelled: dict[str, Any], now: datetime) -> dict[str, Any]:

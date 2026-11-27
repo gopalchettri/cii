@@ -22,7 +22,9 @@ class AiTuningSettings(BaseSettings):
     # A set's calls answer every slot at once; the largest a slot: 778 written, 680 rewritten.
     answer_tokens_write_scenario: int = Field(default=6144, ge=256, le=32768)
     answer_tokens_repair_scenario: int = Field(default=5632, ge=256, le=32768)
-    answer_tokens_remediation_plan: int = Field(default=3584, ge=256, le=32768)  # 10 controls: 2,601
+    # owner 2026-11-27: room for a MITRE plan's added controls, not its measured answer (10 controls: 2,601); the
+    # model's max is 12,288.
+    answer_tokens_remediation_plan: int = Field(default=6144, ge=256, le=32768)
     answer_tokens_service_mapper: int = Field(default=3072, ge=256, le=32768)  # 10 + 10 services: 1,997
     # Not measured yet (estimates): 15 judged controls at about 40 tokens each; a set's 6 scenarios at up to
     # 12 picks of about 20 tokens each.

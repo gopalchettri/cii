@@ -1861,6 +1861,15 @@
        }
       ],
       "description": "The source refreshed; none = every source due."
+     },
+     "sources": {
+      "default": [],
+      "description": "Each source's outcome, in import order.",
+      "items": {
+       "$ref": "#/components/schemas/IntelSourceOutcome"
+      },
+      "title": "Sources",
+      "type": "array"
      }
     },
     "title": "IntelRefreshResult",
@@ -1992,6 +2001,42 @@
     ],
     "title": "IntelSource",
     "type": "string"
+   },
+   "IntelSourceOutcome": {
+    "description": "What one import did to one source.",
+    "properties": {
+     "new_data": {
+      "description": "The stored data changed; false = MITRE had nothing new (a check only).",
+      "title": "New Data",
+      "type": "boolean"
+     },
+     "new_versions": {
+      "description": "Records stored as new or changed.",
+      "title": "New Versions",
+      "type": "integer"
+     },
+     "outcome": {
+      "$ref": "#/components/schemas/RefreshResult",
+      "description": "refreshed, unchanged, failed, skipped or claim_lost"
+     },
+     "retired": {
+      "description": "Records MITRE no longer lists, taken out of use.",
+      "title": "Retired",
+      "type": "integer"
+     },
+     "source": {
+      "$ref": "#/components/schemas/IntelSource"
+     }
+    },
+    "required": [
+     "source",
+     "outcome",
+     "new_data",
+     "new_versions",
+     "retired"
+    ],
+    "title": "IntelSourceOutcome",
+    "type": "object"
    },
    "IntelSwitchBody": {
     "additionalProperties": false,
@@ -3564,6 +3609,18 @@
    },
    "PendingThreat": {
     "properties": {
+     "asset_type": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "IT, OT or IT\\OT; none fits every asset.",
+      "title": "Asset Type"
+     },
      "catalogue_id": {
       "title": "Catalogue Id",
       "type": "integer"
@@ -4772,6 +4829,17 @@
     ],
     "title": "QueueState",
     "type": "object"
+   },
+   "RefreshResult": {
+    "enum": [
+     "refreshed",
+     "unchanged",
+     "failed",
+     "skipped",
+     "claim_lost"
+    ],
+    "title": "RefreshResult",
+    "type": "string"
    },
    "RegenerateRequest": {
     "additionalProperties": false,
@@ -16696,7 +16764,7 @@
    "name": "5. Threat scenarios: runs"
   },
   {
-   "description": "A run written from the full MITRE ATT&CK Enterprise and ICS data, with its own calls: start it, follow it, accept, reject or regenerate its scenarios, write its next set, or propose its threat to the library. The answers are the same as group 5's and group 6's.",
+   "description": "A run written from the full MITRE ATT&CK Enterprise and ICS data, with its own calls: start it, follow it, accept, reject or regenerate its scenarios, write its next set, or propose its threat to the library. The answers are the same as group 5's and group 6's. Follow a MITRE run live with `GET /v1/sessions/{session_id}/events`: each `session.updated` says the run changed (its board, as `GET /v1/sessions/{session_id}`); read `GET /v1/mitre_sessions/{session_id}` for its MITRE stage and scenarios.",
    "name": "5b. MITRE threat scenarios"
   },
   {

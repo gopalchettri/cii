@@ -1,8 +1,9 @@
 -- Threats waiting for a curator (pending: IsActive = 0 AND IsDeleted = 0), oldest first.
 -- Read-only. Called by app/data_access/sql.py (StoredProcedure.LIST_PENDING_THREATS).
 -- Result sets, in order:
---   1. one page: catalogue_id, threat, threat_type, type_pending (the type is pending too), categories (a JSON array
---      of names), source ('manual' | 'ai'), created_by, created_at
+--   1. one page: catalogue_id, threat, threat_type, type_pending (the type is pending too), asset_type (IT, OT,
+--      IT\OT; NULL fits every asset), categories (a JSON array of names), source ('manual' | 'ai'), created_by,
+--      created_at
 --   2. total: every pending threat, for paging
 CREATE OR ALTER PROCEDURE dbo.tsg_ListPendingThreats
     @Offset INT = 0,
@@ -12,7 +13,7 @@ BEGIN
     SET NOCOUNT ON;
 
     SELECT c.ThreatCatalogueID AS catalogue_id, c.ThreatName AS threat, t.ThreatTypeName AS threat_type,
-           CAST(CASE WHEN t.IsActive = 0 THEN 1 ELSE 0 END AS BIT) AS type_pending,
+           CAST(CASE WHEN t.IsActive = 0 THEN 1 ELSE 0 END AS BIT) AS type_pending, c.AssetType AS asset_type,
            ISNULL((SELECT cat.ThreatCategoryName AS [name]
                    FROM dbo.Threat_Catalogue_Category_Map AS m
                    JOIN dbo.Threat_Category AS cat ON cat.ThreatCategoryID = m.ThreatCategoryID

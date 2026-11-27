@@ -7,12 +7,13 @@ from typing import Any
 import pytest
 
 from app.ai import UnreadableAiAnswer
-from app.core.constants import AiTask, ErrorCode, PromptVersion, StrideCategory
+from app.core.constants import AiTask, ErrorCode, MitreMessage, PromptVersion, StrideCategory
 from app.core.exceptions import JobFailed
 from app.core.prompts import MITRE_PROMPTS
 from app.domain.scenario.mitre_scenario import mitre_engine as engine
 from app.domain.shared.ask_ai import call_tokens
 from app.search.mitre.mitre_index import MitreIndex, build_mitre_index, get_mitre_id, opening_sentences
+from app.worker.scenario.mitre import mitre_tasks
 from tests.fakes import FakeChatModel
 from tests.mitre.mitre_samples import (
     ALPHA,
@@ -150,6 +151,40 @@ def write_scenario(
     if brief is None:
         return None
     return engine.write_briefs(chat, prompt, [brief], writing)[brief["slot"]]
+
+
+def without_technique(index: MitreIndex, technique_id: str) -> MitreIndex:
+    """The index as an ATT&CK import that retired one technique leaves it."""
+    techniques = {key: value for key, value in index["techniques"].items() if key != technique_id}
+    procedures = {key: value for key, value in index["procedures_by_technique"].items() if key != technique_id}
+    return {**index, "techniques": techniques, "procedures_by_technique": procedures}
+
+
+def test_a_path_whose_technique_a_newer_import_retired_is_dropped_not_crashed(index: MitreIndex) -> None:
+    """Owner 2026-11-27: a run planned before an ATT&CK import that retired one of a path's techniques failed every
+    next set with a KeyError; now the path is dropped with its reason and the run goes on. Mutation: leave out
+    the check and the writer input raises KeyError."""
+    planned = first_planned_path(index)
+    retired = planned["technique_stix_ids"][0]
+    newer = without_technique(index, retired)
+    assert engine.retired_techniques_of(planned, newer) == [retired]
+    assert engine.retired_techniques_of(planned, index) == []
+    chat = chat_with()
+    assert write_scenario(chat, planned, newer) is None
+    assert chat.asked(AiTask.MITRE_WRITE) == []  # nothing sent to the writer for it
+    # a regenerate's card says so, never a retryable-looking "no scenario passed"
+    retired_card = (ErrorCode.LIBRARY_RECORD_RETIRED, MitreMessage.TECHNIQUE_RETIRED)
+    assert mitre_tasks.regenerate_failure_of(planned, newer) == retired_card
+    assert mitre_tasks.regenerate_failure_of(planned, index) == (ErrorCode.GENERATION_FAILED, MitreMessage.NO_SCENARIO)
+
+
+def test_a_group_a_newer_import_revoked_is_left_out_of_the_planner_lines(index: MitreIndex) -> None:
+    """A further planner round names only the selected groups the MITRE data still holds. Mutation: read
+    techniques_by_actor[actor] without the check and a KeyError ends the round."""
+    selection = selection_of((ZETA, 5), (ALPHA, 4))
+    kept = {key: value for key, value in index["techniques_by_actor"].items() if key != ZETA}
+    lines = engine.planner_actor_lines(selection, {**index, "techniques_by_actor": kept}, settings(), False)
+    assert len(lines) == 1 and get_mitre_id(index["objects"][ALPHA]) in lines[0]
 
 
 # ----------------------------------------------------------------------------- actor selection

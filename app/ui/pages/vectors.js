@@ -7,7 +7,8 @@ const ALREADY_RUNNING = "job_in_progress"; // the 409 reason of a second build; 
 
 export async function show(container, tools) {
   const { build_element, replace_content, request } = tools;
-  const place = build_element("div", { "aria-live": "polite" });
+  tools.set_subtitle("The search index that lets runs find matching library threats and controls.");
+  const place = build_element("div", { class: "stack", "aria-live": "polite" });
   const start = tools.build_button("Build now", start_build, { kind: "primary", disabled: true });
   let turn = 0; // what the place shows was chosen by the latest turn; an older turn's late answer is dropped
   let stop_following = () => {};
@@ -34,7 +35,7 @@ export async function show(container, tools) {
     let job_id;
     try {
       job_id = (await request("POST", "/v1/embeddings")).job_id;
-      tools.show_notice("The build is queued.", "good");
+      tools.show_notice("The build is queued. Its progress is shown below.", "good");
     } catch (error) {
       if (error.reason !== ALREADY_RUNNING || !error.details?.job_id) throw error;
       job_id = error.details.job_id;
@@ -47,12 +48,12 @@ export async function show(container, tools) {
   async function show_latest_build() {
     const mine = (turn += 1);
     start.disabled = true;
-    replace_content(place, tools.build_loading());
+    replace_content(place, tools.build_loading("Looking for the latest build…"));
     try {
       const answer = await request("GET", tools.with_query("/v1/admin/jobs", { kind: BUILD_KIND, hours: LOOK_BACK_HOURS, limit: 1 }));
       if (mine !== turn) return;
       if (answer.jobs.length) follow_build(answer.jobs[0].id);
-      else replace_content(place, tools.build_empty("No build was started in the last 90 days."));
+      else replace_content(place, tools.build_empty("No build was started in the last 90 days. Press Build now to make the search vectors."));
     } catch (error) {
       if (mine === turn) replace_content(place, tools.build_error(error, show_latest_build));
     } finally {
@@ -61,36 +62,45 @@ export async function show(container, tools) {
   }
 
   const about = "Makes the search vector of every library row. Needed once after the library is loaded; later builds run by themselves. One build runs at a time.";
-  const jobs_link = build_element("p", { class: "muted" }, "A queued or running build can be stopped on the ", build_element("a", { href: "#/jobs", text: "Jobs" }), " page.");
+  const jobs_link = build_element("p", { class: "muted" }, "A queued or running build can be stopped on the ", tools.build_link("Jobs", "#/jobs"), " page.");
   container.append(
-    tools.build_panel("Build the library's search vectors", build_element("p", { text: about }), tools.build_actions(start), jobs_link),
-    tools.build_panel("Latest build", place),
+    tools.build_section({ title: "Build the search vectors", subtitle: about, actions: [start] }, jobs_link),
+    tools.build_section({ title: "Latest build", subtitle: "Followed until it ends." }, place),
   );
   await show_latest_build();
 }
 
 function build_build(tools, job) {
-  const write_mono = (value) => value && tools.build_element("span", { class: "mono", text: value });
+  const failed = job.status === "failed" && tools.build_callout(`The build failed${job.error?.message ? `: ${job.error.message}` : "."} Press Build now to try again.`, "bad");
   const facts = tools.build_facts([
     ["Status", tools.build_badge(job.status)],
-    ["Job id", write_mono(job.job_id)],
+    ["Job id", tools.build_id(job.job_id)],
     ["Started by", job.requested_by],
     ["Queued", tools.format_date(job.created_at)],
     ["Started", tools.format_date(job.started_at)],
     ["Finished", tools.format_date(job.finished_at)],
-    ["Error", job.error && [job.error.message, job.error.code && ` (${job.error.code})`].filter(Boolean).join("")],
+    ["Problem", job.status !== "failed" && job.error?.message], // a failed build's message is in the callout
+    ["Error code (for support)", job.error?.code],
   ]);
-  return tools.build_element("div", { class: "columns" }, facts, job.result && build_result(tools, job.result));
+  return [failed, facts, job.result && build_result(tools, job.result)];
 }
 
 function build_result(tools, result) {
   const counts = result.counts ?? {};
   const made = result.newly_embedded ?? {};
   const rows = [...new Set([...Object.keys(counts), ...Object.keys(made)])].map((library) => ({ library, held: counts[library], made: made[library] }));
+  const add_up = (field) => rows.reduce((sum, row) => sum + (Number(row[field]) || 0), 0);
   const columns = [
-    { title: "Library", show: (row) => row.library.replaceAll("_", " ") },
+    { title: "Library", show: (row) => tools.humanise(row.library) },
     { title: "Rows with a vector", numeric: true, show: (row) => tools.format_count(row.held) },
     { title: "Vectors this build made", numeric: true, show: (row) => tools.format_count(row.made) },
   ];
-  return tools.build_table(rows, columns, { caption: "What the build left", empty: "The build named no library." });
+  return [
+    rows.length > 0 &&
+      tools.build_kpis([
+        { label: "Rows with a vector", value: add_up("held") },
+        { label: "Made by this build", value: add_up("made") },
+      ]),
+    tools.build_table(rows, columns, { caption: "What the build left, per library", empty: "The build named no library." }),
+  ];
 }

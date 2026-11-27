@@ -11,8 +11,8 @@ import pyodbc
 import pytest
 from sqlalchemy import Engine
 
-from app.core.constants import AssetType, ErrorMessage, LibraryRowKind, StoredProcedure
-from app.core.database import StoredProcedureClient
+from app.core.constants import AssetType, LibraryRowKind, StoredProcedure
+from app.core.database import StoredProcedureClient, describe_broken_procedure, procedure_answer_shape
 from app.core.exceptions import Invalid, SetupError, Unavailable
 from app.crud.library import ControlRepository, SqlOperationRepository, ThreatRepository
 from app.crud.service_mapper import load_catalog_rows
@@ -158,6 +158,10 @@ def test_the_loaded_library_knows_the_pending_and_the_rejected_names(procedures:
     assert asset_types[1] == AssetType.IT_OT and asset_types[2] is None  # G211: the procedure returns it
 
 
+#: The setup error that names tsg_ResolveThreat and the file to install.
+RESOLVE_THREAT_BROKEN = re.escape(describe_broken_procedure(StoredProcedure.RESOLVE_THREAT))
+
+
 def _propose(procedures: StoredProcedureClient, **params: Any) -> dict[str, Any]:
     defaults = {"CategoryName": "Tampering", "Source": "ai", "CreatedBy": "reviewer-1", "ActorIDs": "[1, 3]"}
     return procedures.execute_procedure(StoredProcedure.RESOLVE_THREAT, **(defaults | params))[0][0]
@@ -197,7 +201,7 @@ def test_a_live_threat_is_answered_as_it_is_and_never_changed(
 
 def test_a_proposal_from_an_unknown_source_is_refused(procedures: StoredProcedureClient) -> None:
     """The procedure's THROW (SQLSTATE 42000, a ProgrammingError) is a setup error, never a bare 500."""
-    with pytest.raises(SetupError, match=ErrorMessage.SQL_PROCEDURE_BROKEN) as refused:
+    with pytest.raises(SetupError, match=RESOLVE_THREAT_BROKEN) as refused:
         _propose(procedures, Source="import", TypeName="X", ThreatName="Y")
     assert "manual or ai" in str(refused.value.__cause__)
 
@@ -218,10 +222,78 @@ def test_a_new_threat_is_saved_with_its_asset_type_and_an_existing_one_keeps_its
     assert _rows(sql_test_engine, asset_type_of, untyped["threat_catalogue_id"]) == [{"AssetType": None}]
 
 
+def test_a_threat_that_attacks_both_is_saved_it_ot(procedures: StoredProcedureClient, sql_test_engine: Engine) -> None:
+    r"""Owner 2026-11-25: a scenario that attacks IT and OT promotes its threat as IT\OT. Mutation: take IT\OT out
+    of the procedure's allowed list and this proposal is refused."""
+    both = _propose(procedures, TypeName="Drone intrusion", ThreatName="Drone relay into SCADA", AssetType="IT\\OT")
+    asset_type_of = "SELECT AssetType FROM dbo.Threat_Catalogue WHERE ThreatCatalogueID = ?"
+    assert _rows(sql_test_engine, asset_type_of, both["threat_catalogue_id"]) == [{"AssetType": "IT\\OT"}]
+
+
 def test_a_proposal_with_an_unknown_asset_type_is_refused(procedures: StoredProcedureClient) -> None:
-    with pytest.raises(SetupError, match=ErrorMessage.SQL_PROCEDURE_BROKEN) as refused:
-        _propose(procedures, TypeName="X", ThreatName="Y", AssetType="IT\\OT")
-    assert "IT, OT or NULL" in str(refused.value.__cause__)
+    with pytest.raises(SetupError, match=RESOLVE_THREAT_BROKEN) as refused:
+        _propose(procedures, TypeName="X", ThreatName="Y", AssetType="IT-OT")
+    assert "IT, OT, IT\\OT or NULL" in refused.value.__cause__.args[1]  # the server's text, not its repr
+
+
+def test_a_procedure_older_than_the_app_is_named_with_the_file_to_install(procedures: StoredProcedureClient) -> None:
+    """Owner 2026-11-27: UAT's promote failed because its tsg_ResolveThreat had no @AssetType yet, and the 500 named
+    no procedure. A parameter the installed procedure does not know is SQL Server's 8145 ("@AssetType is not a
+    parameter for procedure tsg_ResolveThreat"): the error names
+    dbo.tsg_ResolveThreat and scripts/sql/tsg_ResolveThreat.sql, and keeps SQL Server's words for the log only.
+    Mutation: answer the old generic text and neither the procedure nor its file is named."""
+    with pytest.raises(SetupError) as refused:
+        _propose(procedures, TypeName="X", ThreatName="Y", NotYetInstalled="x")
+    shown = str(refused.value)
+    assert "dbo.tsg_ResolveThreat" in shown and "scripts/sql/tsg_ResolveThreat.sql" in shown, shown
+    assert "is not a parameter for procedure tsg_ResolveThreat" in str(refused.value.__cause__)  # for the log
+    assert "is not a parameter" not in shown and "ODBC" not in shown  # never in the answer
+
+
+class _OldProcedures:
+    """A SQL Server whose installed procedures answer in an older shape: `answers` by procedure."""
+
+    def __init__(self, **answers: list[list[dict[str, Any]]]) -> None:
+        self.answers = answers
+
+    def execute_procedure(self, procedure: StoredProcedure, **_params: Any) -> list[list[dict[str, Any]]]:
+        return self.answers[procedure.value]
+
+
+@pytest.mark.parametrize(
+    ("procedure", "answer"),
+    [
+        (StoredProcedure.GET_THREAT_LIBRARY, [[], [], []]),  # 3 result sets, the code reads 8
+        (StoredProcedure.GET_CONTROL_LIBRARY, [[{"ControlLibraryID": 1, "ControlCode": "C-1"}]]),  # columns missing
+        (StoredProcedure.LIST_PENDING_THREATS, [[]]),  # no total
+        (StoredProcedure.GET_LIBRARY_STAMP, []),  # no result set at all
+    ],
+)
+def test_an_answer_not_shaped_as_the_code_reads_it_names_the_procedure(procedure: StoredProcedure, answer: Any) -> None:
+    """Owner 2026-11-27: an out-of-date procedure that runs but answers in another shape was a bare 500
+    (ValueError, KeyError); now the setup error that names it and its file. Mutation: read the answer outside
+    procedure_answer_shape and the error is a ValueError or KeyError."""
+    old = _OldProcedures(**{procedure.value: answer})
+    threats = ThreatRepository(old, SqlOperationRepository(old))  # type: ignore[arg-type]
+    read = {
+        StoredProcedure.GET_THREAT_LIBRARY: threats.get_threat_library,
+        StoredProcedure.GET_CONTROL_LIBRARY: ControlRepository(old).get_control_library,  # type: ignore[arg-type]
+        StoredProcedure.LIST_PENDING_THREATS: lambda: threats.list_pending_threats(0, 10),
+        StoredProcedure.GET_LIBRARY_STAMP: threats.get_library_stamp,
+    }[procedure]
+    with pytest.raises(SetupError, match=re.escape(describe_broken_procedure(procedure))):
+        read()
+
+
+def test_the_answer_guard_lets_other_errors_through() -> None:
+    with pytest.raises(ZeroDivisionError), procedure_answer_shape(StoredProcedure.GET_THREAT_LIBRARY):
+        _ = 1 / 0  # not a shape problem: never relabelled
+
+
+def test_a_procedure_tsg_does_not_ship_is_left_to_the_database_team() -> None:
+    shown = describe_broken_procedure(StoredProcedure.GET_SECTOR_SERVICE_MAPPINGS)
+    assert "dbo.Onboarding_GetSectorServiceMappings" in shown and "scripts/sql/" not in shown
+    assert "database team" in shown
 
 
 def test_pending_threats_are_listed_oldest_first_with_a_total(procedures: StoredProcedureClient) -> None:

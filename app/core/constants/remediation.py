@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from app.core.ai_tuning_settings import TUNING
+
 
 class Remediation:
     TEXT_MAX_CHARS: Final = 2_000  # one free-text value in a plan's snapshot
@@ -15,6 +17,11 @@ class Remediation:
     COMMENT_MAX_CHARS: Final = 2_000  # a decision's review comment
     CONTROL_CODE_MAX_CHARS: Final = 100  # Control_Library.ControlCode
     STRATEGY: Final = "Mitigate"  # the only treatment strategy, set by code
+    # owner 2026-11-27: the alternatives a plan may add, capped by its answer room: about 1,000 tokens for the
+    # plan without them and at most about 260 for each added control (its entry, its control and its action).
+    # Identified controls share that room: an answer cut off at it is asked again at the model's own room
+    # (app/ai/chat.py).
+    ADDED_CONTROLS_MAX: Final = max((TUNING.answer_tokens_remediation_plan - 1_000) // 260, 0)
 
 
 class YesNo(StrEnum):
@@ -138,6 +145,16 @@ class PlanWarning(StrEnum):
         "scenario control {code}'s replacement {replacement} is not a library alternative: {code} is flagged for review"
     )
     ACTION_SYSTEM_UNKNOWN = "{action} names '{system}', not a supporting system the risk affects: left out"
+
+
+class AddedControlWarning:
+    """Warnings on the library alternatives a plan adds (owner 2026-11-27): plain text, as PlanWarning's are."""
+
+    UNKNOWN: Final = "added control {code!r} is not a library alternative of this plan — ignored"
+    CAPPED: Final = "the AI added {count} library alternatives — only the first {limit} were kept"
+    GAP_NOT_ADDRESSED: Final = (
+        "added control {code} is {status} but the plan does not recommend it — this gap stays open"
+    )
 
 
 class PlanText(StrEnum):

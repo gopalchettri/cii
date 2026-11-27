@@ -27,7 +27,7 @@ from app.core.constants import (
     StoredProcedure,
 )
 from app.core.database import StoredProcedureClient, get_mongodb
-from app.core.exceptions import Conflict, OutcomeUnknown, Unavailable
+from app.core.exceptions import Conflict, OutcomeUnknown, SetupError, Unavailable
 from app.crud.audit import get_audit_repository
 from app.crud.library import SqlOperationRepository, ThreatRepository
 from app.schemas.curation import LibraryDecisions
@@ -194,3 +194,40 @@ def test_a_running_operation_answers_409_and_a_done_one_answers_from_its_record(
     first = sql.run_sql_operation(done_id, StoredProcedure.DECIDE_PENDING_THREATS, {"DecidedBy": "c"})
     second = sql.run_sql_operation(done_id, StoredProcedure.DECIDE_PENDING_THREATS, {"DecidedBy": "c"})
     assert (first, second) == (([[{"total": 1}]], True), ([[{"total": 1}]], False)) and len(calls.calls) == 1
+
+
+class _AnswersInTurn:
+    """An installed procedure answering in turn: first as an out-of-date one does, then as the fixed one."""
+
+    def __init__(self, *answers: list[list[dict[str, Any]]]) -> None:
+        self.answers, self.calls = list(answers), 0
+
+    def execute_procedure(self, _procedure: StoredProcedure, **_params: Any) -> list[list[dict[str, Any]]]:
+        self.calls += 1
+        return self.answers.pop(0)
+
+
+def test_a_write_answer_the_code_cannot_read_is_asked_again_once_the_procedure_is_fixed(client: TestClient) -> None:
+    """Owner 2026-11-27: the write ran, its answer had another shape, and the stored answer was replayed for
+    KEEP_DAYS, so installing the procedure never helped and the write was never audited. Now the record is left
+    to reconcile: the next try asks SQL Server again and reads it. Mutation: keep procedure_answer_shape in
+    propose_threat / decide_pending_threats and the second try raises SetupError again."""
+    fixed = {"threat_type_id": 1, "threat_catalogue_id": 2, "outcome": ResolveOutcome.CREATED_PENDING}
+    proposing = _AnswersInTurn([[{"threat_type_id": 1}]], [[fixed]])
+    threats, operation_id = _threats(proposing), f"promote:{uuid.uuid4().hex}"
+    with pytest.raises(SetupError, match="tsg_ResolveThreat"):
+        threats.propose_threat(operation_id, _proposal(_name("threat")))
+    record = get_mongodb()[Collection.SQL_OPERATIONS].find_one({"_id": operation_id})
+    assert record["status"] == SqlOperationStatus.REQUIRES_RECONCILIATION
+    proposed, applied_now = threats.propose_threat(operation_id, _proposal(_name("threat")))
+    assert (proposed.catalogue_id, applied_now, proposing.calls) == (2, True, 2)  # applied now: audited now
+    deciding = _AnswersInTurn(
+        [[{"catalogue_id": 2, "outcome": "maybe"}]], [[{"catalogue_id": 2, "outcome": "approved"}]]
+    )
+    decide_id = f"decide:{uuid.uuid4().hex}"
+    with pytest.raises(SetupError, match="tsg_DecidePendingThreats"):  # an outcome the API cannot answer: not a 500
+        _threats(deciding).decide_pending_threats(decide_id, [2], [], "curator-1")
+    assert _threats(deciding).decide_pending_threats(decide_id, [2], [], "curator-1") == (
+        [{"catalogue_id": 2, "outcome": "approved"}],
+        True,
+    )

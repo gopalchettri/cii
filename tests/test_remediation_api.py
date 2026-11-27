@@ -29,6 +29,7 @@ from app.core.constants import (
     ErrorMessage,
     Header,
     Lease,
+    LogEvent,
     PlanWarning,
     PromptVersion,
     Remediation,
@@ -47,6 +48,7 @@ from app.domain.remediation.plans import check_regenerable, decision_change
 from app.schemas.remediation import SYSTEM_LISTS, PlanRequest
 from app.schemas.scenario_internal import FrozenContext
 from app.worker import jobs
+from app.worker import remediation as remediation_worker
 from tests.plan_addresses import generated, plan_url
 from tests.plan_job_fakes import (  # noqa: F401 — api_key_fixture and world_fixture are fixtures
     CONTROLS,
@@ -1143,3 +1145,80 @@ def test_a_plan_stored_before_the_rebuild_reads_and_its_pending_version_is_writt
     assert record["versions"][0]["plan"] == OLD_PLAN
     newest = _result(client, api_key, remediation_id).json()
     assert newest["shown_version"] == 2 and len(newest["plan"]["control_assessment"]) == 1
+
+
+def test_a_plan_is_offered_up_to_remediation_alternative_controls_and_logs_how_many(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """The plan job asks for REMEDIATION_ALTERNATIVE_CONTROLS (20) alternatives, no longer 5, and logs how many
+    it was offered. Mutation: put the 5 back and the job asks for 5."""
+    asked: list[int] = []
+
+    def find(scenario: Any, context: Any, snapshot: Any, identified: Any, count: int, mapped: Any = None) -> Any:
+        asked.append(count)
+        return [(CONTROLS[5], 66.0)]
+
+    world["mapper"].find_alternative_controls = find
+    answer = _request(client, api_key, generated(_scenario()))
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-1"))
+    with capture_logs() as logs:
+        deliver(answer.json()["remediation_id"])
+    assert asked == [get_settings().remediation_alternative_controls] == [20]
+    (offered,) = [entry for entry in logs if entry["event"] == LogEvent.PLAN_ALTERNATIVES_OFFERED]
+    assert (offered["offered"], offered["most"]) == (1, 20)
+
+
+def test_a_mitre_cards_plan_offers_its_gathered_candidates_and_attack_steps_and_never_claims_its_controls(
+    client: TestClient, api_key: str, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner 2026-11-27: the plan job gathers a MITRE card's candidates and saves its attack steps, MITRE's words
+    with them, in the snapshot the AI reads; the card's queued controls are never claimed or mapped. Mutation:
+    leave the MITRE grounding out of the snapshot and the prompt has no attack step."""
+    attack = {"techniques": [{"id": "T0859", "name": "Valid Accounts", "mitigations": ["M0932"]}], "mitigations": []}
+    said = [{"mitre_id": "M0932", "name": "Multi-factor Authentication", "text": "Require a second factor."}]
+    mitre = {"mitigations": [{"technique": "T0859", "mitigations": said}]}
+    scenario_id = _scenario(content=SCENARIO_CONTENT | {"attack": attack, "mitre": mitre}, controls=UNMAPPED)
+    offered_for = [{"technique": "T0859", "found_by": "M0932"}]
+    candidate = {
+        "control_id": 5,
+        "code": "CII-CID-5",
+        "score": None,
+        "match": "alternative",
+        "offered_for": offered_for,
+    }
+    monkeypatch.setattr(remediation_worker, "gather_plan_candidates", lambda *_: [candidate])
+    remediation_id = _request(client, api_key, generated(scenario_id)).json()["remediation_id"]
+    added = [{"control_code": "CII-CID-5", "reason": "Approves the vendor sessions the stolen accounts use."}]
+    world["chat"].queue(AiTask.REMEDIATION_PLAN, plan_answer("CII-CID-5", control_validation=[], added_controls=added))
+    deliver(remediation_id)
+    record = _record(remediation_id)
+    snapshot = record["versions"][0]["snapshot"]
+    assert record["status"] == Status.DONE and world["mapper"].asked == []
+    assert _scenario_controls(scenario_id)["status"] == Status.QUEUED
+    assert snapshot["existing_controls"]["library_mapped"] == []
+    assert snapshot["existing_controls"]["library_alternatives"][0]["offered_for"] == offered_for
+    steps = [{"technique": "T0859", "name": "Valid Accounts", "mitigations": [{"mitigation": "M0932"}]}]
+    steps[0]["mitigations"][0] |= {"name": "Multi-factor Authentication", "mitre_says": "Require a second factor."}
+    assert snapshot["attack_steps"] == steps
+    (prompt,) = world["chat"].asked(AiTask.REMEDIATION_PLAN)
+    assert '"found_by":"M0932"' in prompt and '"mitre_says":"Require a second factor."' in prompt
+
+
+def test_an_existing_control_offered_but_left_out_of_the_plan_is_named_as_not_counted(
+    client: TestClient, api_key: str, world: dict[str, Any]
+) -> None:
+    """CII-CID-5 is in place and offered as an alternative: left out of the plan's rows it is warned as not
+    counted against this risk; added (it already reduces the risk), it is counted and not warned. Mutation:
+    weigh every offered alternative again and the first plan gives no warning."""
+    world["mapper"].alternatives = [(CONTROLS[5], 66.0)]
+    reference = "CII-CID-5 — Vendor remote-access approval"
+    warning = PlanWarning.EXISTING_CONTROL_NOT_FOR_THIS_RISK.format(reference=reference)
+    added = [{"control_code": "CII-CID-5", "reason": "Approves the vendor sessions the push needs."}]
+    warned = []
+    for plan in (plan_answer("CII-CID-1"), plan_answer("CII-CID-1", added_controls=added)):
+        answer = _request(client, api_key, generated(_scenario(), existing_controls=["CII-CID-5"]))
+        assert answer.status_code == 202, answer.text
+        world["chat"].queue(AiTask.REMEDIATION_PLAN, plan)
+        deliver(answer.json()["remediation_id"])
+        warned.append(warning in _record(answer.json()["remediation_id"])["versions"][0]["warnings"])
+    assert warned == [True, False]

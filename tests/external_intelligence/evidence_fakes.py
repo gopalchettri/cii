@@ -126,13 +126,18 @@ class MemoryRecords:
         self.saved: list[Sequence[IntelRecord]] = []
         self.retired: list[tuple[str, set[str]]] = []
         self.counts = 0
+        self._versions: set[tuple] = set()  # each (source, external_id, content_hash) stored, as the unique index
 
     def stream_current_intel_records(self) -> Iterator[dict]:
         return iter(self.docs)
 
     def save_intel_records(self, records: Sequence[IntelRecord], fetched_at: datetime) -> int:
+        """As MongoDB answers: only a version not stored before counts (its upsert)."""
         self.saved.append(records)
-        return len(records)
+        keys = {(r.source, r.external_id, r.as_doc(fetched_at)["content_hash"]) for r in records}
+        new = keys - self._versions
+        self._versions |= new
+        return len(new)
 
     def retire_intel_records_missing_from(
         self, source: IntelSource, seen_ids: set[str], retired_at: datetime | None = None
@@ -209,7 +214,11 @@ class MemoryFeeds:
         now, records = done["last_success_at"], done["records"]
         checkpoint, version = done["checkpoint"], done["source_version"]
         self.successes.append((source, checkpoint, version, records))
-        self.health[source] = SourceHealth(source, FeedStatus.OK, checkpoint, version, records, now, now)
+        previous = self.health.get(source) or SourceHealth(source)
+        new_data_at = done.get("last_new_data_at", previous.last_new_data_at)  # as MongoDB's $set leaves it
+        self.health[source] = SourceHealth(
+            source, FeedStatus.OK, checkpoint, version, records, now, now, last_new_data_at=new_data_at
+        )
 
     def _record_failure(self, source: IntelSource, failed: dict) -> None:
         self.failures.append((source, failed["last_error"]))
@@ -217,6 +226,7 @@ class MemoryFeeds:
         self.health[source] = SourceHealth(
             source, FeedStatus.FAILED, previous.checkpoint, previous.source_version, previous.records,
             failed["last_attempt_at"], previous.last_success_at, failed["last_error"],
+            last_new_data_at=previous.last_new_data_at,
         )  # fmt: skip
 
 

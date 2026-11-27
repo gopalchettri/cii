@@ -21,7 +21,9 @@ class ErrorCode(StrEnum):
     CONTROL_LIBRARY_EMPTY = "control_library_empty"
     AI_ANSWER_UNUSABLE = "ai_answer_unusable"  # no retry can fix it: the model profile or provider is wrong
     AI_MISCONFIGURED = "ai_misconfigured"  # the gateway refused the key, permission or model name
-    LIBRARY_RECORD_RETIRED = "library_record_retired"  # a path's threat or attacker retired after planning
+    LIBRARY_RECORD_RETIRED = (
+        "library_record_retired"  # a path's threat, attacker or MITRE technique retired since planning
+    )
     EVIDENCE_NOT_FOUND = "evidence_not_found"  # intelligence on and no evidence: a reserve path may replace it
     SCENARIO_BLOCKED = "scenario_blocked"  # a regenerated version broke a fixed rule
     SETUP_ERROR = "setup_error"  # the server is set up wrongly: the operator fixes it, a retry cannot
@@ -112,9 +114,14 @@ class ErrorMessage(StrEnum):
     JOB_UNEXPECTED = "Unexpected error. Quote run id {record_id} when reporting it."  # a job has no request id
     PROCEDURE_NOT_ALLOWED = "{procedure!r} is not a TSG stored procedure: only StoredProcedure members run."
     SQL_VALUE_REFUSED = "The library database refused a value as out of range or already present."
+    # Which procedure, and what to install (owner 2026-11-27: UAT's promote failed on an old tsg_ResolveThreat and
+    # the message named none). SQL Server's own words stay in the log (http.app_error), never in the answer.
     SQL_PROCEDURE_BROKEN = (
-        "A library database procedure is missing or refused its call: install scripts/sql/ on this database."
+        "The library database's procedure dbo.{procedure} is missing, out of date or refused its call: {fix} "
+        "SQL Server's reason is in the API log under this request id."
     )
+    SQL_PROCEDURE_FIX_OWN = "install scripts/sql/{procedure}.sql on this database (the database team runs it)."
+    SQL_PROCEDURE_FIX_OTHER = "ask the database team to check it on this database."
     DUPLICATE_REQUEST = (
         "The same request was sent {seconds} s ago and started {first}. Wait {window} s, or send a new "
         "Idempotency-Key to start another."

@@ -27,7 +27,7 @@ from app.core.config import get_settings
 from app.core.constants import Header
 from app.core.logging import configure_logging
 from app.core.readiness import log_mongodb_topology, log_redis_eviction_policy
-from app.crud import indexes
+from app.crud import indexes, work_control
 from app.realtime.event_hub import EventHub
 
 
@@ -44,6 +44,7 @@ async def application_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(get_settings(), "api")
     asyncio.get_running_loop().set_exception_handler(_ignore_client_gone)
     indexes.create_all_indexes()
+    work_control.clear_mitre_controls_once()  # owner 2026-11-27: once, never stops start-up
     log_mongodb_topology()
     log_redis_eviction_policy()
     ai.build_ai_gateways()  # a model with no profile stops start-up here

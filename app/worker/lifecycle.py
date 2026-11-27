@@ -21,7 +21,7 @@ from app.core.exceptions import REDIS_UNAVAILABLE_ERRORS
 from app.core.lease_signal import start_thread_without_lease
 from app.core.logging import configure_logging
 from app.core.readiness import check_stores, log_mongodb_topology, log_redis_eviction_policy
-from app.crud import indexes
+from app.crud import indexes, work_control
 from app.worker.celery_app import REQUEST_ID_HEADER, queue_of, settings
 from app.worker.intel import start_following_active_snapshot, warm_up_intelligence
 from app.worker.jobs import JOB_COLLECTIONS, JobWaiting
@@ -69,6 +69,7 @@ def _prepare_stores_and_models() -> None:
         ai.build_ai_gateways()
     except Exception as exc:  # noqa: BLE001 — any start-up failure stops the worker
         raise _start_failed(exc) from exc
+    work_control.clear_mitre_controls_once()  # owner 2026-11-27: once, never stops start-up
     pools = [(str(AiLimits.SEARCH_POOL), ai_slots.get_ai_slots()), *ai_slots.get_module_ai_slots().items()]
     for pool, slots in pools:  # AiSlotsSaturated reads both gauges, pool by pool
         metrics.AI_SLOTS_IN_USE.labels(pool).set_function(slots.count_calls_in_progress)

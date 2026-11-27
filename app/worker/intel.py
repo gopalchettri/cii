@@ -74,7 +74,13 @@ def run_refresh_job(job_id: str) -> None:
     index_error = {"index_error": summary.index_error} if summary.index_error else {}
     failed = IntelRefreshMessage.SOURCES_FAILED.format(sources=", ".join(summary.failed))
     sources_failed = {"code": ErrorCode.UNAVAILABLE, "message": failed} if summary.failed else None
-    jobs.update_admin_job_finished(job_id, utc_now(), result={"source": source} | index_error, error=sources_failed)
+    outcomes = [
+        {"source": item.source, "outcome": item.result, "new_data": item.new_data}
+        | {"new_versions": item.new_versions, "retired": item.retired}
+        for item in summary.sources
+    ]  # the page says per source whether anything new arrived
+    result = {"source": source, "sources": outcomes} | index_error
+    jobs.update_admin_job_finished(job_id, utc_now(), result=result, error=sources_failed)
     _send_link_mitigations()
 
 

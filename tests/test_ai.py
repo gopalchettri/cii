@@ -1029,8 +1029,9 @@ def test_every_chat_task_asks_for_its_own_answer_room_never_the_model_s_whole() 
 
 
 #: The largest answer measured per chat task, in tokens (tsg_ai_usage and tsg_ai_calls, 2026-10-30, ~10,000
-#: calls); a set's task (writer, repair) by its largest a slot. Gap fill had no call to measure.
-LARGEST_ANSWER_TOKENS = {AiTask.RELEVANCE_GATE: 8_776, AiTask.REMEDIATION_PLAN: 2_601, AiTask.SERVICE_MAPPER: 1_997}
+#: calls); a set's task (writer, repair) by its largest a slot. Gap fill had no call to measure. The remediation
+#: plan's room is the owner's since 2026-11-27 (room for a MITRE plan's added controls), not a measured one.
+LARGEST_ANSWER_TOKENS = {AiTask.RELEVANCE_GATE: 8_776, AiTask.SERVICE_MAPPER: 1_997}
 LARGEST_SLOT_ANSWER_TOKENS = {AiTask.WRITE_SCENARIO: 778, AiTask.REPAIR_SCENARIO: 680}
 
 
@@ -1593,6 +1594,10 @@ def test_each_module_s_model_limits_replace_the_model_s_own(monkeypatch: pytest.
             "scenario_chat_max_input_tokens": 50_000,
             "scenario_chat_max_output_tokens": 2048,
             "scenario_chat_timeout_seconds": 33,
+            # every remediation line blank, whatever the local .env says
+            "remediation_chat_max_input_tokens": None,
+            "remediation_chat_max_output_tokens": None,
+            "remediation_chat_timeout_seconds": None,
         }
     )
     for built in (ai.chat, ai.slots, ai.embeddings, ai.rerank):
